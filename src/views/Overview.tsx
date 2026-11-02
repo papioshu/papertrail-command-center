@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { lazy, Suspense, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { api, type Row } from "../api";
 import { ago, AgentChip, Barcode, brand, day, Empty, ErrBox, ProjectActions, sessionState, short, Spark, StatusBar, useAsync, useDragScroll, useNav } from "../ui";
 
@@ -6,6 +6,35 @@ const counts = (p: Row) => ({ done: p.done_tasks, active: p.active_tasks, pendin
 const sumCounts = (ps: Row[]) => ps.reduce((a: Record<string, number>, p) => { for (const [k, v] of Object.entries(counts(p))) a[k] = (a[k] || 0) + (v as number); return a; }, {});
 
 const REFRESH = ["projects-updated"];
+// The sphere is its own chunk: the dashboard paints first, the GPU scene arrives after.
+const Sphere = lazy(() => import("../sphere/Sphere"));
+
+/** Right-hand panel: the hovered or selected project, with its status and real actions. */
+function Focus({ p, spark }: { p: Row | undefined; spark: number[] }) {
+  const { nav } = useNav();
+  if (!p) return <div className="empty">Hover a node to inspect a project</div>;
+  const b = brand(p.workspace);
+  const claude = p.last_claude ? JSON.parse(p.last_claude) : null;
+  const codex = p.last_codex ? JSON.parse(p.last_codex) : null;
+  return (
+    <section className="card glow" style={glowStyle(b.glow)}>
+      <div className="card-head"><span className="label" style={{ color: b.glow }}>{p.workspace}</span><div className="right"><Barcode value={p.id} width={54} height={14} /></div></div>
+      <div className="card-body col" style={{ gap: 12 }}>
+        <div className="display" style={{ fontSize: 20, letterSpacing: ".12em", cursor: "pointer" }} onClick={() => nav("projects", { id: p.id })}>{p.name}</div>
+        <div>
+          <div className="metaline"><span>Last activity</span><b>{ago(p.last_activity)}</b></div>
+          <div className="metaline"><span>Branch</span><b className="ellipsis" style={{ maxWidth: 150 }}>{p.branch ?? "—"}{p.dirty ? ` · ${p.dirty} dirty` : ""}</b></div>
+          <div className="metaline"><span>Claude</span><b>{claude ? ago(claude.updated) : "—"}</b></div>
+          <div className="metaline"><span>Codex</span><b>{codex ? ago(codex.updated) : "—"}</b></div>
+        </div>
+        <div><div className="label" style={{ fontSize: 8.5, marginBottom: 5 }}>Tasks by status</div><StatusBar counts={counts(p)} legend /></div>
+        <div><div className="label" style={{ fontSize: 8.5, marginBottom: 3 }}>Recorded activity · 14 days</div><Spark values={spark} width={270} height={30} color={b.glow} /></div>
+        {p.next_action && <div className="small muted clamp3">{String(p.next_action).replace(/^\*\*Next logical (action|task):\*\*\s*/, "")}</div>}
+        <ProjectActions p={p} compact />
+      </div>
+    </section>
+  );
+}
 const glowStyle = (glow: string) => ({ ["--glow" as string]: glow }) as CSSProperties;
 
 /** One access card per workspace: PapertrailOS profile art where it exists, a drawn card otherwise. */
@@ -147,6 +176,8 @@ export default function Overview() {
   }, [sparkRows.data]);
   const [unsorted, setUnsorted] = useState(false);
   const [picked, setPicked] = useState<string | null>(null);
+  const [focusId, setFocusId] = useState<string | null>(null);
+  const graph = useAsync(() => api.graph(), [], REFRESH);
   const { nav } = useNav();
   const ps = projects.data ?? [];
   const b = brief.data;
@@ -167,15 +198,34 @@ export default function Overview() {
   if (projects.error) return <ErrBox error={projects.error} />;
   return (
     <div>
-      <div className="hero">
-        <div>
-          <h1>{hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"}</h1>
-          <div className="when">{now.toLocaleDateString(undefined, { weekday: "long", day: "2-digit", month: "short", year: "numeric" })} · {ps.length} projects on file</div>
+      <div className="home">
+        <div className="side">
+          <div>
+            <div className="label">{now.toLocaleDateString(undefined, { weekday: "long", day: "2-digit", month: "short" })}</div>
+            <div className="display" style={{ fontSize: 26, fontWeight: 300, letterSpacing: ".2em", marginTop: 6 }}>{hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"}</div>
+          </div>
+          <div className="board" style={{ flexDirection: "column" }}>
+            <div style={{ borderRight: 0, borderBottom: "1px solid var(--line)" }}><div className="v">{ps.length}</div><div className="k">Projects on file</div></div>
+            <div style={{ borderRight: 0, borderBottom: "1px solid var(--line)" }}><div className="v">{ps.reduce((a, p) => a + p.active_tasks, 0)}</div><div className="k">Open now</div></div>
+            <div style={{ borderRight: 0, borderBottom: "1px solid var(--line)", cursor: "pointer" }} onClick={() => nav("projects")}><div className="v" style={{ color: "var(--gold)" }}>{ps.reduce((a, p) => a + p.blocked_tasks, 0)}</div><div className="k">Blocked</div></div>
+            <div style={{ cursor: "pointer" }} onClick={() => nav("agents")}><div className="v" style={{ color: live ? "var(--violet-glow)" : undefined }}>{live}</div><div className="k">Agents active</div></div>
+          </div>
+          <div className="col" style={{ gap: 2 }}>
+            <div className="label" style={{ marginBottom: 4 }}>Signal · since last start</div>
+            {(b?.projects ?? []).slice(0, 4).map((x: Row) => (
+              <div key={x.id} className="metaline" style={{ cursor: "pointer" }} onMouseEnter={() => setFocusId(x.id)} onClick={() => nav("projects", { id: x.id })}>
+                <span className="ellipsis" style={{ maxWidth: 170 }}>{x.name.match(/\((.+)\)/)?.[1] ?? x.name}</span><b>{x.commits ? `${x.commits} commits` : `${x.logs + x.decisions} entries`}</b>
+              </div>
+            ))}
+          </div>
+          <div className="row" style={{ marginTop: "auto", gap: 10, color: "var(--dim)" }}><Barcode value={String(b?.since ?? "pt")} width={120} height={16} /><span className="label" style={{ fontSize: 8.5 }}>PT-SPHERE · BOOK OF SECRETS</span></div>
         </div>
-        <div className="board">
-          <div><div className="v">{ps.reduce((a, p) => a + p.active_tasks, 0)}</div><div className="k">Open now</div></div>
-          <div style={{ cursor: "pointer" }} onClick={() => nav("projects")}><div className="v" style={{ color: "var(--gold)" }}>{ps.reduce((a, p) => a + p.blocked_tasks, 0)}</div><div className="k">Blocked</div></div>
-          <div style={{ cursor: "pointer" }} onClick={() => nav("agents")}><div className="v" style={{ color: live ? "var(--violet-glow)" : undefined }}>{live}</div><div className="k">Agents active</div></div>
+        <Suspense fallback={<div className="sphere" />}>
+          {ps.length > 0 && <Sphere projects={ps.filter((p) => unsorted || p.workspace !== "UNSORTED")} links={graph.data?.links ?? []} selected={focusId} onHover={(id) => id && setFocusId(id)} onOpen={(id) => nav("projects", { id })} />}
+        </Suspense>
+        <div className="side">
+          <Focus p={ps.find((p) => p.id === focusId) ?? ps[0]} spark={sparks(focusId ?? ps[0]?.id ?? "")} />
+          <div className="dim small mono" style={{ fontSize: 10, letterSpacing: ".08em" }}>Each node is a project; brightness and pulse follow its last recorded activity. Lines are explicit cross-references in Book of Secrets files. Drag to turn · wheel to zoom · click to open.</div>
         </div>
       </div>
 

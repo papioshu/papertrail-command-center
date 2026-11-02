@@ -20,7 +20,7 @@
         "minWidth": 1100,
         "minHeight": 700,
         "backgroundColor": "#0b0814",
-        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-gpu --renderer-process-limit=1 --disable-background-networking"
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --renderer-process-limit=1 --disable-background-networking"
       }
     ],
     "security": {
