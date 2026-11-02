@@ -180,8 +180,15 @@ fn clean_env(c: &mut Command) {
 }
 
 fn spawn_in_terminal(cwd: &Path, title: &str, exe: &Path, args: &[String]) -> Result<String, String> {
+    // wt treats `;` as a command separator anywhere in its command line. Titles come from project names
+    // (document text), so strip it there; everything else must not contain it at all.
+    let title: String = title.chars().filter(|c| *c != ';' && !c.is_control()).collect();
+    let all = std::iter::once(cwd.display().to_string()).chain(std::iter::once(exe.display().to_string())).chain(args.iter().cloned());
+    if all.into_iter().any(|a| a.contains(';')) {
+        return Err("refusing to launch: a path or argument contains ';'".into());
+    }
     if let Some(wt) = which("wt") {
-        let mut a: Vec<String> = vec!["-w".into(), "new".into(), "new-tab".into(), "--title".into(), title.into(), "-d".into(), cwd.display().to_string()];
+        let mut a: Vec<String> = vec!["-w".into(), "new".into(), "new-tab".into(), "--title".into(), title.clone(), "-d".into(), cwd.display().to_string()];
         a.push(exe.display().to_string());
         a.extend(args.iter().cloned());
         let mut c = Command::new(&wt);
@@ -251,6 +258,10 @@ fn launch_inner(conn: &Connection, data_dir: &Path, req: &LaunchReq) -> Result<V
     let (cwd, args, handoff): (PathBuf, Vec<String>, Option<PathBuf>) = if req.mode == "continue" {
         let (id, scwd) = latest_session(conn, &req.project_id, &req.agent)
             .ok_or("No recorded session for this project and agent. Use Fresh Handoff instead.")?;
+        // Session ids come from local files: accept only UUID-style characters on a command line.
+        if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Err("recorded session id has unexpected characters; refusing to resume".into());
+        }
         // Claude resumes by working directory, so reopen in the session's own cwd when it exists.
         let cwd = scwd.map(PathBuf::from).filter(|d| d.is_dir()).or(repo).ok_or("project directory missing")?;
         let args = if req.agent == "claude" { vec!["--resume".into(), id] } else { vec!["resume".into(), id] };

@@ -408,12 +408,31 @@ pub fn open_path(st: State<AppState>, path: String) -> R<()> {
 
 #[tauri::command(async)]
 pub fn open_url(url: String) -> R<()> {
-    if !(url.starts_with("https://") || url.starts_with("http://")) || url.contains(['"', ' ', '\n']) {
-        return Err("only http(s) links can be opened".into());
+    // Parse, allow only http(s) with a host, and hand the re-serialized (percent-encoded) URL to the shell's
+    // default handler directly: no explorer.exe argument parsing involved.
+    let u = tauri::Url::parse(url.trim()).map_err(|_| "not a valid URL")?;
+    if !matches!(u.scheme(), "http" | "https") || u.host_str().map_or(true, |h| h.is_empty()) {
+        return Err("only http(s) links with a host can be opened".into());
     }
-    // explorer hands the URL to the default browser; no shell parsing involved.
-    std::process::Command::new("explorer").arg(&url).spawn().map_err(|e| e.to_string())?;
-    Ok(())
+    shell_open(u.as_str())
+}
+
+#[cfg(windows)]
+fn shell_open(target: &str) -> R<()> {
+    #[link(name = "shell32")]
+    extern "system" {
+        fn ShellExecuteW(hwnd: *mut core::ffi::c_void, op: *const u16, file: *const u16, params: *const u16, dir: *const u16, show: i32) -> isize;
+    }
+    let w = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let (op, file) = (w("open"), w(target));
+    // SAFETY: valid NUL-terminated UTF-16 buffers that outlive the call; null params/dir are allowed.
+    let r = unsafe { ShellExecuteW(std::ptr::null_mut(), op.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), 1) };
+    if r > 32 { Ok(()) } else { Err(format!("could not open link (ShellExecute {r})")) }
+}
+
+#[cfg(not(windows))]
+fn shell_open(_target: &str) -> R<()> {
+    Err("unsupported platform".into())
 }
 
 #[tauri::command(async)]

@@ -24,7 +24,12 @@ pub struct Commit {
 const T: Duration = Duration::from_secs(20);
 
 fn git(repo: &Path, args: &[&str]) -> Result<String, String> {
-    let mut a = vec!["-c", "core.quotepath=off", "-c", "safe.directory=*"];
+    // Repos are untrusted input: their own config must not run programs during read-only commands.
+    // No safe.directory override (git's ownership check stays on); fsmonitor/hooks/external diff/textconv disabled.
+    let mut a = vec![
+        "-c", "core.quotepath=off", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=NUL",
+        "-c", "diff.external=", "-c", "core.untrackedCache=false",
+    ];
     a.extend_from_slice(args);
     let o = run("git", &a, Some(repo), T)?;
     if o.ok { Ok(o.stdout) } else { Err(format!("git {} failed", args.first().unwrap_or(&""))) }
@@ -68,6 +73,8 @@ pub fn log(repo: &Path, range: Option<&str>, limit: usize) -> Result<Vec<Commit>
         "log",
         n.as_str(),
         "--no-renames",
+        "--no-ext-diff",
+        "--no-textconv",
         "--date=iso-strict",
         "--pretty=format:%x1e%H%x1f%aI%x1f%an <%ae>%x1f%s%x1f%(trailers:key=Co-Authored-By,valueonly,separator=%x1d)",
         "--numstat",
