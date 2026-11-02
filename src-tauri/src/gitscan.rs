@@ -39,36 +39,21 @@ pub fn head(repo: &Path) -> Option<String> {
     git(repo, &["rev-parse", "HEAD"]).ok().map(|s| s.trim().to_string()).filter(|s| s.len() >= 7)
 }
 
-/// The repo's own config file(s). `.git` may be a directory or a `gitdir:` pointer file (worktrees).
-fn repo_configs(repo: &Path) -> Vec<std::path::PathBuf> {
-    let dotgit = repo.join(".git");
-    let gitdir = if dotgit.is_dir() {
-        dotgit
-    } else {
-        match std::fs::read_to_string(&dotgit).ok().and_then(|s| s.trim().strip_prefix("gitdir:").map(|g| g.trim().to_string())) {
-            Some(g) => { let p = std::path::PathBuf::from(&g); if p.is_absolute() { p } else { repo.join(p) } }
-            None => return vec![],
-        }
-    };
-    let mut out = vec![gitdir.join("config")];
-    if let Ok(c) = std::fs::read_to_string(gitdir.join("commondir")) {
-        out.push(gitdir.join(c.trim()).join("config"));
-    }
-    out
-}
-
-/// Repo-local config that could make `git status` run a program (filter drivers, or includes we don't inspect).
+/// Ask git itself (reading config never runs programs) for repo-scoped keys, following includes and
+/// worktree config. Fail closed: if git can't answer, treat the repo as risky.
 pub fn risky_config(repo: &Path) -> Option<String> {
-    for f in repo_configs(repo) {
-        let Ok(text) = std::fs::read_to_string(&f) else { continue };
-        for line in text.lines() {
-            let l = line.trim().to_lowercase();
-            if l.starts_with("[filter") || l.starts_with("[include") {
-                return Some(format!("{} defines {}", f.display(), line.trim()));
-            }
-        }
+    let mut keys = match git(repo, &["config", "--local", "--includes", "--name-only", "--list"]) {
+        Ok(out) => out,
+        Err(e) => return Some(format!("could not read repo config ({e})")),
+    };
+    // Exists only when extensions.worktreeConfig is on; an error just means there is none.
+    if let Ok(out) = git(repo, &["config", "--worktree", "--includes", "--name-only", "--list"]) {
+        keys.push_str(&out);
     }
-    None
+    keys.lines()
+        .map(|k| k.trim().to_lowercase())
+        .find(|k| k.starts_with("filter.") || k.starts_with("include.") || k.starts_with("includeif."))
+        .map(|k| format!("repo config defines {k}"))
 }
 
 pub fn status(repo: &Path) -> Result<Status, String> {
@@ -185,15 +170,15 @@ mod tests {
         assert_eq!(parse_status("## No commits yet on master
 ").unwrap().branch.as_deref(), Some("master"));
         let d = std::env::temp_dir().join(format!("ptcc-risky-{}", std::process::id()));
-        std::fs::create_dir_all(d.join(".git")).unwrap();
-        std::fs::write(d.join(".git").join("config"), "[core]
-	bare = false
-").unwrap();
+        std::fs::create_dir_all(&d).unwrap();
+        assert!(risky_config(&d).is_some(), "not a repo: fail closed");
+        crate::util::run("git", &["init", "-q"], Some(&d), T).unwrap();
         assert!(risky_config(&d).is_none());
-        std::fs::write(d.join(".git").join("config"), "[filter \"x\"]
-	clean = evil
-").unwrap();
-        assert!(risky_config(&d).is_some());
+        // BOM + odd spacing a hand parser would miss; git still reports the key.
+        let cfg = d.join(".git").join("config");
+        let text = format!("\u{feff}{}\n  [ filter \"x\" ]\n\tclean = evil\n", std::fs::read_to_string(&cfg).unwrap());
+        std::fs::write(&cfg, text).unwrap();
+        assert!(risky_config(&d).is_some(), "filter (or unreadable config) must be flagged");
         assert!(status(&d).unwrap_err().contains("skipped"));
         let _ = std::fs::remove_dir_all(d);
         let out = "\x1eabc\x1f2026-11-01T10:00:00-05:00\x1fMe <m@x>\x1fFix\x1fClaude Opus <noreply@anthropic.com>\n3\t1\tsrc/game/board/a.ts\n-\t-\tassets/x.png\n\x1edef\x1f2026-11-01T09:00:00-05:00\x1fMe <m@x>\x1fInit\x1f\n";
