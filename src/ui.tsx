@@ -544,3 +544,16 @@ export function RadarOrderControl({ mode, setMode, reshuffle }: { mode: RadarOrd
     </div>
   );
 }
+
+/** Sub-project → parent project: a project named "<Parent> …" or "<Parent> (…)" in the same workspace sits under it
+ *  (BOMBSQUAD Bounty Board → BOMBSQUAD). Longest matching parent wins. */
+export function parentOf(projects: Row[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const p of projects) {
+    const best = projects
+      .filter((q) => q.id !== p.id && q.workspace === p.workspace && (p.name.startsWith(q.name + " ") || p.name.startsWith(q.name + "(")))
+      .sort((a, b) => b.name.length - a.name.length)[0];
+    if (best) out.set(p.id, best.id);
+  }
+  return out;
+}

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, on, type Row } from "../api";
-import { ago, brand, Card, Empty, ErrBox, useAsync, useNav } from "../ui";
+import { ago, brand, Card, Empty, ErrBox, parentOf, useAsync, useNav } from "../ui";
 
 /* 3D Book of Secrets network, drawn as SVG with a perspective projection (≈100 nodes: no GPU scene needed).
    Hub at the centre, workspaces on an inner shell, projects on an outer shell around their workspace,
@@ -29,14 +29,15 @@ function recentColor(days: number) {
 function build(projects: Row[], streams: Row[], links: Row[], expanded: Set<string>) {
   const nodes: N[] = [{ id: "hub", kind: "hub", label: "BOOK OF SECRETS", p: [0, 0, 0], r: 16, color: "#8b5cf6" }];
   const edges: E[] = [];
+  const parents = parentOf(projects);
   const groups = new Map<string, Row[]>();
-  for (const p of projects) groups.set(p.workspace, [...(groups.get(p.workspace) ?? []), p]);
+  for (const p of projects) if (!parents.has(p.id)) groups.set(p.workspace, [...(groups.get(p.workspace) ?? []), p]);
   const order = [...groups.keys()].sort();
   order.forEach((ws, wi) => {
     const d = fib(wi, Math.max(2, order.length));
     const g = brand(ws).glow;
     const members = groups.get(ws)!;
-    const multi = members.length > 1;
+    const multi = projects.filter((p) => p.workspace === ws).length > 1;
     if (multi) {
       nodes.push({ id: `ws:${ws}`, kind: "ws", label: ws, p: scale(d, R1), r: 9, color: g, ws });
       edges.push({ a: "hub", b: `ws:${ws}`, kind: "tree" });
@@ -47,6 +48,14 @@ function build(projects: Row[], streams: Row[], links: Row[], expanded: Set<stri
       const pos = scale(pd, multi ? R2 : (R1 + R2) / 2);
       nodes.push({ id: p.id, kind: "project", label: p.name, p: pos, r: 6 + Math.min(7, Math.sqrt(p.active || 0) * 2), color: recentColor(days), row: { ...p, days }, ws });
       edges.push({ a: multi ? `ws:${ws}` : "hub", b: p.id, kind: "tree" });
+      // sub-projects hang off their parent (BOMBSQUAD Bounty Board under BOMBSQUAD)
+      const kids = projects.filter((q) => parents.get(q.id) === p.id);
+      kids.forEach((k, ki) => {
+        const kdays = k.last_activity ? (Date.now() - Date.parse(k.last_activity.length === 10 ? k.last_activity + "T12:00:00" : k.last_activity)) / 864e5 : 999;
+        const kd = around(pd, ki, kids.length, 0.07);
+        nodes.push({ id: k.id, kind: "project", label: k.name, p: scale(kd, (multi ? R2 : (R1 + R2) / 2) + 70), r: 4.5 + Math.min(5, Math.sqrt(k.active || 0) * 1.6), color: recentColor(kdays), row: { ...k, days: kdays }, ws, parent: p.id });
+        edges.push({ a: p.id, b: k.id, kind: "tree" });
+      });
       if (expanded.has(p.id)) {
         const ss = streams.filter((s) => s.project_id === p.id).sort((a, b) => b.commits - a.commits).slice(0, 7);
         ss.forEach((s, k) => {

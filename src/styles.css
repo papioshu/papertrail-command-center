@@ -318,3 +318,5 @@ pre.doc { margin: 0; white-space: pre-wrap; word-break: break-word; font-family:
 .graph-wrap.g3d { background: radial-gradient(60% 60% at 50% 50%, rgba(60, 40, 140, 0.22), rgba(7, 5, 15, 0.85) 70%), rgba(7, 5, 15, 0.85); }
 .graph-wrap.g3d svg { cursor: grab; touch-action: none; }
 .graph-wrap.g3d svg:active { cursor: grabbing; }
+
+.slabel .plus { color: var(--violet-soft); font-size: 9px; }

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { on, type Row } from "../api";
-import { brand } from "../ui";
+import { brand, parentOf } from "../ui";
 import { faceAngles, layoutNodes, liveEngines, qualityTier, SphereEngine, type SphereLink, type SphereNode } from "./engine";
 
 /* Interactive Book of Secrets sphere. Modes:
@@ -29,10 +29,11 @@ export default function Sphere({ projects, links, selected, highlightWorkspace, 
 
   const sig = projects.map((p) => `${p.id}:${p.workspace}:${Math.floor(daysSince(p.last_activity))}:${p.active_tasks}`).join("|") + "#" + links.map((l) => `${l.project_id}>${l.target_id}`).join(",");
   // eslint-disable-next-line react-hooks/exhaustive-deps
+  const parents = useMemo(() => parentOf(projects), [sig]);
   const nodes: SphereNode[] = useMemo(() => projects.map((p) => {
     const g = hex(brand(p.workspace).glow);
     // brand identity, pulled toward the sphere's lavender so the palette stays coherent
-    return { id: p.id, workspace: p.workspace, color: [g[0] * 0.6 + 0.3, g[1] * 0.6 + 0.26, g[2] * 0.6 + 0.4], activityDays: daysSince(p.last_activity), weight: p.active_tasks || 0 };
+    return { id: p.id, workspace: p.workspace, color: [g[0] * 0.6 + 0.3, g[1] * 0.6 + 0.26, g[2] * 0.6 + 0.4], activityDays: daysSince(p.last_activity), weight: p.active_tasks || 0, parent: parents.get(p.id) };
   }), [sig]);
   const sLinks: SphereLink[] = useMemo(() => {
     const ids = new Set(projects.map((p) => p.id));
@@ -243,6 +244,7 @@ export default function Sphere({ projects, links, selected, highlightWorkspace, 
     const placed: { x0: number; y0: number; x1: number; y1: number }[] = [];
     const out: typeof labels = [];
     for (const l of [...labels].sort((a, b) => pri(b) - pri(a))) {
+      if (parents.has(l.id) && l.id !== hover && l.id !== selected) continue; // satellites are named on hover
       const w = shortName(byId.get(l.id)?.name).length * 7.4 + 18, box = { x0: l.x + 10, y0: l.y - 10, x1: l.x + 10 + w, y1: l.y + 6 };
       const hit = placed.some((b) => box.x0 < b.x1 && box.x1 > b.x0 && box.y0 < b.y1 && box.y1 > b.y0);
       if (hit && pri(l) < 10) continue;
@@ -250,7 +252,8 @@ export default function Sphere({ projects, links, selected, highlightWorkspace, 
       out.push(l);
     }
     return out;
-  }, [labels, hover, selected, highlightWorkspace, byId]);
+  }, [labels, hover, selected, highlightWorkspace, byId, parents]);
+  const kidCount = useMemo(() => { const m = new Map<string, number>(); for (const v of parents.values()) m.set(v, (m.get(v) ?? 0) + 1); return m; }, [parents]);
 
   if (mode === "svg") return <SvgFallback projects={projects} links={sLinks} selected={selected} onHover={onHover} onOpen={onOpen} />;
   return (
@@ -261,7 +264,7 @@ export default function Sphere({ projects, links, selected, highlightWorkspace, 
         const hot = l.id === hover || l.id === selected || (!!highlightWorkspace && p?.workspace === highlightWorkspace);
         return (
           <div key={l.id} className={`slabel ${hot ? "hot" : ""}`} style={{ transform: `translate(${l.x + 14}px, ${l.y - 8}px)`, opacity: hot ? 1 : l.z > 0 ? 0.6 + 0.4 * l.z : 0.32 + 0.25 * (1 + l.z), zIndex: hot ? 3 : l.z > 0 ? 2 : 1 }}>
-            <span className="n">{shortName(p?.name)}</span>
+            <span className="n">{shortName(p?.name)}{kidCount.get(l.id) ? <span className="plus"> +{kidCount.get(l.id)}</span> : null}</span>
             {(l.id === hover || l.id === selected) && shortName(p?.name) !== p?.workspace && <span className="m">{p?.workspace}</span>}
           </div>
         );

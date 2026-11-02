@@ -9,6 +9,7 @@ export type SphereNode = {
   color: [number, number, number];
   activityDays: number; // days since last recorded activity
   weight: number; // open tasks, drives core size
+  parent?: string; // sub-project: placed as a satellite of its parent node
 };
 export type SphereLink = { a: string; b: string; n: number };
 
@@ -169,7 +170,8 @@ export function layoutNodes(nodes: SphereNode[]): Map<string, V3> {
   const out = new Map<string, V3>();
   ws.forEach((w, wi) => {
     const c = fib(wi, Math.max(ws.length, 2));
-    const members = nodes.filter((n) => n.workspace === w);
+    const all = nodes.filter((n) => n.workspace === w);
+    const members = all.filter((n) => !n.parent || !all.some((m) => m.id === n.parent));
     const t1 = norm(cross(c, Math.abs(c[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0]));
     const t2 = cross(c, t1);
     members.forEach((m, i) => {
@@ -177,6 +179,16 @@ export function layoutNodes(nodes: SphereNode[]): Map<string, V3> {
       const a = (i / members.length) * Math.PI * 2, r = 0.2 + 0.03 * members.length;
       out.set(m.id, norm([c[0] + (t1[0] * Math.cos(a) + t2[0] * Math.sin(a)) * r, c[1] + (t1[1] * Math.cos(a) + t2[1] * Math.sin(a)) * r, c[2] + (t1[2] * Math.cos(a) + t2[2] * Math.sin(a)) * r]));
     });
+    // satellites: tight ring around their parent
+    for (const m of members) {
+      const kids = all.filter((n) => n.parent === m.id);
+      const pd = out.get(m.id)!;
+      const k1 = norm(cross(pd, Math.abs(pd[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0])), k2 = cross(pd, k1);
+      kids.forEach((k, i) => {
+        const a = (i / kids.length) * Math.PI * 2 + 0.6, r = 0.075;
+        out.set(k.id, norm([pd[0] + (k1[0] * Math.cos(a) + k2[0] * Math.sin(a)) * r, pd[1] + (k1[1] * Math.cos(a) + k2[1] * Math.sin(a)) * r, pd[2] + (k1[2] * Math.cos(a) + k2[2] * Math.sin(a)) * r]));
+      });
+    }
   });
   return out;
 }
