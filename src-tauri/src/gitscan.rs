@@ -39,7 +39,43 @@ pub fn head(repo: &Path) -> Option<String> {
     git(repo, &["rev-parse", "HEAD"]).ok().map(|s| s.trim().to_string()).filter(|s| s.len() >= 7)
 }
 
+/// The repo's own config file(s). `.git` may be a directory or a `gitdir:` pointer file (worktrees).
+fn repo_configs(repo: &Path) -> Vec<std::path::PathBuf> {
+    let dotgit = repo.join(".git");
+    let gitdir = if dotgit.is_dir() {
+        dotgit
+    } else {
+        match std::fs::read_to_string(&dotgit).ok().and_then(|s| s.trim().strip_prefix("gitdir:").map(|g| g.trim().to_string())) {
+            Some(g) => { let p = std::path::PathBuf::from(&g); if p.is_absolute() { p } else { repo.join(p) } }
+            None => return vec![],
+        }
+    };
+    let mut out = vec![gitdir.join("config")];
+    if let Ok(c) = std::fs::read_to_string(gitdir.join("commondir")) {
+        out.push(gitdir.join(c.trim()).join("config"));
+    }
+    out
+}
+
+/// Repo-local config that could make `git status` run a program (filter drivers, or includes we don't inspect).
+pub fn risky_config(repo: &Path) -> Option<String> {
+    for f in repo_configs(repo) {
+        let Ok(text) = std::fs::read_to_string(&f) else { continue };
+        for line in text.lines() {
+            let l = line.trim().to_lowercase();
+            if l.starts_with("[filter") || l.starts_with("[include") {
+                return Some(format!("{} defines {}", f.display(), line.trim()));
+            }
+        }
+    }
+    None
+}
+
 pub fn status(repo: &Path) -> Result<Status, String> {
+    // A clean/smudge filter in the repo's own config would run during status: skip rather than execute it.
+    if let Some(why) = risky_config(repo) {
+        return Err(format!("status skipped for safety: {why}"));
+    }
     parse_status(&git(repo, &["status", "--porcelain=v1", "-b"])?)
 }
 
@@ -148,6 +184,18 @@ mod tests {
         assert_eq!((s.branch.as_deref(), s.ahead, s.behind, s.dirty), (Some("main"), 2, 1, 2));
         assert_eq!(parse_status("## No commits yet on master
 ").unwrap().branch.as_deref(), Some("master"));
+        let d = std::env::temp_dir().join(format!("ptcc-risky-{}", std::process::id()));
+        std::fs::create_dir_all(d.join(".git")).unwrap();
+        std::fs::write(d.join(".git").join("config"), "[core]
+	bare = false
+").unwrap();
+        assert!(risky_config(&d).is_none());
+        std::fs::write(d.join(".git").join("config"), "[filter \"x\"]
+	clean = evil
+").unwrap();
+        assert!(risky_config(&d).is_some());
+        assert!(status(&d).unwrap_err().contains("skipped"));
+        let _ = std::fs::remove_dir_all(d);
         let out = "\x1eabc\x1f2026-11-01T10:00:00-05:00\x1fMe <m@x>\x1fFix\x1fClaude Opus <noreply@anthropic.com>\n3\t1\tsrc/game/board/a.ts\n-\t-\tassets/x.png\n\x1edef\x1f2026-11-01T09:00:00-05:00\x1fMe <m@x>\x1fInit\x1f\n";
         let c = parse_log(out);
         assert_eq!(c.len(), 2);
