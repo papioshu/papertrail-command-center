@@ -28,7 +28,7 @@ fn git(repo: &Path, args: &[&str]) -> Result<String, String> {
     // No safe.directory override (git's ownership check stays on); fsmonitor/hooks/external diff/textconv disabled.
     let mut a = vec![
         "-c", "core.quotepath=off", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=NUL",
-        "-c", "diff.external=", "-c", "core.untrackedCache=false",
+        "-c", "diff.external=", "-c", "core.untrackedCache=false", "-c", "core.pager=cat",
     ];
     a.extend_from_slice(args);
     let o = run("git", &a, Some(repo), T)?;
@@ -52,7 +52,12 @@ pub fn risky_config(repo: &Path) -> Option<String> {
     }
     keys.lines()
         .map(|k| k.trim().to_lowercase())
-        .find(|k| k.starts_with("filter.") || k.starts_with("include.") || k.starts_with("includeif."))
+        // -c overrides already neutralise fsmonitor/hooks/ext-diff/pager; these are the program-valued keys that can't be
+        // reliably overridden per name, so their presence fails closed.
+        .find(|k| {
+            k.starts_with("filter.") || k.starts_with("include.") || k.starts_with("includeif.") || k == "core.sshcommand"
+                || (k.starts_with("diff.") && (k.ends_with(".command") || k.ends_with(".textconv")))
+        })
         .map(|k| format!("repo config defines {k}"))
 }
 
