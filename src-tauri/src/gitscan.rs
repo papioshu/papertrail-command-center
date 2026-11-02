@@ -65,7 +65,8 @@ pub fn risky_config(repo: &Path) -> Option<String> {
 
 /// Callers must check `risky_config` first (indexer does, once per repo, before any git command).
 pub fn status(repo: &Path) -> Result<Status, String> {
-    parse_status(&git(repo, &["status", "--porcelain=v1", "-b"])?)
+    // Submodule configs are not inspected by risky_config, so status never descends into them.
+    parse_status(&git(repo, &["status", "--porcelain=v1", "-b", "--ignore-submodules=all"])?)
 }
 
 pub fn parse_status(out: &str) -> Result<Status, String> {
