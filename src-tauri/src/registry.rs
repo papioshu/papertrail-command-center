@@ -20,6 +20,7 @@ pub struct Config {
     pub codex_dir: PathBuf,
     pub refresh_minutes: u64,
     pub close_to_tray: bool,
+    pub workspace_groups: Vec<(String, String)>,
 }
 
 pub fn defaults() -> Value {
@@ -34,6 +35,13 @@ pub fn defaults() -> Value {
         "refresh_minutes": 15,
         "close_to_tray": true,
         "workstream_aliases": {},
+        // Owner-defined grouping (2026-11-02): workspace or project name -> the workspace it belongs to.
+        "workspace_groups": {
+            "OARA": "Outsider Collective", "GH05tkin": "Outsider Collective",
+            "MeshChat-FictoChat": "Encrypted Chat Apps",
+            "Nimbus Generator": "FLY WING GENESIS", "ONE FOR ALL": "FLY WING GENESIS",
+            "Solo RPG Engine": "RPG Engine", "ThingsBook Visual Library": "ThingsBook"
+        },
         "discovery_refresh_hours": 24,
         "chat_url": "https://discord.com/app",
         "presets": [
@@ -77,6 +85,7 @@ impl Config {
             codex_dir: p("codex_dir").unwrap_or_else(|| home().join(".codex")),
             refresh_minutes: s["refresh_minutes"].as_u64().unwrap_or(15).clamp(5, 24 * 60),
             close_to_tray: s["close_to_tray"].as_bool().unwrap_or(true),
+            workspace_groups: s["workspace_groups"].as_object().map(|m| m.iter().filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string()))).collect()).unwrap_or_default(),
         }
     }
 }
@@ -273,7 +282,10 @@ pub fn discover(cfg: &Config) -> (Vec<Project>, Vec<String>) {
                     }
                     // Same convention as the registry: "Parent (Sub)", e.g. "Zathena Ventures (website)".
                     let parent_name = top.file_name().unwrap().to_string_lossy().into_owned();
-                    let name = format!("{parent_name} ({})", sub.file_name().unwrap().to_string_lossy());
+                    let sub_name = sub.file_name().unwrap().to_string_lossy().into_owned();
+                    // "BOMBSQUAD/BOMBSQUAD" would read as a copy of the BOMBSQUAD project on the map.
+                    let label = if sub_name.eq_ignore_ascii_case(&parent_name) { "vault repo".to_string() } else { sub_name };
+                    let name = format!("{parent_name} ({label})");
                     let mut id = slug(&name);
                     if projects.iter().any(|p| p.id == id) {
                         id = format!("{id}-vault");
@@ -320,12 +332,88 @@ pub fn discover(cfg: &Config) -> (Vec<Project>, Vec<String>) {
         }
         projects.push(Project { id, name, workspace, repo: Some(ps), vault_dir: None, source: "scan" });
     }
+    consolidate_workspaces(&mut projects);
+    apply_groups(&mut projects, &cfg.workspace_groups);
     (projects, errors)
+}
+
+/// Owner's explicit grouping, matched (case/spacing-insensitive) on the project's workspace or its name.
+/// Follows chains (A -> B -> C) up to 4 hops.
+pub fn apply_groups(projects: &mut [Project], groups: &[(String, String)]) {
+    let find = |name: &str| groups.iter().find(|(k, _)| ws_key(k) == ws_key(name)).map(|(_, v)| v.clone());
+    for p in projects.iter_mut() {
+        let mut ws = find(&p.workspace).or_else(|| find(&p.name));
+        let mut hops = 0;
+        while let Some(w) = ws.clone() {
+            p.workspace = w.clone();
+            hops += 1;
+            ws = if hops < 4 { find(&w).filter(|n| ws_key(n) != ws_key(&w)) } else { None };
+        }
+    }
+}
+
+fn ws_key(w: &str) -> String {
+    w.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase()
+}
+fn ws_initials(w: &str) -> String {
+    w.split(|c: char| !c.is_alphanumeric()).filter(|s| !s.is_empty()).filter_map(|s| s.chars().next()).collect::<String>().to_lowercase()
+}
+
+/// Merge workspaces that are the same thing under different spellings, so the map and decks show one cluster:
+/// same letters ("PaperShoots" / "Papershoots"), one name containing another ("Caedis" / "CaedisAerial",
+/// "OARA" / "OARA and Loomward", "RPG Engine" / "Solo RPG Engine"), or initials ("ZV" / "Zathena Ventures"). Registry names win as the display name.
+pub fn consolidate_workspaces(projects: &mut [Project]) {
+    let mut names: Vec<String> = projects.iter().map(|p| p.workspace.clone()).filter(|w| w != "UNSORTED").collect();
+    names.sort_by_key(|w| (ws_key(w).len(), w.clone()));
+    names.dedup();
+    let registry: Vec<String> = projects.iter().filter(|p| p.source == "registry").map(|p| p.workspace.clone()).collect();
+    let mut target: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for (i, w) in names.iter().enumerate() {
+        let k = ws_key(w);
+        let base = names[..i].iter().find(|o| {
+            let ok = ws_key(o);
+            ok == k || (ok.len() >= 4 && k.contains(ok.as_str())) || (ok.len() >= 2 && ws_initials(w) == ok && ws_initials(w).len() >= 2)
+        });
+        if let Some(b) = base {
+            let root = target.get(b).cloned().unwrap_or_else(|| b.clone());
+            target.insert(w.clone(), root);
+        }
+    }
+    // Pick the display name per group: a registry workspace if any, else for an initials match the spelled-out name.
+    let mut display: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for (w, root) in &target {
+        let cur = display.get(root).cloned().unwrap_or_else(|| root.clone());
+        let better = (registry.contains(w) && !registry.contains(&cur)) || (ws_initials(w) == ws_key(&cur) && !registry.contains(&cur));
+        if better { display.insert(root.clone(), w.clone()); }
+    }
+    for p in projects.iter_mut() {
+        let root = target.get(&p.workspace).cloned().unwrap_or_else(|| p.workspace.clone());
+        if let Some(d) = display.get(&root) { p.workspace = d.clone(); } else { p.workspace = root; }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn workspaces_merge() {
+        let mk = |n: &str, w: &str, src: &'static str| Project { id: slug(n), name: n.into(), workspace: w.into(), repo: None, vault_dir: None, source: src };
+        let mut ps = vec![mk("ZV", "ZV", "vault"), mk("Zathena Ventures", "Zathena Ventures", "vault"), mk("Caedis", "CaedisAerial", "vault"),
+            mk("OARA", "OARA", "registry"), mk("OARA and Loomward", "OARA and Loomward", "vault"), mk("Solo RPG Engine", "Solo RPG Engine", "vault"),
+            mk("RPG Engine", "RPG Engine", "vault"), mk("PaperShoots", "PaperShoots", "vault"), mk("p", "Papershoots", "vault"), mk("x", "UNSORTED", "scan")];
+        consolidate_workspaces(&mut ps);
+        let ws = |n: &str| ps.iter().find(|p| p.name == n).unwrap().workspace.clone();
+        assert_eq!(ws("ZV"), "Zathena Ventures");
+        assert_eq!(ws("OARA and Loomward"), "OARA");
+        assert_eq!(ws("Solo RPG Engine"), "RPG Engine"); // owner: similarly named workspaces are one
+        assert_eq!(ws("p"), ws("PaperShoots"));
+        assert_eq!(ws("x"), "UNSORTED");
+        let mut g = vec![mk("OARA", "OARA", "registry"), mk("GH05tkin", "GH05tkin", "registry"), mk("Nimbus Generator", "Nimbus Generator", "registry")];
+        apply_groups(&mut g, &[("OARA".into(), "Outsider Collective".into()), ("gh05tkin".into(), "OARA".into()), ("Nimbus Generator".into(), "FLY WING GENESIS".into())]);
+        assert_eq!(g[0].workspace, "Outsider Collective");
+        assert_eq!(g[1].workspace, "Outsider Collective"); // chain: GH05tkin -> OARA -> Outsider Collective
+        assert_eq!(g[2].workspace, "FLY WING GENESIS");
+    }
     #[test]
     fn registry_table() {
         let md = "x\n<!-- project-registry:start -->\n| Project | Repo root | Continuity files | Passdown entry |\n|---|---|---|---|\n| FLY WING GENESIS (Media) | `Z:\\nope` | [CONTINUITY LOG](02%20Projects/FLY%20WING%20GENESIS/Media/CONTINUITY%20LOG.md) | x |\n| BOMBSQUAD | none | x | x |\n| BOMBSQUAD Bounty Board | none | x | x |\n<!-- project-registry:end -->";

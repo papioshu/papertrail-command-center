@@ -18,7 +18,7 @@ export const api = {
   projects: (includeHidden = false) => invoke<Row[]>("get_projects", { includeHidden }),
   briefing: () => invoke<Row>("get_briefing"),
   project: (id: string) => invoke<Row>("get_project", { id }),
-  activity: (project: string | null, from: string, to: string) => invoke<Row[]>("get_activity", { project, from, to }),
+  activity: (project: string | null, from: string, to: string, workspace?: string) => invoke<Row[]>("get_activity", { project, from, to, workspace }),
   timeline: (f: Row) => invoke<{ items: Row[] }>("get_timeline", { f }),
   sessions: (agent?: string) => invoke<Row[]>("get_sessions", { agent }),
   sessionFiles: (id: string) => invoke<Row[]>("get_session_files", { id }),
@@ -49,6 +49,7 @@ export const api = {
   backup: () => invoke<string>("backup_db"),
   sparks: (days: number) => invoke<Row[]>("get_sparks", { days }),
   toggleChat: () => invoke<boolean>("toggle_chat"),
+  folders: (id: string) => invoke<Row[]>("get_folders", { id }),
 };
 
 export function on(event: string, cb: (payload: any) => void): Promise<UnlistenFn> {

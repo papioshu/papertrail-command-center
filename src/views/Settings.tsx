@@ -16,6 +16,7 @@ export default function Settings() {
       project_roots: (s.data.project_roots ?? []).join("\n"),
       presets: JSON.stringify(s.data.presets, null, 2),
       workstream_aliases: JSON.stringify(s.data.workstream_aliases, null, 2),
+      workspace_groups: JSON.stringify(s.data.workspace_groups ?? {}, null, 2),
     });
   }, [s.data]);
 
@@ -33,6 +34,7 @@ export default function Settings() {
         chat_url: form!.chat_url,
         presets: JSON.parse(form!.presets),
         workstream_aliases: JSON.parse(form!.workstream_aliases),
+        workspace_groups: JSON.parse(form!.workspace_groups),
       };
       if (p.presets && !Array.isArray(p.presets)) throw new Error("presets must be a JSON array");
       await api.saveSettings(p);
@@ -88,6 +90,10 @@ export default function Settings() {
         <Card title="Workstream aliases (JSON)">
           <textarea className="input" rows={6} value={form.workstream_aliases} onChange={(e) => setForm({ ...form, workstream_aliases: e.target.value })} />
           <div className="dim small" style={{ marginTop: 6 }}>Rename or merge git-derived workstreams, e.g. {"{\"board\": \"Skating\", \"combat\": \"Combat\"}"}.</div>
+          <div className="sep" />
+          <span className="label">Workspace groups (JSON)</span>
+          <textarea className="input" rows={7} value={form.workspace_groups} onChange={(e) => setForm({ ...form, workspace_groups: e.target.value })} style={{ marginTop: 6 }} />
+          <div className="dim small" style={{ marginTop: 6 }}>Workspace or project name → the workspace it belongs to. Chains work (GH05tkin → OARA → Outsider Collective). Similar names merge automatically.</div>
           <div className="sep" />
           <span className="label">Register a project manually</span>
           <div className="row wrap" style={{ marginTop: 6 }}>

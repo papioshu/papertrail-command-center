@@ -154,9 +154,31 @@ pub fn get_project(st: State<AppState>, id: String) -> R<Value> {
 
 /// Per-day counts for charts. Every series is a count of indexed records.
 #[tauri::command(async)]
-pub fn get_activity(st: State<AppState>, project: Option<String>, from: String, to: String) -> R<Vec<Value>> {
+pub fn get_activity(st: State<AppState>, project: Option<String>, from: String, to: String, workspace: Option<String>) -> R<Vec<Value>> {
     with(&st, |c| {
         let p = project.unwrap_or_default();
+        // A workspace aggregates its projects; the queries below filter on ?1 = project id or ''.
+        if let Some(w) = workspace.filter(|w| !w.is_empty()) {
+            let ids = rows(c, "SELECT id FROM projects WHERE coalesce(workspace_override,workspace)=?1 AND hidden=0", [&w])?;
+            let mut by: std::collections::BTreeMap<String, serde_json::Map<String, Value>> = Default::default();
+            for r in ids {
+                let id = r["id"].as_str().unwrap_or("").to_string();
+                for d in activity_rows(c, &id, &from, &to)? {
+                    let day = d["day"].as_str().unwrap_or("").to_string();
+                    let e = by.entry(day.clone()).or_insert_with(|| { let mut m = serde_json::Map::new(); m.insert("day".into(), json!(day)); m });
+                    for (k, v) in d.as_object().unwrap() {
+                        if k != "day" { let cur = e.get(k).and_then(|x| x.as_i64()).unwrap_or(0); e.insert(k.clone(), json!(cur + v.as_i64().unwrap_or(0))); }
+                    }
+                }
+            }
+            return Ok(by.into_values().map(Value::Object).collect());
+        }
+        activity_rows(c, &p, &from, &to)
+    })
+}
+
+fn activity_rows(c: &rusqlite::Connection, p: &str, from: &str, to: &str) -> R<Vec<Value>> {
+    {
         rows(
             c,
             // Single-pass aggregates joined by day (correlated subqueries over CTEs took ~9 s).
@@ -180,7 +202,7 @@ pub fn get_activity(st: State<AppState>, project: Option<String>, from: String, 
              WHERE days.day IS NOT NULL ORDER BY days.day",
             rusqlite::params![p, from, to],
         )
-    })
+    }
 }
 
 #[derive(Deserialize)]
@@ -578,4 +600,103 @@ pub fn toggle_chat(st: State<AppState>, app: tauri::AppHandle) -> R<bool> {
         .build()
         .map_err(|e| e.to_string())?;
     Ok(true)
+}
+
+/// Folder map for a project: every real folder (repo depth <= 2, vault depth <= 2) plus folders seen in git
+/// history, with what was recorded in each: commits touching it, lines changed, Claude edit calls, last change.
+#[tauri::command(async)]
+pub fn get_folders(st: State<AppState>, id: String) -> R<Vec<Value>> {
+    use std::collections::{BTreeMap, HashSet};
+    #[derive(Default)]
+    struct F { commits: HashSet<String>, changes: i64, edits: i64, last: String, exists: bool, kind: &'static str }
+    let (repo, vault, git_rows, edit_rows) = with(&st, |c| {
+        let p = rows(c, "SELECT repo_path, vault_dir FROM projects WHERE id=?1", [&id])?.into_iter().next().ok_or("unknown project")?;
+        let git = rows(c, "SELECT f.path, f.sha, coalesce(f.added,0)+coalesce(f.deleted,0) ch, coalesce(e.ts,'') ts FROM commit_files f
+                           LEFT JOIN events e ON e.source='git' AND e.ref = f.project_id || ':' || f.sha WHERE f.project_id=?1", [&id])?;
+        let edits = rows(c, "SELECT sf.path, sf.edits, coalesce(sf.last_ts,'') ts FROM session_files sf JOIN sessions s ON s.id=sf.session_id
+                             WHERE s.project_id=?1", [&id])?;
+        Ok((p["repo_path"].as_str().map(str::to_string), p["vault_dir"].as_str().map(str::to_string), git, edits))
+    })?;
+    let mut map: BTreeMap<(String, String), F> = BTreeMap::new(); // (kind, rel path)
+    let ancestors = |rel: &str| -> Vec<String> {
+        let segs: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
+        if segs.len() <= 1 { return vec!["(root files)".into()]; }
+        (1..segs.len().min(3)).map(|i| segs[..i].join("/")).collect()
+    };
+    // real folders on disk
+    fn walk(base: &Path, rel: String, depth: usize, out: &mut Vec<String>, budget: &mut usize) {
+        let Ok(rd) = std::fs::read_dir(base.join(&rel)) else { return };
+        for e in rd.flatten() {
+            if *budget == 0 { return; }
+            let n = e.file_name().to_string_lossy().into_owned();
+            if !e.path().is_dir() || n.starts_with('.') || crate::registry::EXCLUDED_DIRS.contains(&n.as_str()) { continue; }
+            *budget -= 1;
+            let r = if rel.is_empty() { n } else { format!("{rel}/{n}") };
+            out.push(r.clone());
+            if depth > 1 { walk(base, r, depth - 1, out, budget); }
+        }
+    }
+    for (kind, base) in [("repo", repo.as_deref()), ("vault", vault.as_deref())] {
+        let Some(b) = base else { continue };
+        let mut dirs = Vec::new();
+        let mut budget = 1500;
+        walk(Path::new(b), String::new(), 2, &mut dirs, &mut budget);
+        for d in dirs {
+            let f = map.entry((kind.into(), d.clone())).or_default();
+            f.exists = true;
+            f.kind = kind;
+            if kind == "vault" {
+                // newest note directly in this folder
+                if let Ok(rd) = std::fs::read_dir(Path::new(b).join(&d)) {
+                    for e in rd.flatten() {
+                        if e.file_name().to_string_lossy().ends_with(".md") {
+                            if let Some(m) = crate::util::mtime_secs(&e.path()) {
+                                let ts = crate::util::unix_to_iso(m);
+                                if ts > f.last { f.last = ts; }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for g in &git_rows {
+        let path = g["path"].as_str().unwrap_or("");
+        for a in ancestors(path) {
+            let f = map.entry(("repo".into(), a)).or_default();
+            f.kind = "repo";
+            f.commits.insert(g["sha"].as_str().unwrap_or("").to_string());
+            f.changes += g["ch"].as_i64().unwrap_or(0);
+            let ts = g["ts"].as_str().unwrap_or("");
+            if ts > f.last.as_str() { f.last = ts.to_string(); }
+        }
+    }
+    if let Some(r) = repo.as_deref() {
+        let rn = crate::util::norm(r);
+        for e in &edit_rows {
+            let abs = crate::util::norm(e["path"].as_str().unwrap_or(""));
+            let Some(rel) = abs.strip_prefix(&format!("{rn}\\")) else { continue };
+            for a in ancestors(&rel.replace('\\', "/")) {
+                // match the on-disk casing if we know the folder; norm() lowercased it
+                let key = map.keys().find(|(k, p)| k == "repo" && p.to_lowercase() == a).map(|(_, p)| p.clone()).unwrap_or(a);
+                let f = map.entry(("repo".into(), key)).or_default();
+                f.kind = "repo";
+                f.edits += e["edits"].as_i64().unwrap_or(0);
+                let ts = e["ts"].as_str().unwrap_or("");
+                if ts > f.last.as_str() { f.last = ts.to_string(); }
+            }
+        }
+    }
+    let base_exists = |kind: &str, p: &str| -> bool {
+        let b = if kind == "repo" { repo.as_deref() } else { vault.as_deref() };
+        p == "(root files)" || b.map_or(false, |b| Path::new(b).join(p).is_dir())
+    };
+    Ok(map
+        .into_iter()
+        .map(|((kind, path), f)| {
+            let exists = f.exists || base_exists(&kind, &path);
+            json!({"kind": kind, "path": path.clone(), "depth": path.matches('/').count(), "commits": f.commits.len(),
+                   "changes": f.changes, "edits": f.edits, "last_ts": if f.last.is_empty() { Value::Null } else { json!(f.last) }, "exists": exists})
+        })
+        .collect())
 }

@@ -1,9 +1,9 @@
 import { lazy, Suspense, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { api, type Row } from "../api";
-import { ago, AgentChip, Barcode, brand, day, Empty, ErrBox, ProjectActions, sessionState, short, Spark, StatusBar, useAsync, useDragScroll, useNav } from "../ui";
+import { ago, AgentChip, Barcode, brand, day, Empty, ErrBox, orderDiscoveries, ProjectActions, RadarOrderControl, sessionState, short, Spark, StatusBar, useAsync, useDragScroll, useNav, type RadarOrder } from "../ui";
 
-const counts = (p: Row) => ({ done: p.done_tasks, active: p.active_tasks, pending: p.pending_tasks, blocked: p.blocked_tasks, deferred: p.deferred_tasks });
-const sumCounts = (ps: Row[]) => ps.reduce((a: Record<string, number>, p) => { for (const [k, v] of Object.entries(counts(p))) a[k] = (a[k] || 0) + (v as number); return a; }, {});
+export const counts = (p: Row) => ({ done: p.done_tasks, active: p.active_tasks, pending: p.pending_tasks, blocked: p.blocked_tasks, deferred: p.deferred_tasks });
+export const sumCounts = (ps: Row[]) => ps.reduce((a: Record<string, number>, p) => { for (const [k, v] of Object.entries(counts(p))) a[k] = (a[k] || 0) + (v as number); return a; }, {});
 
 const REFRESH = ["projects-updated"];
 // The sphere is its own chunk: the dashboard paints first, the GPU scene arrives after.
@@ -15,7 +15,9 @@ function Radar({ names }: { names: (id: string) => string }) {
   const d = useAsync(() => api.discoveries(), [], ["discovery-updated"]);
   const ref = useDragScroll<HTMLDivElement>();
   const [busy, setBusy] = useState(false);
-  const items: Row[] = (d.data?.items ?? []).filter((x: Row) => x.status !== "dismissed").slice(0, 12);
+  const [mode, setMode] = useState<RadarOrder>("mix");
+  const [seed, setSeed] = useState(() => Date.now());
+  const items: Row[] = useMemo(() => orderDiscoveries((d.data?.items ?? []).filter((x: Row) => x.status !== "dismissed"), mode, seed).slice(0, 24), [d.data, mode, seed]);
   const set = (id: string, st: string) => api.setDiscovery(id, st).then(d.reload);
   return (
     <>
@@ -23,6 +25,7 @@ function Radar({ names }: { names: (id: string) => string }) {
         <h2>Radar · comparable tools</h2><div className="rule" />
         <span className="aside">
           {d.data?.last ? `refreshed ${ago(d.data.last)}` : "never refreshed"}
+          <RadarOrderControl mode={mode} setMode={setMode} reshuffle={() => setSeed(Date.now())} />
           <button className="btn sm" disabled={busy} onClick={() => { setBusy(true); api.discoveryRefresh().finally(() => setTimeout(() => setBusy(false), 60000)); }}>{busy ? "Fetching…" : "Refresh"}</button>
           <button className="btn sm" onClick={() => nav("discovery")}>All</button>
         </span>
@@ -118,7 +121,7 @@ function AccessCard({ ws, projects, on, lit, onClick, onHover }: { ws: string; p
   );
 }
 
-function Ticket({ p, spark }: { p: Row; spark: number[] }) {
+export function Ticket({ p, spark }: { p: Row; spark: number[] }) {
   const { nav } = useNav();
   const claude = p.last_claude ? JSON.parse(p.last_claude) : null;
   const codex = p.last_codex ? JSON.parse(p.last_codex) : null;
@@ -223,7 +226,6 @@ export default function Overview() {
     return (id: string) => m.get(id) ?? days.map(() => 0);
   }, [sparkRows.data]);
   const [unsorted, setUnsorted] = useState(false);
-  const [picked, setPicked] = useState<string | null>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
   const [cardWs, setCardWs] = useState<string | null>(null); // workspace card under the pointer
   const [mapWs, setMapWs] = useState<string | null>(null); // workspace of the node under the pointer
@@ -238,8 +240,7 @@ export default function Overview() {
     const last = (list: Row[]) => list.map((p) => p.last_activity ?? "").sort().pop() ?? "";
     return [...m.entries()].sort((a, c) => last(c[1]).localeCompare(last(a[1])));
   }, [ps, unsorted]);
-  const ws = picked ?? workspaces[0]?.[0] ?? null;
-  const wsProjects = workspaces.find(([w]) => w === ws)?.[1] ?? [];
+  const ws: string | null = null; // cards open the workspace page now
   const sessions: Row[] = b?.sessions ?? [];
   const live = sessions.filter((s) => sessionState(s.updated).cls).length;
   const now = new Date();
@@ -285,21 +286,12 @@ export default function Overview() {
         <label className="aside"><input type="checkbox" checked={unsorted} onChange={(e) => setUnsorted(e.target.checked)} /> include unsorted repos</label>
       </div>
       <div className="deck" ref={deckRef} style={{ cursor: "grab" }}>
-        {workspaces.map(([w, list]) => <AccessCard key={w} ws={w} projects={list} on={w === ws} lit={w === mapWs || w === cardWs} onClick={() => setPicked(w)} onHover={setCardWs} />)}
+        {workspaces.map(([w, list]) => <AccessCard key={w} ws={w} projects={list} on={w === ws} lit={w === mapWs || w === cardWs} onClick={() => nav("workspace", { ws: w })} onHover={setCardWs} />)}
         {!workspaces.length && !projects.loading && <Empty>No projects yet. Set the vault and project roots in Settings.</Empty>}
       </div>
 
       <Radar names={(id) => { const n = ps.find((p) => p.id === id)?.name ?? id; return n.match(/\((.+)\)/)?.[1] ?? n; }} />
 
-      {ws && (
-        <>
-          <div className="sect">
-            <h2>{ws}</h2><div className="rule" />
-            <span className="aside">{wsProjects.length} on file · by last activity</span>
-          </div>
-          <div className="tickets">{wsProjects.map((p) => <Ticket key={p.id} p={p} spark={sparks(p.id)} />)}</div>
-        </>
-      )}
 
       <div className="sect"><h2>Briefing</h2><div className="rule" /><span className="aside">Since your last start</span></div>
       <div className="split">

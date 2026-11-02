@@ -187,6 +187,7 @@ pub fn run() {
             commands::backup_db,
             commands::get_sparks,
             commands::toggle_chat,
+            commands::get_folders,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -22,7 +22,7 @@ export function brand(workspace: string): { img: string | null; glow: string } {
 }
 
 /* ---------- navigation ---------- */
-export type View = "overview" | "projects" | "agents" | "launchpad" | "graph" | "discovery" | "timeline" | "settings";
+export type View = "overview" | "workspace" | "projects" | "agents" | "launchpad" | "graph" | "discovery" | "timeline" | "settings";
 export type NavFn = (v: View, params?: Row) => void;
 export const NavCtx = createContext<{ nav: NavFn; params: Row; launch: (p: Row, agent?: "claude" | "codex", mode?: LaunchReq["mode"], preset?: string) => void }>({
   nav: () => {},
@@ -216,7 +216,7 @@ export function DayChart({ rows, series, height = 170, onPick, from, to }: { row
   const max = Math.max(1, ...filled.map((r) => series.reduce((a, s) => a + (r[s.key] || 0), 0)));
   const bw = (W - pad.l - pad.r) / Math.max(1, filled.length);
   const y = (v: number) => pad.t + (height - pad.t - pad.b) * (1 - v / max);
-  const ticks = [0, Math.round(max / 2), max];
+  const ticks = [...new Set([0, Math.round(max / 2), max])];
   const labelEvery = Math.ceil(filled.length / 10);
   return (
     <div>
@@ -510,5 +510,37 @@ export function Spark({ values, width = 150, height = 26, color = "var(--violet-
       <line x1={0} x2={width} y1={height - 0.5} y2={height - 0.5} stroke="var(--line)" />
       {values.map((v, i) => v ? <rect key={i} x={i * bw + 1} y={height - 1 - (v / max) * (height - 3)} width={Math.max(1, bw - 2)} height={(v / max) * (height - 3)} fill={color} rx={1}><title>{v}</title></rect> : null)}
     </svg>
+  );
+}
+
+/* ---------- discovery ordering (radar explore) ---------- */
+export type RadarOrder = "top" | "shuffle" | "mix";
+/** top = by score; shuffle = seeded random; mix = round-robin across topics so one topic can't fill the row. */
+export function orderDiscoveries(items: Row[], mode: RadarOrder, seed: number): Row[] {
+  if (mode === "top") return items;
+  if (mode === "shuffle") {
+    let s = seed >>> 0 || 1;
+    const rnd = () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296);
+    const a = items.slice();
+    for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+    return a;
+  }
+  const topic = (x: Row) => String(x.reason ?? "").match(/topic "([^"]+)"/)?.[1] ?? x.source ?? "other";
+  const groups = new Map<string, Row[]>();
+  for (const x of items) groups.set(topic(x), [...(groups.get(topic(x)) ?? []), x]);
+  const lists = [...groups.values()];
+  const out: Row[] = [];
+  for (let i = 0; out.length < items.length; i++) for (const l of lists) if (l[i]) out.push(l[i]);
+  return out;
+}
+export function RadarOrderControl({ mode, setMode, reshuffle }: { mode: RadarOrder; setMode: (m: RadarOrder) => void; reshuffle: () => void }) {
+  return (
+    <div className="seg" title="Top = by relevance score · Shuffle = random explore · Mix = one of each topic in turn">
+      {(["top", "shuffle", "mix"] as RadarOrder[]).map((m) => (
+        <button key={m} className={mode === m ? "on" : ""} onClick={() => { if (m === "shuffle" && mode === "shuffle") reshuffle(); setMode(m); if (m === "shuffle") reshuffle(); }}>
+          {m === "shuffle" && mode === "shuffle" ? "↻ SHUFFLE" : m.toUpperCase()}
+        </button>
+      ))}
+    </div>
   );
 }

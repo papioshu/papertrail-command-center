@@ -180,7 +180,7 @@ pub fn refresh(conn: &Connection) -> Result<usize, String> {
             std::thread::sleep(Duration::from_secs(7));
         }
         let url = format!(
-            "https://api.github.com/search/repositories?q=topic:{}+created:%3E{}+stars:%3E30&sort=stars&order=desc&per_page=8",
+            "https://api.github.com/search/repositories?q=topic:{}+created:%3E{}+stars:%3E30&sort=stars&order=desc&per_page=12",
             t,
             since
         );

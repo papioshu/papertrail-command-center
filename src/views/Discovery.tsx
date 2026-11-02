@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, on, type Row } from "../api";
-import { ago, Card, Empty, ErrBox, Modal, useAsync } from "../ui";
+import { ago, Card, Empty, ErrBox, Modal, orderDiscoveries, RadarOrderControl, useAsync, type RadarOrder } from "../ui";
 
 /* All text here comes from public feeds: rendered as plain text, never executed or launched. */
 export default function Discovery() {
@@ -11,6 +11,8 @@ export default function Discovery() {
   const [source, setSource] = useState("");
   const [q, setQ] = useState("");
   const [running, setRunning] = useState(false);
+  const [order, setOrder] = useState<RadarOrder>("top");
+  const [seed, setSeed] = useState(() => Date.now());
   const [compare, setCompare] = useState<string[]>([]);
   const [showCompare, setShowCompare] = useState(false);
   const [bos, setBos] = useState<{ item: Row; project: string; preview?: Row; done?: string; error?: string } | null>(null);
@@ -23,12 +25,12 @@ export default function Discovery() {
 
   const items: Row[] = d.data?.items ?? [];
   const pname = (id: string) => projects.data?.find((p) => p.id === id)?.name ?? id;
-  const list = useMemo(() => items.filter((x) => {
+  const list = useMemo(() => orderDiscoveries(items.filter((x) => {
     const ps: string[] = JSON.parse(x.projects || "[]");
     return (status === "all" || x.status === status) && (!source || x.source === source) &&
       (!proj || ps.includes(proj) || x.project_link === proj) &&
       (!q || `${x.name} ${x.description} ${x.topics}`.toLowerCase().includes(q.toLowerCase()));
-  }), [items, status, source, proj, q]);
+  }), order, seed), [items, status, source, proj, q, order, seed]);
   const set = (id: string, st?: string, link?: string) => api.setDiscovery(id, st, link).then(d.reload);
 
   async function openBos(item: Row, project: string) {
@@ -61,6 +63,7 @@ export default function Discovery() {
             {(projects.data ?? []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
           <input className="input" placeholder="search" value={q} onChange={(e) => setQ(e.target.value)} />
+          <RadarOrderControl mode={order} setMode={setOrder} reshuffle={() => setSeed(Date.now())} />
           <span className="dim small mono">{list.length} shown</span>
         </div>
       </Card>

@@ -5,6 +5,7 @@ import Overview from "./views/Overview";
 
 // Heavy views load only when opened.
 const Projects = lazy(() => import("./views/Projects"));
+const Workspace = lazy(() => import("./views/Workspace"));
 const Agents = lazy(() => import("./views/Agents"));
 const Launchpad = lazy(() => import("./views/Launchpad"));
 const Graph = lazy(() => import("./views/Graph"));
@@ -74,7 +75,7 @@ export default function App() {
   const nav = (v: View, p: Row = {}) => { setView(v); setParams(p); };
   // From a project page, Escape or the mouse "back" button returns to the dashboard home (the map).
   useEffect(() => {
-    if (view !== "projects" || !params.id) return;
+    if (!((view === "projects" && params.id) || view === "workspace")) return;
     const key = (e: KeyboardEvent) => { if (e.key === "Escape" && !document.querySelector(".scrim")) nav("overview"); };
     const mouse = (e: MouseEvent) => { if (e.button === 3) { e.preventDefault(); nav("overview"); } };
     window.addEventListener("keydown", key);
@@ -83,7 +84,7 @@ export default function App() {
   }, [view, params]);
   const launch = (p: Row, agent?: "claude" | "codex", mode?: LaunchReq["mode"], preset?: string) => setLaunching({ p, agent, mode, preset });
   const busy = status.state === "indexing" || status.state === "discovery";
-  const page = { overview: <Overview />, projects: <Projects />, agents: <Agents />, launchpad: <Launchpad />, graph: <Graph />, discovery: <Discovery />, timeline: <Timeline />, settings: <Settings /> }[view];
+  const page = { overview: <Overview />, workspace: <Workspace />, projects: <Projects />, agents: <Agents />, launchpad: <Launchpad />, graph: <Graph />, discovery: <Discovery />, timeline: <Timeline />, settings: <Settings /> }[view];
 
   return (
     <NavCtx.Provider value={{ nav, params, launch }}>

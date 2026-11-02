@@ -297,3 +297,24 @@ pre.doc { margin: 0; white-space: pre-wrap; word-break: break-word; font-family:
 .metaline { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.14em; color: var(--muted); text-transform: uppercase; padding: 6px 0; border-bottom: 1px solid rgba(44, 35, 80, 0.6); }
 .metaline b { color: var(--fg); font-weight: 400; }
 @media (max-width: 1250px) { .home { grid-template-columns: 1fr; } .sphere { min-height: 460px; } }
+
+/* --- folder heat map --- */
+.frow { display: grid; grid-template-columns: 16px minmax(120px, 1.2fr) minmax(80px, 1fr) 54px 46px 74px; gap: 10px; align-items: center; padding: 4px 6px; border-bottom: 1px solid rgba(44, 35, 80, 0.45); cursor: pointer; }
+.frow:hover { background: rgba(139, 92, 246, 0.08); }
+.frow.head { cursor: default; font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--dim); }
+.frow.head:hover { background: none; }
+.frow .tw { color: var(--muted); text-align: center; }
+.frow .track { height: 7px; background: rgba(7, 5, 15, 0.6); border-radius: 2px; overflow: hidden; }
+.frow .fill { height: 100%; }
+
+/* --- workspace overview --- */
+.wshero { display: flex; gap: 32px; align-items: stretch; padding: 22px; border: 1px solid var(--line); border-radius: 0.9rem;
+  background: radial-gradient(80% 120% at 0% 0%, color-mix(in srgb, var(--glow) 14%, transparent), transparent 60%), rgba(22, 16, 43, 0.8); }
+.wshero .acard { height: 286px; aspect-ratio: auto; }
+.wsname { margin: 6px 0 0; font-family: var(--font-display); font-weight: 300; font-size: 34px; letter-spacing: 0.22em; text-transform: uppercase; }
+.wshero .when { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.2em; color: var(--muted); text-transform: uppercase; margin-top: 6px; }
+
+/* --- 3D graph --- */
+.graph-wrap.g3d { background: radial-gradient(60% 60% at 50% 50%, rgba(60, 40, 140, 0.22), rgba(7, 5, 15, 0.85) 70%), rgba(7, 5, 15, 0.85); }
+.graph-wrap.g3d svg { cursor: grab; touch-action: none; }
+.graph-wrap.g3d svg:active { cursor: grabbing; }

@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import FolderMap from "./FolderMap";
 import { api, type Row } from "../api";
 import {
   ago, AgentChip, Barcode, brand, Card, StatusBar, DataTable, DayChart, Empty, ErrBox, Modal, ProjectActions, RangePicker, rangeFor, sessionState, short, useAsync, useNav, type Col, type Range,
@@ -101,6 +102,8 @@ function Detail({ id }: { id: string }) {
   const settings = useAsync(() => api.settings(), []);
   const [range, setRange] = useState<Range>(rangeFor("90d"));
   const act = useAsync(() => api.activity(id, range.from, range.to), [id, range.from, range.to], ["projects-updated"]);
+  const r30 = useMemo(() => rangeFor("30d"), []);
+  const act30 = useAsync(() => api.activity(id, r30.from, r30.to), [id], ["projects-updated"]);
   const commits = useAsync(() => api.timeline({ project: id, kind: "commit", limit: 2000 }), [id], ["projects-updated"]);
   const docs = useAsync(() => api.timeline({ project: id, limit: 2000 }), [id], ["projects-updated"]);
   const [tab, setTab] = useState("overview");
@@ -175,6 +178,7 @@ function Detail({ id }: { id: string }) {
         ))}
       </div>
       {tab === "overview" && (
+        <div className="col" style={{ gap: 22 }}>
         <div className="split">
           <div className="pass" style={{ gridTemplateColumns: "1fr 96px" }}>
             <div className="main-part">
@@ -205,6 +209,57 @@ function Detail({ id }: { id: string }) {
               ) : <Empty>No TASKS.md found</Empty>}
             </div>
           </section>
+        </div>
+          <section className="card">
+            <div className="card-head"><span className="label">Activity · last 30 days</span><div className="right"><button className="btn sm" onClick={() => setTab("activity")}>Full range</button></div></div>
+            <div className="card-body">
+              {act30.data ? (
+                <DayChart rows={act30.data} from={r30.from} to={r30.to} height={150} onPick={(day) => setPick({ day })}
+                  series={[
+                    { key: "commits", label: "Commits", color: "var(--violet)" },
+                    { key: "claude_prompts", label: "Claude prompts", color: "var(--claude)" },
+                    { key: "codex_sessions", label: "Codex threads", color: "var(--codex)" },
+                    { key: "log_entries", label: "Log entries", color: "var(--violet-soft)" },
+                    { key: "decisions", label: "Decisions", color: "var(--gold)" },
+                  ]} />
+              ) : <div className="skeleton" />}
+            </div>
+          </section>
+          <div className="split">
+            <FolderMap projectId={id} files={files} />
+            <div className="col" style={{ gap: 22 }}>
+              <section className="card">
+                <div className="card-head"><span className="label">Workstreams</span><div className="right"><button className="btn sm" onClick={() => setTab("work")}>Detail</button></div></div>
+                <div className="card-body">
+                  {workstreams.length ? workstreams.slice(0, 8).map((w) => (
+                    <div key={w.name} className="hbar" onClick={() => setPick({ ws: w.raw[0] })} title={`folders: ${w.raw.join(", ")}`}>
+                      <span className="mono small ellipsis">{w.name}</span>
+                      <div className="track"><div className="fill" style={{ width: `${(100 * w.commits) / maxWs}%` }} /></div>
+                      <span className="mono small dim">{w.commits}</span>
+                    </div>
+                  )) : <Empty>No git history indexed</Empty>}
+                </div>
+              </section>
+              <section className="card">
+                <div className="card-head"><span className="label">Agent split</span></div>
+                <div className="card-body col" style={{ gap: 8 }}>
+                  {[["Sessions", cl.sessions, cx.sessions], ["Commits (trailer)", cl.commits, cx.commits], ["Open tasks tagged", cl.handoffs, cx.handoffs]].map(([label, a, b]) => {
+                    const t = Math.max(1, (a as number) + (b as number));
+                    return (
+                      <div key={label as string}>
+                        <div className="row small"><span style={{ flex: 1 }}>{label}</span><span className="mono" style={{ color: "var(--claude)" }}>{a}</span><span className="dim">/</span><span className="mono" style={{ color: "var(--codex)" }}>{b}</span></div>
+                        <div style={{ display: "flex", height: 6, borderRadius: 3, overflow: "hidden", background: "rgba(7,5,15,.6)", marginTop: 3 }}>
+                          <div style={{ width: `${(100 * (a as number)) / t}%`, background: "var(--claude)" }} />
+                          <div style={{ width: `${(100 * (b as number)) / t}%`, background: "var(--codex)" }} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <div className="dim small">Claude {cl.prompts} prompts · {cl.edits} recorded edits. Codex edits aren't recorded.</div>
+                </div>
+              </section>
+            </div>
+          </div>
         </div>
       )}
       {tab === "activity" && (
