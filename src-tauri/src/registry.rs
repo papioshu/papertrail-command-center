@@ -35,7 +35,7 @@ pub fn defaults() -> Value {
         "close_to_tray": true,
         "workstream_aliases": {},
         "discovery_refresh_hours": 24,
-        "chat_url": "https://discord.com/channels/@me",
+        "chat_url": "https://discord.com/app",
         "presets": [
             {"id":"continue","name":"Continue last task","agent":"any","project":null,
              "task":"Resolve the latest handoff and next logical action, review the worktree, and resume that work."},
