@@ -207,6 +207,45 @@ fn mentions(md: &str, me: &Project, all: &[Project]) -> Vec<(String, i64)> {
         .collect()
 }
 
+/// Newest Markdown note in the project's vault folder, as one upserted timeline event (real file mtime).
+/// Bounded walk: depth 3, 3000 entries; skips repos and build folders.
+fn index_vault_activity(conn: &Connection, p: &Project) -> Result<(), String> {
+    let Some(dir) = p.vault_dir.as_deref().map(Path::new) else { return Ok(()) };
+    let mut best: Option<(i64, PathBuf)> = None;
+    let mut budget = 3000usize;
+    fn walk(d: &Path, depth: usize, budget: &mut usize, best: &mut Option<(i64, PathBuf)>) {
+        let Ok(rd) = std::fs::read_dir(d) else { return };
+        for e in rd.flatten() {
+            if *budget == 0 { return; }
+            *budget -= 1;
+            let path = e.path();
+            let name = e.file_name().to_string_lossy().into_owned();
+            if path.is_dir() {
+                if depth > 0 && !name.starts_with('.') && name != "repo" && !crate::registry::EXCLUDED_DIRS.contains(&name.as_str()) {
+                    walk(&path, depth - 1, budget, best);
+                }
+            } else if name.ends_with(".md") {
+                if let Some(m) = mtime_secs(&path) {
+                    if best.as_ref().map_or(true, |(b, _)| m > *b) { *best = Some((m, path)); }
+                }
+            }
+        }
+    }
+    walk(dir, 3, &mut budget, &mut best);
+    let Some((m, file)) = best else { return Ok(()) };
+    let ts = crate::util::unix_to_iso(m);
+    let rel = file.strip_prefix(dir).map(|r| r.display().to_string()).unwrap_or_else(|_| file.display().to_string());
+    conn.execute(
+        "INSERT INTO events(project_id,ts,day,kind,source,agent,title,detail,ref,evidence,source_file)
+         VALUES(?1,?2,?3,'note','vault',NULL,?4,?5,?6,?7,?7)
+         ON CONFLICT(source,ref) DO UPDATE SET ts=excluded.ts, day=excluded.day, title=excluded.title, detail=excluded.detail,
+           evidence=excluded.evidence, source_file=excluded.source_file",
+        params![p.id, ts, crate::util::local_day(&ts), format!("Vault note updated: {rel}"), "newest Markdown file in the project's Book of Secrets folder", format!("vault:{}", p.id), file.display().to_string()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 fn index_git(conn: &Connection, p: &Project) -> Result<(), String> {
     let Some(repo) = p.repo.as_deref().map(Path::new).filter(|r| r.join(".git").exists()) else { return Ok(()) };
     let st = gitscan::status(repo);
@@ -341,6 +380,9 @@ pub fn refresh(conn: &Connection, emit: Emit) {
         if let Err(e) = index_continuity(conn, p, &projects) {
             db::record_error(conn, &format!("continuity:{}", p.id), &e);
         }
+        if let Err(e) = index_vault_activity(conn, p) {
+            db::record_error(conn, &format!("vault:{}", p.id), &e);
+        }
         if let Err(e) = index_git(conn, p) {
             db::record_error(conn, &format!("git:{}", p.id), &e);
         }
@@ -384,7 +426,7 @@ pub fn load_projects(conn: &Connection) -> Vec<Project> {
                 workspace: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
                 repo: r.get(3)?,
                 vault_dir: r.get(4)?,
-                source: match src.as_str() { "registry" => "registry", "manual" => "manual", _ => "scan" },
+                source: match src.as_str() { "registry" => "registry", "manual" => "manual", "vault" => "vault", _ => "scan" },
             })
         })
         .map(|it| it.flatten().collect())

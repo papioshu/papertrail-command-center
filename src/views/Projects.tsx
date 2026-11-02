@@ -150,7 +150,10 @@ function Detail({ id }: { id: string }) {
 
   return (
     <div>
-      <button className="btn sm ghost" onClick={() => nav("projects")} style={{ marginBottom: 14 }}>← All projects</button>
+      <div className="row" style={{ marginBottom: 14 }}>
+        <button className="btn sm" onClick={() => nav("overview")}>← Dashboard</button>
+        <button className="btn sm ghost" onClick={() => nav("projects")}>All projects</button>
+      </div>
       <div className="hero" style={{ marginBottom: 26 }}>
         <div style={{ minWidth: 0 }}>
           <div className="row"><span className="label" style={{ color: b.glow }}>{p.workspace}</span><span className="chip">{p.source === "registry" ? "Book of Secrets" : p.source}</span>

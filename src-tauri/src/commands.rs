@@ -571,7 +571,7 @@ pub fn toggle_chat(st: State<AppState>, app: tauri::AppHandle) -> R<bool> {
     tauri::WebviewWindowBuilder::new(&app, "chat", tauri::WebviewUrl::External(url.parse().map_err(|e| format!("{e}"))?))
         .title("PAPERTRAIL // CHAT")
         // Must match the main window's flags: webviews sharing a profile need identical browser args.
-        .additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --renderer-process-limit=1 --disable-background-networking")
+        .additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --renderer-process-limit=1 --disable-gpu-rasterization --disable-background-networking")
         .inner_size(width, size.height.max(500.0))
         .position(x, pos.y)
         .background_color(tauri::window::Color(11, 8, 20, 255))

@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
 pub struct AppState {
     pub db: Mutex<rusqlite::Connection>,
@@ -40,9 +40,19 @@ fn memory_target(w: &tauri::WebviewWindow, low: bool) {
     });
 }
 
+/// Tell WebView2 whether the page is on screen. Invisible = document hidden + rendering stopped
+/// (a minimized window otherwise still reports itself visible and focused).
+fn webview_visible(w: &tauri::WebviewWindow, visible: bool) {
+    #[cfg(windows)]
+    let _ = w.with_webview(move |wv| unsafe {
+        let _ = wv.controller().SetIsVisible(visible);
+    });
+}
+
 fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         memory_target(&w, false);
+        webview_visible(&w, true);
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
@@ -119,6 +129,18 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|w, ev| {
+            if w.label() == "main" {
+                match ev {
+                    WindowEvent::Resized(_) => {
+                        if let Some(ww) = w.app_handle().get_webview_window("main") {
+                            let minimized = ww.is_minimized().unwrap_or(false);
+                            webview_visible(&ww, !minimized);
+                            let _ = ww.emit("window-minimized", minimized);
+                        }
+                    }
+                    _ => {}
+                }
+            }
             if let WindowEvent::CloseRequested { api, .. } = ev {
                 let st = w.app_handle().state::<AppState>();
                 let to_tray = st.db.lock().map(|c| registry::Config::load(&c).close_to_tray).unwrap_or(true);
@@ -128,6 +150,7 @@ pub fn run() {
                     let _ = w.hide();
                     if let Some(ww) = w.app_handle().get_webview_window("main") {
                         memory_target(&ww, true);
+                        webview_visible(&ww, false);
                     }
                 }
             }

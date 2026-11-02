@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Row } from "../api";
+import { on, type Row } from "../api";
 import { brand } from "../ui";
-import { faceAngles, layoutNodes, qualityTier, SphereEngine, type SphereLink, type SphereNode } from "./engine";
+import { faceAngles, layoutNodes, liveEngines, qualityTier, SphereEngine, type SphereLink, type SphereNode } from "./engine";
 
 /* Interactive Book of Secrets sphere. Modes:
    - "gpu": animated WebGL2 (30 fps cap, 12 fps when idle, paused when hidden/unfocused/off-screen)
@@ -16,8 +16,8 @@ const hex = (h: string): [number, number, number] => {
 };
 const daysSince = (ts?: string | null) => (ts ? Math.max(0, (Date.now() - Date.parse(ts.length === 10 ? ts + "T12:00:00" : ts)) / 864e5) : 999);
 
-export default function Sphere({ projects, links, selected, onHover, onOpen }: {
-  projects: Row[]; links: Row[]; selected: string | null; onHover: (id: string | null) => void; onOpen: (id: string) => void;
+export default function Sphere({ projects, links, selected, highlightWorkspace, onHover, onOpen }: {
+  projects: Row[]; links: Row[]; selected: string | null; highlightWorkspace?: string | null; onHover: (id: string | null) => void; onOpen: (id: string) => void;
 }) {
   const canvas = useRef<HTMLCanvasElement | null>(null);
   const wrap = useRef<HTMLDivElement>(null);
@@ -68,7 +68,7 @@ export default function Sphere({ projects, links, selected, onHover, onOpen }: {
         engine.current = e;
         const m: Mode = software || reduced ? "static" : "gpu";
         setMode(m);
-        (window as any).__sphereStats = () => ({ mode: m, renderer, particles: e.particleCount, fps: e.fps, running: e.running });
+        (window as any).__sphereStats = () => ({ mode: m, renderer, particles: e.particleCount, fps: e.fps, running: e.running, engines: liveEngines() });
         e.draw();
         if (m === "gpu" && document.visibilityState === "visible" && document.hasFocus()) e.start();
       } catch (err) {
@@ -89,21 +89,23 @@ export default function Sphere({ projects, links, selected, onHover, onOpen }: {
   // Pause when hidden, unfocused or scrolled out of view; idle → 12 fps; activity → 30 fps.
   useEffect(() => {
     let visible = true;
+    let active = true; // native signal: false while minimized (WebView2 still reports visible + focused then)
     let idleTimer = 0;
     const sync = () => {
       const e = engine.current;
       if (!e || mode !== "gpu") return;
-      const on = visible && document.visibilityState === "visible" && document.hasFocus() && !transitioning.current;
-      if (on) e.start(); else e.stop();
+      const run = active && visible && document.visibilityState === "visible" && document.hasFocus() && !transitioning.current;
+      if (run) e.start(); else e.stop();
     };
     const wake = () => {
       const e = engine.current;
       if (!e) return;
-      e.fps = 30;
+      e.fps = 24;
       clearTimeout(idleTimer);
-      idleTimer = window.setTimeout(() => { if (engine.current) engine.current.fps = 12; }, 45000);
+      idleTimer = window.setTimeout(() => { if (engine.current) engine.current.fps = 10; }, 45000);
     };
     const io = new IntersectionObserver(([en]) => { visible = en.isIntersecting; sync(); });
+    const offActive = on("window-minimized", (m: boolean) => { active = !m; sync(); });
     if (wrap.current) io.observe(wrap.current);
     document.addEventListener("visibilitychange", sync);
     window.addEventListener("focus", sync);
@@ -113,6 +115,7 @@ export default function Sphere({ projects, links, selected, onHover, onOpen }: {
     sync();
     return () => {
       io.disconnect();
+      offActive.then((f) => f());
       document.removeEventListener("visibilitychange", sync);
       window.removeEventListener("focus", sync);
       window.removeEventListener("blur", sync);
@@ -128,6 +131,29 @@ export default function Sphere({ projects, links, selected, onHover, onOpen }: {
     e.focus = selected ? e.index(selected) : -1;
     if (!e.running) e.draw();
   }, [selected, mode]);
+
+  // Workspace card hover lights that workspace's nodes on the map.
+  useEffect(() => {
+    const e = engine.current;
+    if (!e) return;
+    e.wsHover = e.wsIdx(highlightWorkspace ?? null);
+    if (!e.running) e.draw();
+  }, [highlightWorkspace, mode]);
+
+  // Wheel over the map zooms the map only; elsewhere the page scrolls as usual (needs a non-passive listener).
+  useEffect(() => {
+    const el = wrap.current;
+    if (!el) return;
+    const onWheelNative = (ev: WheelEvent) => {
+      const e = engine.current;
+      if (!e) return;
+      ev.preventDefault();
+      e.dist = Math.max(2.3, Math.min(4.6, e.dist + ev.deltaY * 0.0015));
+      if (!e.running) e.draw();
+    };
+    el.addEventListener("wheel", onWheelNative, { passive: false });
+    return () => el.removeEventListener("wheel", onWheelNative);
+  }, [mode]);
 
   /* --- pointer: hover pick, drag to rotate, click to open --- */
   const drag = useRef<{ x: number; y: number; yaw: number; tilt: number; moved: boolean } | null>(null);
@@ -178,12 +204,6 @@ export default function Sphere({ projects, links, selected, onHover, onOpen }: {
     const id = pick(ev.clientX, ev.clientY);
     if (id) open(id);
   };
-  const onWheel = (ev: React.WheelEvent) => {
-    const e = engine.current;
-    if (!e) return;
-    e.dist = Math.max(2.4, Math.min(4.6, e.dist + ev.deltaY * 0.0015));
-    if (!e.running) e.draw();
-  };
 
   /** Rotate the node to the front and zoom in, then hand over to the project dashboard. */
   function open(id: string) {
@@ -211,19 +231,38 @@ export default function Sphere({ projects, links, selected, onHover, onOpen }: {
 
   // Labels: hovered, selected and the three most recently active front-facing nodes. Restrained on purpose.
   const recent = useMemo(() => [...projects].sort((a, b) => String(b.last_activity ?? "").localeCompare(String(a.last_activity ?? ""))).slice(0, 3).map((p) => p.id), [projects]);
-  const shown = labels.filter((l) => l.z > -0.05 && (l.id === hover || l.id === selected || recent.includes(l.id)));
+  void recent;
+  // Every project is named, but labels never pile up: place by priority (hover/selected, lit workspace,
+  // front-most) and drop any lower-priority label whose box would overlap one already placed.
+  const shortName = (n?: string) => (n ? n.match(/\((.+)\)/)?.[1] ?? n : "");
+  const shown = useMemo(() => {
+    const pri = (l: { id: string; z: number }) => {
+      const p = byId.get(l.id);
+      return (l.id === hover || l.id === selected ? 10 : 0) + (highlightWorkspace && p?.workspace === highlightWorkspace ? 5 : 0) + l.z;
+    };
+    const placed: { x0: number; y0: number; x1: number; y1: number }[] = [];
+    const out: typeof labels = [];
+    for (const l of [...labels].sort((a, b) => pri(b) - pri(a))) {
+      const w = shortName(byId.get(l.id)?.name).length * 7.4 + 18, box = { x0: l.x + 10, y0: l.y - 10, x1: l.x + 10 + w, y1: l.y + 6 };
+      const hit = placed.some((b) => box.x0 < b.x1 && box.x1 > b.x0 && box.y0 < b.y1 && box.y1 > b.y0);
+      if (hit && pri(l) < 10) continue;
+      placed.push(box);
+      out.push(l);
+    }
+    return out;
+  }, [labels, hover, selected, highlightWorkspace, byId]);
 
   if (mode === "svg") return <SvgFallback projects={projects} links={sLinks} selected={selected} onHover={onHover} onOpen={onOpen} />;
   return (
-    <div ref={wrap} className="sphere" onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={() => setHoverId(null)} onWheel={onWheel}
+    <div ref={wrap} className="sphere" onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={() => setHoverId(null)}
       style={{ cursor: hover ? "pointer" : "grab" }}>
       {shown.map((l) => {
         const p = byId.get(l.id);
-        const hot = l.id === hover || l.id === selected;
+        const hot = l.id === hover || l.id === selected || (!!highlightWorkspace && p?.workspace === highlightWorkspace);
         return (
-          <div key={l.id} className={`slabel ${hot ? "hot" : ""}`} style={{ transform: `translate(${l.x + 12}px, ${l.y - 8}px)` }}>
-            <span className="n">{p?.name}</span>
-            {hot && <span className="m">{p?.workspace}</span>}
+          <div key={l.id} className={`slabel ${hot ? "hot" : ""}`} style={{ transform: `translate(${l.x + 14}px, ${l.y - 8}px)`, opacity: hot ? 1 : l.z > 0 ? 0.6 + 0.4 * l.z : 0.32 + 0.25 * (1 + l.z), zIndex: hot ? 3 : l.z > 0 ? 2 : 1 }}>
+            <span className="n">{shortName(p?.name)}</span>
+            {(l.id === hover || l.id === selected) && shortName(p?.name) !== p?.workspace && <span className="m">{p?.workspace}</span>}
           </div>
         );
       })}

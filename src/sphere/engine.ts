@@ -12,7 +12,7 @@ export type SphereNode = {
 };
 export type SphereLink = { a: string; b: string; n: number };
 
-const FLOATS = 15; // pos3 axis3 color3 size speed kind node phase lift
+const FLOATS = 16; // pos3 axis3 color3 size speed kind node phase lift ws
 
 const VS = `#version 300 es
 layout(location=0) in vec3 a_pos;
@@ -20,8 +20,9 @@ layout(location=1) in vec3 a_axis;
 layout(location=2) in vec3 a_color;
 layout(location=3) in vec4 a_p; // size, speed, kind, node
 layout(location=4) in vec2 a_q; // phase, lift
+layout(location=5) in float a_ws; // workspace index (-1 none)
 uniform mat3 u_model;
-uniform float u_time, u_dist, u_focal, u_aspect, u_dpr, u_hover, u_hoverAge, u_focus;
+uniform float u_time, u_dist, u_focal, u_aspect, u_dpr, u_hover, u_hoverAge, u_focus, u_ws;
 out vec3 v_color;
 out float v_alpha;
 
@@ -62,7 +63,9 @@ void main() {
   float depth = u_dist - w.z;
   gl_Position = vec4(w.x * u_focal / u_aspect, w.y * u_focal, 0.0, depth);
   float facing = clamp(0.5 + 0.5 * w.z, 0.0, 1.0); // back of the sphere is dimmer
+  bool wsLit = u_ws >= 0.0 && abs(a_ws - u_ws) < 0.5;
   float hoverBoost = mine ? 1.8 : (u_hover >= 0.0 && node >= 0.0 ? 0.55 : 1.0);
+  if (wsLit) { hoverBoost = 2.2; size *= 1.3; }
   float focusDim = (u_focus >= 0.0 && node >= 0.0 && abs(node - u_focus) > 0.5) ? 0.4 : 1.0;
   gl_PointSize = max(1.0, size * u_dpr * (1.0 + ripple * 2.5) * (mine ? 1.35 : 1.0) / depth * 3.0);
   v_color = a_color * (1.0 + ripple * 2.0);
@@ -100,7 +103,7 @@ precision mediump float;
 in float v_a;
 uniform vec3 u_lcolor;
 out vec4 o;
-void main() { vec3 c = u_lcolor * v_a * 0.22; o = vec4(c, max(c.r, max(c.g, c.b))); }`;
+void main() { vec3 c = u_lcolor * v_a * 0.6; o = vec4(c, max(c.r, max(c.g, c.b))); }`;
 
 // Atmosphere: a full-screen triangle; the fragment shader shades by distance from the sphere's projected rim.
 const GVS = `#version 300 es
@@ -182,8 +185,8 @@ export type Quality = { shell: number; ribbons: number; ribbonPts: number; halo:
 export function qualityTier(): Quality {
   const cores = navigator.hardwareConcurrency || 4;
   const big = window.screen.width * window.devicePixelRatio > 2600;
-  if (cores >= 12) return { shell: 15000, ribbons: 6, ribbonPts: 1700, halo: 700, cluster: 140 };
-  if (cores >= 6 && !big) return { shell: 10000, ribbons: 5, ribbonPts: 1300, halo: 500, cluster: 110 };
+  if (cores >= 12) return { shell: 9000, ribbons: 6, ribbonPts: 1300, halo: 500, cluster: 110 };
+  if (cores >= 6 && !big) return { shell: 7000, ribbons: 5, ribbonPts: 1000, halo: 400, cluster: 90 };
   return { shell: 6000, ribbons: 4, ribbonPts: 900, halo: 300, cluster: 80 };
 }
 
@@ -191,6 +194,11 @@ const SHELL: V3 = [0.22, 0.45, 1.0];
 const SHELL2: V3 = [0.45, 0.78, 1.0];
 const RIBBON: V3 = [0.72, 0.62, 1.0];
 const RIBBON_HOT: V3 = [1.0, 0.72, 0.95];
+
+/** Every engine ever created that hasn't been disposed. A new engine disposes the rest, so no orphaned
+ *  render loop can keep drawing into a detached canvas. */
+const LIVE = new Set<SphereEngine>();
+export const liveEngines = () => LIVE.size;
 
 export class SphereEngine {
   private gl: WebGL2RenderingContext;
@@ -214,16 +222,20 @@ export class SphereEngine {
   private slow: number[] = [];
   yaw = 0.6;
   tilt = 0.32;
-  dist = 3.3;
+  dist = 3.4;
   hover = -1;
+  wsHover = -1;
+  private wsIndex = new Map<string, number>();
   focus = -1;
   hoverAt = 0;
   running = false;
-  fps = 30;
+  fps = 24;
   reduced = false;
   onFrame?: () => void;
 
   constructor(private canvas: HTMLCanvasElement, nodes: SphereNode[], links: SphereLink[], q: Quality) {
+    for (const old of [...LIVE]) old.dispose();
+    LIVE.add(this);
     const gl = canvas.getContext("webgl2", { antialias: false, alpha: true, premultipliedAlpha: true, powerPreference: "low-power" });
     if (!gl) throw new Error("WebGL2 unavailable");
     this.gl = gl;
@@ -231,10 +243,11 @@ export class SphereEngine {
     this.lprog = program(gl, LVS, LFS);
     this.gprog = program(gl, GVS, GFS);
     for (const n of ["u_center", "u_rad", "u_mode", "u_glow"]) this.gu[n] = gl.getUniformLocation(this.gprog, n);
-    for (const n of ["u_model", "u_time", "u_dist", "u_focal", "u_aspect", "u_dpr", "u_hover", "u_hoverAge", "u_focus"]) this.u[n] = gl.getUniformLocation(this.prog, n);
+    for (const n of ["u_model", "u_time", "u_dist", "u_focal", "u_aspect", "u_dpr", "u_hover", "u_hoverAge", "u_focus", "u_ws"]) this.u[n] = gl.getUniformLocation(this.prog, n);
     for (const n of ["u_model", "u_time", "u_dist", "u_focal", "u_aspect", "u_lcolor"]) this.lu[n] = gl.getUniformLocation(this.lprog, n);
     this.dirs = layoutNodes(nodes);
     nodes.forEach((n, i) => this.nodeIndex.set(n.id, i));
+    [...new Set(nodes.map((n) => n.workspace))].sort().forEach((w, i) => this.wsIndex.set(w, i));
     const { data, count, trimmable } = buildParticles(nodes, links, this.dirs, q);
     this.count = this.drawCount = count;
     this.trimmable = trimmable;
@@ -245,7 +258,7 @@ export class SphereEngine {
     gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
     const S = FLOATS * 4;
     const attr = (loc: number, size: number, off: number) => { gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, gl.FLOAT, false, S, off * 4); };
-    attr(0, 3, 0); attr(1, 3, 3); attr(2, 3, 6); attr(3, 4, 9); attr(4, 2, 13);
+    attr(0, 3, 0); attr(1, 3, 3); attr(2, 3, 6); attr(3, 4, 9); attr(4, 2, 13); attr(5, 1, 15);
     const lines = buildLines(links, this.dirs);
     this.lineCount = lines.length / 4;
     this.lvao = gl.createVertexArray()!;
@@ -263,9 +276,10 @@ export class SphereEngine {
 
   get particleCount() { return this.drawCount; }
   index(id: string) { return this.nodeIndex.get(id) ?? -1; }
+  wsIdx(ws: string | null) { return ws ? this.wsIndex.get(ws) ?? -1 : -1; }
 
   resize() {
-    const dpr = Math.min(window.devicePixelRatio || 1, 1.5); // cap fill-rate on high-dpi screens
+    const dpr = 1; // fill-rate is the main cost on integrated GPUs; particles are soft points, 1x looks the same
     const w = Math.max(1, Math.round(this.canvas.clientWidth * dpr)), h = Math.max(1, Math.round(this.canvas.clientHeight * dpr));
     if (this.canvas.width !== w || this.canvas.height !== h) { this.canvas.width = w; this.canvas.height = h; }
     this.gl.viewport(0, 0, w, h);
@@ -284,7 +298,7 @@ export class SphereEngine {
     return out;
   }
   dir(id: string) { return this.dirs.get(id); }
-  private focal() { return 2.15; }
+  private focal() { return 2.55; }
 
   draw() {
     const gl = this.gl;
@@ -315,9 +329,10 @@ export class SphereEngine {
     gl.useProgram(this.prog);
     gl.uniformMatrix3fv(this.u.u_model, false, m);
     gl.uniform1f(this.u.u_time, this.time); gl.uniform1f(this.u.u_dist, this.dist); gl.uniform1f(this.u.u_focal, this.focal());
-    gl.uniform1f(this.u.u_aspect, aspect); gl.uniform1f(this.u.u_dpr, Math.min(window.devicePixelRatio || 1, 1.5));
+    gl.uniform1f(this.u.u_aspect, aspect); gl.uniform1f(this.u.u_dpr, 1);
     gl.uniform1f(this.u.u_hover, this.hover); gl.uniform1f(this.u.u_hoverAge, (performance.now() - this.hoverAt) / 1000);
     gl.uniform1f(this.u.u_focus, this.focus);
+    gl.uniform1f(this.u.u_ws, this.wsHover);
     gl.bindVertexArray(this.vao);
     gl.drawArrays(gl.POINTS, 0, this.drawCount);
     gl.bindVertexArray(null);
@@ -364,6 +379,7 @@ export class SphereEngine {
     return ext ? String(this.gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : String(this.gl.getParameter(this.gl.RENDERER));
   }
   dispose() {
+    LIVE.delete(this);
     this.stop();
     this.gl.getExtension("WEBGL_lose_context")?.loseContext();
   }
@@ -389,15 +405,21 @@ function program(gl: WebGL2RenderingContext, vs: string, fs: string) {
 export function buildParticles(nodes: SphereNode[], links: SphereLink[], dirs: Map<string, V3>, q: Quality) {
   const r = rng(7);
   const rows: number[] = [];
+  const wsIds = [...new Set(nodes.map((n) => n.workspace))].sort();
+  let curWs = -1; // workspace of the node being emitted (-1 for ambient particles)
   const push = (p: V3, axis: V3, c: V3, size: number, speed: number, kind: number, node: number, phase: number, lift: number) =>
-    rows.push(p[0], p[1], p[2], axis[0], axis[1], axis[2], c[0], c[1], c[2], size, speed, kind, node, phase, lift);
+    rows.push(p[0], p[1], p[2], axis[0], axis[1], axis[2], c[0], c[1], c[2], size, speed, kind, node, phase, lift, curWs);
   const Y: V3 = [0, 1, 0];
   nodes.forEach((n, i) => {
     const d = dirs.get(n.id)!;
     const live = n.activityDays < 1 ? 1 : n.activityDays < 7 ? 0.8 : n.activityDays < 30 ? 0.55 : 0.3;
     const freq = n.activityDays < 1 ? 0.9 : n.activityDays < 7 ? 0.5 : n.activityDays < 30 ? 0.25 : 0.0;
-    const c: V3 = [n.color[0] * live, n.color[1] * live, n.color[2] * live];
-    push(d, Y, [c[0] * 1.6, c[1] * 1.6, c[2] * 1.6], 9 + Math.min(7, Math.sqrt(n.weight) * 2.2), freq, 4, i, r(), freq ? 0.22 : 0);
+    curWs = wsIds.indexOf(n.workspace);
+    const live2 = Math.max(live, 0.55); // every project stays clearly visible; activity only modulates
+    const c: V3 = [n.color[0] * live2, n.color[1] * live2, n.color[2] * live2];
+    // soft wide halo, then a bright core (projects must read clearly on the map)
+    push(d, Y, [c[0] * 0.55, c[1] * 0.55, c[2] * 0.7], 30 + Math.min(14, Math.sqrt(n.weight) * 3), freq, 4, i, r(), freq ? 0.12 : 0);
+    push(d, Y, [Math.min(1.6, c[0] * 2.4 + 0.3), Math.min(1.6, c[1] * 2.4 + 0.3), Math.min(1.6, c[2] * 2.4 + 0.3)], 13 + Math.min(8, Math.sqrt(n.weight) * 2.4), freq, 4, i, r(), freq ? 0.22 : 0);
     // cluster: gaussian cloud hugging the surface around the node; phase = distance (for the hover ripple)
     const t1 = norm(cross(d, Math.abs(d[1]) < 0.9 ? Y : [1, 0, 0])), t2 = cross(d, t1);
     for (let k = 0; k < q.cluster; k++) {
@@ -417,12 +439,23 @@ export function buildParticles(nodes: SphereNode[], links: SphereLink[], dirs: M
       }
     }
   });
+  curWs = -1;
   // pulses along verified links
   for (const l of links) {
     const a = dirs.get(l.a), b = dirs.get(l.b);
     if (!a || !b) continue;
     const n = Math.min(3, 1 + Math.floor(Math.log2(1 + l.n)));
-    for (let k = 0; k < n; k++) push(a, b, [0.85, 0.75, 1.0], 4.5, 0.07 + r() * 0.04, 5, -1, r(), 0.18);
+    for (let k = 0; k < n; k++) push(a, b, [1.0, 0.9, 1.0], 7, 0.07 + r() * 0.04, 5, -1, r(), 0.18);
+    // glowing arc: dense soft points along the same lifted great-circle (static; the pulses travel over it)
+    const om = Math.acos(Math.max(-1, Math.min(1, dot(a, b))));
+    const steps = 64;
+    for (let k = 0; k <= steps; k++) {
+      const t = k / steps, sn = Math.sin(om) || 1;
+      const wa = om < 1e-3 ? 1 - t : Math.sin((1 - t) * om) / sn, wb = om < 1e-3 ? t : Math.sin(t * om) / sn, lift = 1 + 0.18 * Math.sin(Math.PI * t);
+      const q: V3 = [(a[0] * wa + b[0] * wb) * lift, (a[1] * wa + b[1] * wb) * lift, (a[2] * wa + b[2] * wb) * lift];
+      const g = 0.65 + 0.3 * Math.min(1, l.n / 6);
+      push(q, Y, [0.62 * g, 0.5 * g, 1.0 * g], 4.2, 0, 2, -1, t, 0);
+    }
   }
   // ribbons: wobbling bands around random axes; rotating about their axis makes them flow along themselves
   for (let k = 0; k < q.ribbons; k++) {

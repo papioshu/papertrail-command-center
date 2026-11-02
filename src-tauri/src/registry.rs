@@ -165,6 +165,22 @@ pub fn parse_registry(passdown: &str, vault: &Path) -> Vec<Project> {
     out
 }
 
+/// First git repo inside a vault folder (e.g. `PaperTrail OS/Papertrail OS/repo`), bounded depth.
+fn find_repo(dir: &Path, depth: usize) -> Option<String> {
+    if is_repo(dir) {
+        return Some(dir.to_string_lossy().into_owned());
+    }
+    if depth == 0 {
+        return None;
+    }
+    let rd = std::fs::read_dir(dir).ok()?;
+    let mut subs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+    subs.sort();
+    subs.into_iter()
+        .filter(|p| { let n = p.file_name().unwrap().to_string_lossy(); !n.starts_with('.') && !EXCLUDED_DIRS.contains(&n.as_ref()) })
+        .find_map(|p| find_repo(&p, depth - 1))
+}
+
 fn is_repo(p: &Path) -> bool {
     p.join(".git").exists()
 }
@@ -210,6 +226,30 @@ pub fn discover(cfg: &Config) -> (Vec<Project>, Vec<String>) {
         match std::fs::read_to_string(v.join("MASTER_PASSDOWN.md")) {
             Ok(s) => projects.extend(parse_registry(&s, v)),
             Err(e) => errors.push(format!("MASTER_PASSDOWN.md unreadable: {e}")),
+        }
+    }
+    // Book of Secrets project folders that the registry table doesn't list yet (vault-only projects included).
+    if let Some(v) = &cfg.vault {
+        let root = v.join("02 Projects");
+        if let Ok(rd) = std::fs::read_dir(&root) {
+            let mut dirs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+            dirs.sort();
+            for d in dirs {
+                let ds = d.to_string_lossy().replace('/', "\\");
+                // Skip folders already covered: a registered project's vault folder, or the parent of one.
+                if projects.iter().any(|p| p.vault_dir.as_deref().map_or(false, |vd| norm(vd) == norm(&ds) || under(vd, &ds))) {
+                    continue;
+                }
+                let name = d.file_name().unwrap().to_string_lossy().into_owned();
+                let mut id = slug(&name);
+                if id.is_empty() {
+                    continue;
+                }
+                if projects.iter().any(|p| p.id == id) {
+                    id = format!("{id}-vault");
+                }
+                projects.push(Project { id, workspace: workspace_of(&name), name, repo: find_repo(&d, 3), vault_dir: Some(ds), source: "vault" });
+            }
         }
     }
     for m in &cfg.manual {

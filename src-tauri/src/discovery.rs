@@ -39,10 +39,26 @@ fn npm_deps(repo: &Path) -> Vec<(String, String)> {
     out
 }
 
-/// Search term for a dependency: scope and noise removed ("@dimforge/rapier3d-compat" -> "rapier3d").
-fn term(dep: &str) -> String {
+/// GitHub topic for a dependency. Searching topics (not free text) keeps results on-subject:
+/// free text "next" matched unrelated repos. Package names that differ from their topic are mapped;
+/// one-word terms too generic to mean anything return None.
+fn term(dep: &str) -> Option<String> {
+    const MAP: &[(&str, &str)] = &[
+        ("next", "nextjs"), ("three", "threejs"), ("@react-three/fiber", "react-three-fiber"), ("@react-three/drei", "react-three-fiber"),
+        ("@dimforge/rapier3d", "rapier"), ("@dimforge/rapier3d-compat", "rapier"), ("@supabase/supabase-js", "supabase"),
+        ("ethers", "ethereum"), ("viem", "viem"), ("wagmi", "wagmi"), ("konva", "konva"), ("react-konva", "konva"),
+        ("@tauri-apps/api", "tauri"), ("phaser", "phaser"), ("pixi.js", "pixijs"), ("tone", "web-audio"), ("discord.js", "discord-bot"),
+        ("express", "expressjs"), ("prisma", "prisma"), ("@prisma/client", "prisma"), ("stripe", "stripe"), ("openai", "llm"),
+        ("@anthropic-ai/sdk", "llm"), ("hardhat", "hardhat"), ("socket.io", "websocket"), ("drizzle-orm", "drizzle-orm"),
+        ("framer-motion", "animation"), ("gsap", "animation"), ("zustand", "state-management"), ("electron", "electron"),
+    ];
+    const GENERIC: &[&str] = &["core", "app", "kit", "utils", "util", "api", "cli", "sdk", "types", "node", "ui", "server", "client", "config", "react"];
+    if let Some((_, t)) = MAP.iter().find(|(d, _)| *d == dep) {
+        return Some(t.to_string());
+    }
     let base = dep.rsplit('/').next().unwrap_or(dep);
-    base.trim_end_matches("-compat").trim_end_matches("-js").trim_end_matches(".js").to_string()
+    let t = base.trim_end_matches("-compat").trim_end_matches("-js").trim_end_matches(".js").to_lowercase();
+    (t.len() >= 3 && !GENERIC.contains(&t.as_str()) && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')).then_some(t)
 }
 
 fn major(v: &str) -> Option<u64> {
@@ -99,12 +115,19 @@ pub fn refresh(conn: &Connection) -> Result<usize, String> {
     for p in &ordered {
         let Some(repo) = p.repo.as_deref() else { continue };
         for (d, v) in npm_deps(Path::new(repo)) {
-            terms.entry(term(&d)).or_default().push(p.id.clone());
+            if let Some(t) = term(&d) {
+                let e = terms.entry(t).or_default();
+                if !e.contains(&p.id) {
+                    e.push(p.id.clone());
+                }
+            }
             deps.push((p.id.clone(), d, v));
         }
     }
     let mut n = 0;
     let mut errors = Vec::new();
+    // Re-rank from scratch each run; keep what the owner saved or dismissed.
+    let _ = conn.execute("DELETE FROM discoveries WHERE status='new'", []);
 
     // npm: newer majors of dependencies in use (one request per unique package, capped).
     let mut seen: HashMap<String, Option<Value>> = HashMap::new();
@@ -157,8 +180,8 @@ pub fn refresh(conn: &Connection) -> Result<usize, String> {
             std::thread::sleep(Duration::from_secs(7));
         }
         let url = format!(
-            "https://api.github.com/search/repositories?q={}+in:name,description,topics+created:%3E{}+stars:%3E40&sort=stars&order=desc&per_page=8",
-            t.replace(' ', "+"),
+            "https://api.github.com/search/repositories?q=topic:{}+created:%3E{}+stars:%3E30&sort=stars&order=desc&per_page=8",
+            t,
             since
         );
         let res = match get(&agent, conn, &url) {
@@ -190,7 +213,7 @@ pub fn refresh(conn: &Connection) -> Result<usize, String> {
                 "created_at": item["created_at"], "pushed_at": pushed,
                 "topics": item["topics"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default(),
                 "project": uniq.join(","),
-                "reason": format!("matches \"{t}\" used by {} · {stars}★ · score = 2×{} projects + log10(stars){}",
+                "reason": format!("GitHub topic \"{t}\", from dependencies of {} · {stars}★ · score = 2×{} projects + log10(stars){}",
                     uniq.join(", "), uniq.len(), if recent { " + 1 (pushed <30d)" } else { "" }),
                 "score": score, "source": "github"
             }))?;
@@ -237,7 +260,9 @@ fn upsert(conn: &Connection, d: &Value) -> Result<(), String> {
 mod tests {
     #[test]
     fn terms_and_majors() {
-        assert_eq!(super::term("@dimforge/rapier3d-compat"), "rapier3d");
+        assert_eq!(super::term("@dimforge/rapier3d-compat").as_deref(), Some("rapier"));
+        assert_eq!(super::term("next").as_deref(), Some("nextjs"));
+        assert_eq!(super::term("@radix-ui/react"), None);
         assert_eq!(super::major("^0.170.0"), Some(0));
         assert_eq!(super::major("~16.2"), Some(16));
         assert!(super::pricing("MIT").starts_with("Free"));

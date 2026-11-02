@@ -72,6 +72,15 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   alertless = setNotice;
   const nav = (v: View, p: Row = {}) => { setView(v); setParams(p); };
+  // From a project page, Escape or the mouse "back" button returns to the dashboard home (the map).
+  useEffect(() => {
+    if (view !== "projects" || !params.id) return;
+    const key = (e: KeyboardEvent) => { if (e.key === "Escape" && !document.querySelector(".scrim")) nav("overview"); };
+    const mouse = (e: MouseEvent) => { if (e.button === 3) { e.preventDefault(); nav("overview"); } };
+    window.addEventListener("keydown", key);
+    window.addEventListener("mouseup", mouse);
+    return () => { window.removeEventListener("keydown", key); window.removeEventListener("mouseup", mouse); };
+  }, [view, params]);
   const launch = (p: Row, agent?: "claude" | "codex", mode?: LaunchReq["mode"], preset?: string) => setLaunching({ p, agent, mode, preset });
   const busy = status.state === "indexing" || status.state === "discovery";
   const page = { overview: <Overview />, projects: <Projects />, agents: <Agents />, launchpad: <Launchpad />, graph: <Graph />, discovery: <Discovery />, timeline: <Timeline />, settings: <Settings /> }[view];
