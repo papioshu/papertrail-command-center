@@ -248,6 +248,12 @@ fn index_vault_activity(conn: &Connection, p: &Project) -> Result<(), String> {
 
 fn index_git(conn: &Connection, p: &Project) -> Result<(), String> {
     let Some(repo) = p.repo.as_deref().map(Path::new).filter(|r| r.join(".git").exists()) else { return Ok(()) };
+    // Repo config that could make git run a program: don't run any git command in this repo (fail closed).
+    if let Some(why) = gitscan::risky_config(repo) {
+        conn.execute("UPDATE projects SET git_error=?2 WHERE id=?1", params![p.id, format!("git skipped for safety: {why}")])
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
     let st = gitscan::status(repo);
     let head = gitscan::head(repo);
     let (branch, dirty, ahead, behind, err) = match &st {

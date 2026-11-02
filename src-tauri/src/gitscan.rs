@@ -28,7 +28,7 @@ fn git(repo: &Path, args: &[&str]) -> Result<String, String> {
     // No safe.directory override (git's ownership check stays on); fsmonitor/hooks/external diff/textconv disabled.
     let mut a = vec![
         "-c", "core.quotepath=off", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=NUL",
-        "-c", "diff.external=", "-c", "core.untrackedCache=false", "-c", "core.pager=cat",
+        "-c", "diff.external=", "-c", "core.untrackedCache=false", "-c", "core.pager=cat", "-c", "log.showSignature=false",
     ];
     a.extend_from_slice(args);
     let o = run("git", &a, Some(repo), T)?;
@@ -55,17 +55,16 @@ pub fn risky_config(repo: &Path) -> Option<String> {
         // -c overrides already neutralise fsmonitor/hooks/ext-diff/pager; these are the program-valued keys that can't be
         // reliably overridden per name, so their presence fails closed.
         .find(|k| {
-            k.starts_with("filter.") || k.starts_with("include.") || k.starts_with("includeif.") || k == "core.sshcommand"
+            k.starts_with("filter.") || k.starts_with("include.") || k.starts_with("includeif.") || k.starts_with("credential.")
+                || ["core.sshcommand", "core.askpass", "core.editor", "core.alternaterefscommand"].contains(&k.as_str())
+                || (k.starts_with("gpg.") && k.ends_with("program"))
                 || (k.starts_with("diff.") && (k.ends_with(".command") || k.ends_with(".textconv")))
         })
         .map(|k| format!("repo config defines {k}"))
 }
 
+/// Callers must check `risky_config` first (indexer does, once per repo, before any git command).
 pub fn status(repo: &Path) -> Result<Status, String> {
-    // A clean/smudge filter in the repo's own config would run during status: skip rather than execute it.
-    if let Some(why) = risky_config(repo) {
-        return Err(format!("status skipped for safety: {why}"));
-    }
     parse_status(&git(repo, &["status", "--porcelain=v1", "-b"])?)
 }
 
@@ -101,6 +100,7 @@ pub fn log(repo: &Path, range: Option<&str>, limit: usize) -> Result<Vec<Commit>
         "--no-renames",
         "--no-ext-diff",
         "--no-textconv",
+        "--no-show-signature",
         "--date=iso-strict",
         "--pretty=format:%x1e%H%x1f%aI%x1f%an <%ae>%x1f%s%x1f%(trailers:key=Co-Authored-By,valueonly,separator=%x1d)",
         "--numstat",
@@ -184,7 +184,6 @@ mod tests {
         let text = format!("\u{feff}{}\n  [ filter \"x\" ]\n\tclean = evil\n", std::fs::read_to_string(&cfg).unwrap());
         std::fs::write(&cfg, text).unwrap();
         assert!(risky_config(&d).is_some(), "filter (or unreadable config) must be flagged");
-        assert!(status(&d).unwrap_err().contains("skipped"));
         let _ = std::fs::remove_dir_all(d);
         let out = "\x1eabc\x1f2026-11-01T10:00:00-05:00\x1fMe <m@x>\x1fFix\x1fClaude Opus <noreply@anthropic.com>\n3\t1\tsrc/game/board/a.ts\n-\t-\tassets/x.png\n\x1edef\x1f2026-11-01T09:00:00-05:00\x1fMe <m@x>\x1fInit\x1f\n";
         let c = parse_log(out);
