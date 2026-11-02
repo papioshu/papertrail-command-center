@@ -1,0 +1,170 @@
+mod agents;
+mod commands;
+mod continuity;
+mod db;
+mod discovery;
+mod gitscan;
+mod indexer;
+mod launcher;
+mod registry;
+mod util;
+
+use serde_json::{json, Value};
+use std::path::PathBuf;
+use std::sync::Mutex;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Manager, WindowEvent};
+
+pub struct AppState {
+    pub db: Mutex<rusqlite::Connection>,
+    pub data_dir: PathBuf,
+    pub worker: indexer::Worker,
+    pub briefing_since: String,
+    pub task_snapshot: Value,
+    pub close_to_tray: Mutex<bool>,
+}
+
+/// WebView2 memory target: Low while hidden in the tray, Normal when shown.
+fn memory_target(w: &tauri::WebviewWindow, low: bool) {
+    #[cfg(windows)]
+    let _ = w.with_webview(move |wv| unsafe {
+        use webview2_com::Microsoft::Web::WebView2::Win32::*;
+        use windows_core::Interface;
+        if let Ok(core) = wv.controller().CoreWebView2() {
+            if let Ok(c19) = core.cast::<ICoreWebView2_19>() {
+                let level = if low { COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW } else { COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL };
+                let _ = c19.SetMemoryUsageTargetLevel(level);
+            }
+        }
+    });
+}
+
+fn show_main(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        memory_target(&w, false);
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+/// Briefing window: since the previous start, at least 24 h, at most 14 days.
+fn briefing_since(conn: &rusqlite::Connection) -> String {
+    let now = chrono::Utc::now();
+    let last = db::setting(conn, "last_seen")
+        .and_then(|v| v.as_str().and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()))
+        .map(|d| d.with_timezone(&chrono::Utc));
+    let floor = now - chrono::Duration::days(14);
+    let ceil = now - chrono::Duration::hours(24);
+    let t = last.unwrap_or(ceil).min(ceil).max(floor);
+    t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
+        .setup(|app| {
+            let data_dir = app.path().app_data_dir()?;
+            std::fs::create_dir_all(&data_dir)?;
+            util::init_log(&data_dir.join("logs"));
+            std::panic::set_hook(Box::new(|info| util::log("panic", info.to_string())));
+            util::log("info", format!("start v{} pid {}", env!("CARGO_PKG_VERSION"), std::process::id()));
+            let db_path = data_dir.join("papertrail.db");
+            let conn = db::open_migrated(&db_path)?;
+            let since = briefing_since(&conn);
+            let snapshot: Value = db::setting(&conn, "task_snapshot").unwrap_or(json!({}));
+            let mut now_snap = serde_json::Map::new();
+            for r in util::rows(&conn, "SELECT project_id, count(*) n FROM tasks WHERE status='done' GROUP BY project_id", [])? {
+                if let (Some(id), Some(n)) = (r["project_id"].as_str(), r["n"].as_i64()) {
+                    now_snap.insert(id.into(), json!(n));
+                }
+            }
+            db::set_setting(&conn, "task_snapshot", &Value::Object(now_snap))?;
+            db::set_setting(&conn, "last_seen", &json!(util::now_iso()))?;
+            let close_to_tray = registry::Config::load(&conn).close_to_tray;
+            let worker = indexer::spawn(app.handle().clone(), db_path);
+            worker.send(indexer::Job::Refresh); // cached data shows first; this refreshes behind it
+            app.manage(AppState {
+                db: Mutex::new(conn),
+                data_dir,
+                worker,
+                briefing_since: since,
+                task_snapshot: snapshot,
+                close_to_tray: Mutex::new(close_to_tray),
+            });
+
+            let open = MenuItem::with_id(app, "open", "Open Command Center", true, None::<&str>)?;
+            let refresh = MenuItem::with_id(app, "refresh", "Refresh index", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&open, &refresh, &quit])?;
+            TrayIconBuilder::with_id("main")
+                .icon(app.default_window_icon().cloned().ok_or("no icon")?)
+                .tooltip("PAPERTRAIL // COMMAND CENTER")
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, ev| match ev.id.as_ref() {
+                    "open" => show_main(app),
+                    "refresh" => app.state::<AppState>().worker.send(indexer::Job::Refresh),
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, ev| {
+                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = ev {
+                        show_main(tray.app_handle());
+                    }
+                })
+                .build(app)?;
+            Ok(())
+        })
+        .on_window_event(|w, ev| {
+            if let WindowEvent::CloseRequested { api, .. } = ev {
+                let st = w.app_handle().state::<AppState>();
+                let to_tray = st.db.lock().map(|c| registry::Config::load(&c).close_to_tray).unwrap_or(true);
+                *st.close_to_tray.lock().unwrap() = to_tray;
+                if to_tray {
+                    api.prevent_close();
+                    let _ = w.hide();
+                    if let Some(ww) = w.app_handle().get_webview_window("main") {
+                        memory_target(&ww, true);
+                    }
+                }
+            }
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::get_status,
+            commands::get_projects,
+            commands::get_briefing,
+            commands::get_project,
+            commands::get_activity,
+            commands::get_timeline,
+            commands::get_sessions,
+            commands::get_session_files,
+            commands::get_graph,
+            commands::search,
+            commands::refresh_now,
+            commands::discovery_refresh,
+            commands::get_discoveries,
+            commands::set_discovery,
+            commands::add_review_task,
+            commands::toggle_review_task,
+            commands::bos_preview,
+            commands::bos_append,
+            commands::preview_handoff,
+            commands::launch_agent,
+            commands::get_cli_info,
+            commands::open_path,
+            commands::open_url,
+            commands::get_settings,
+            commands::save_settings,
+            commands::set_project_meta,
+            commands::register_project,
+            commands::get_diagnostics,
+            commands::backup_db,
+            commands::get_sparks,
+            commands::toggle_chat,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}

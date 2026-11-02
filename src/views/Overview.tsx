@@ -1,0 +1,229 @@
+import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { api, type Row } from "../api";
+import { ago, AgentChip, Barcode, brand, day, Empty, ErrBox, ProjectActions, sessionState, short, Spark, StatusBar, useAsync, useDragScroll, useNav } from "../ui";
+
+const counts = (p: Row) => ({ done: p.done_tasks, active: p.active_tasks, pending: p.pending_tasks, blocked: p.blocked_tasks, deferred: p.deferred_tasks });
+const sumCounts = (ps: Row[]) => ps.reduce((a: Record<string, number>, p) => { for (const [k, v] of Object.entries(counts(p))) a[k] = (a[k] || 0) + (v as number); return a; }, {});
+
+const REFRESH = ["projects-updated"];
+const glowStyle = (glow: string) => ({ ["--glow" as string]: glow }) as CSSProperties;
+
+/** One access card per workspace: PapertrailOS profile art where it exists, a drawn card otherwise. */
+function AccessCard({ ws, projects, on, onClick }: { ws: string; projects: Row[]; on: boolean; onClick: () => void }) {
+  const b = brand(ws);
+  const last = projects.map((p) => p.last_activity).filter(Boolean).sort().pop();
+  const blocked = projects.reduce((a, p) => a + p.blocked_tasks, 0);
+  // Radar blips: one per project; distance from centre = days since last activity (closer = more recent).
+  const blips = projects.map((p, i) => {
+    const days = p.last_activity ? (Date.now() - Date.parse(p.last_activity.length === 10 ? p.last_activity + "T12:00:00" : p.last_activity)) / 864e5 : 90;
+    const r = 8 + Math.min(1, Math.sqrt(Math.max(0, days) / 60)) * 42;
+    const a = (i / Math.max(1, projects.length)) * Math.PI * 2 - Math.PI / 3;
+    return { x: 60 + r * Math.cos(a), y: 60 + r * Math.sin(a), name: p.name };
+  });
+  return (
+    <button className={`acard ${b.img ? "" : "gen"} ${on ? "on" : ""}`} style={glowStyle(b.glow)} onClick={onClick} aria-pressed={on} title={ws}>
+      {b.img ? <img src={b.img} alt={ws} /> : (<><div className="title">{ws}</div>
+        <svg className="radar" viewBox="0 0 120 120" aria-hidden>
+          {[50, 34, 18].map((r) => <circle key={r} cx={60} cy={60} r={r} fill="none" stroke="currentColor" strokeOpacity={0.35} />)}
+          <path d="M60 6V114M6 60H114" stroke="currentColor" strokeOpacity={0.18} />
+          <path d="M60 60 L60 10 A50 50 0 0 1 103 35 Z" fill="currentColor" fillOpacity={0.12} />
+          {blips.map((b, i) => <circle key={i} cx={b.x} cy={b.y} r={3} fill="currentColor"><title>{b.name}</title></circle>)}
+        </svg></>)}
+      {blocked > 0 && <span className="chip warn flag">{blocked} blocked</span>}
+      <div className="shade" />
+      <div style={{ position: "absolute", left: 14, right: 14, bottom: 46 }}><StatusBar counts={sumCounts(projects)} height={4} /></div>
+      <div className="meta">
+        <span className="k">{projects.length} project{projects.length > 1 ? "s" : ""}</span>
+        <span className="v">{last ? ago(last) : "no activity"}</span>
+      </div>
+      <span className="arrow">→</span>
+    </button>
+  );
+}
+
+function Ticket({ p, spark }: { p: Row; spark: number[] }) {
+  const { nav } = useNav();
+  const claude = p.last_claude ? JSON.parse(p.last_claude) : null;
+  const codex = p.last_codex ? JSON.parse(p.last_codex) : null;
+  return (
+    <div className="ticket" style={glowStyle(brand(p.workspace).glow)}>
+      <div className="body">
+        <div className="row">
+          <span className="label" style={{ fontSize: 9 }}>{p.source === "registry" ? "Book of Secrets" : p.source}</span>
+          {p.dirty > 0 && <span className="chip warn" title="uncommitted entries (git status)">{p.dirty} dirty</span>}
+          {p.ahead > 0 && <span className="chip warn">{p.ahead} unpushed</span>}
+          {p.blocked_tasks > 0 && <span className="chip blocked">{p.blocked_tasks} blocked</span>}
+        </div>
+        <div className="title ellipsis" onClick={() => nav("projects", { id: p.id })}>{p.name}</div>
+        <div className="meta">
+          <div><div className="k">Last activity</div><div className="v">{ago(p.last_activity)}</div></div>
+          <div><div className="k">Branch</div><div className="v ellipsis">{p.branch ?? "—"}</div></div>
+          <div><div className="k">Open · Done</div><div className="v">{p.active_tasks} · {p.done_tasks}</div></div>
+          <div><div className="k">Claude</div><div className="v ellipsis" title={claude?.title}>{claude ? ago(claude.updated) : "—"}</div></div>
+          <div><div className="k">Codex</div><div className="v ellipsis" title={codex?.title}>{codex ? ago(codex.updated) : "—"}</div></div>
+          <div><div className="k">Head</div><div className="v">{short(p.head, 7)}</div></div>
+        </div>
+        <div className="row" style={{ alignItems: "flex-end", gap: 14 }}>
+          <div style={{ flex: 1, minWidth: 0 }}><div className="label" style={{ fontSize: 8.5, marginBottom: 4 }}>Tasks by status</div><StatusBar counts={counts(p)} legend /></div>
+          <div title="recorded events per day, last 14 days (commits, log entries, decisions, agent sessions)"><div className="label" style={{ fontSize: 8.5, marginBottom: 2 }}>14 days</div><Spark values={spark} width={112} height={24} color={brand(p.workspace).glow} /></div>
+        </div>
+        <ProjectActions p={p} compact />
+      </div>
+      <div className="stub">
+        <span className="code">{p.name}</span>
+        <Barcode value={p.id} width={52} height={28} />
+      </div>
+    </div>
+  );
+}
+
+type Line = { gate: string; text: ReactNode; warn?: boolean; go?: () => void };
+
+/** The startup briefing as a bone-paper pass. Deterministic: every line is a count of indexed records. */
+function DailyPass({ b }: { b: Row }) {
+  const { nav } = useNav();
+  const [all, setAll] = useState(false);
+  const lines: Line[] = [];
+  for (const p of b.projects as Row[]) {
+    const parts: string[] = [];
+    if (p.commits) parts.push(`${p.commits} commit${p.commits > 1 ? "s" : ""}${p.claude_commits ? ` (${p.claude_commits} with Claude)` : ""}${p.codex_commits ? ` (${p.codex_commits} with Codex)` : ""}`);
+    if (p.logs) parts.push(`${p.logs} log entr${p.logs > 1 ? "ies" : "y"}`);
+    if (p.decisions) parts.push(`${p.decisions} decision${p.decisions > 1 ? "s" : ""}`);
+    lines.push({ gate: p.name, text: <>{parts.join(" · ")}{p.workstreams ? <>, mostly <b>{p.workstreams}</b></> : null}{p.last_decision ? <>. Latest: “{String(p.last_decision).slice(0, 110)}”</> : null}</>,
+      go: () => nav("timeline", { project: p.id, from: String(b.since).slice(0, 10) }) });
+  }
+  for (const c of b.completed as Row[]) lines.push({ gate: c.project_id, text: <>{c.n} task{c.n > 1 ? "s" : ""} checked done in TASKS.md since last start</>, go: () => nav("projects", { id: c.project_id }) });
+  for (const x of (b.unpushed as Row[]).filter((x) => x.ahead > 0)) lines.push({ gate: x.name, warn: true, text: <>{x.ahead} commit{x.ahead > 1 ? "s" : ""} on {x.branch} not pushed</>, go: () => nav("projects", { id: x.id }) });
+  for (const x of b.stale as Row[]) lines.push({ gate: x.name, warn: true, text: <>{x.open} open NOW task{x.open > 1 ? "s" : ""}, quiet since {String(x.last_activity).slice(0, 10)}. Worth revisiting.</>, go: () => nav("projects", { id: x.id }) });
+  if (b.new_discoveries) lines.push({ gate: "Discovery", text: <>{b.new_discoveries} new tools matched to your projects</>, go: () => nav("discovery") });
+  const blocked = (b.blocked as Row[]).reduce((a, x) => a + x.n, 0);
+  const shown = all ? lines : lines.slice(0, 6);
+  const serial = `PT-${String(b.since).slice(5, 10).replace("-", "")}-${lines.length.toString().padStart(2, "0")}`;
+  return (
+    <div className="pass">
+      <div className="main-part">
+        <div className="row" style={{ justifyContent: "space-between" }}>
+          <span className="plabel">Papertrail OS · Daily pass</span>
+          <span className="plabel">{serial}</span>
+        </div>
+        <div className="ptitle" style={{ margin: "6px 0 10px" }}>Since {String(b.since).slice(0, 10)}</div>
+        {shown.map((l, i) => (
+          <div key={i} className="line" onClick={l.go}>
+            <span className={`gate ${l.warn ? "warn" : ""}`} title={l.gate}>{l.gate.match(/\((.+)\)/)?.[1] ?? l.gate}</span>
+            <span className="txt">{l.text}</span>
+          </div>
+        ))}
+        {!lines.length && <div className="txt" style={{ padding: "8px 0" }}>No recorded changes since then.</div>}
+        <div className="row" style={{ justifyContent: "space-between", marginTop: 10 }}>
+          <span className="plabel">From git, continuity files and session metadata · no generated text</span>
+          {lines.length > 6 && <button className="btn sm" style={{ color: "#2a2438", borderColor: "#9c917f", background: "transparent" }} onClick={() => setAll(!all)}>{all ? "Fewer" : `All ${lines.length}`}</button>}
+        </div>
+      </div>
+      <div className="stub">
+        <div style={{ textAlign: "center" }}><div className="plabel">Lines</div><div className="big">{lines.length}</div></div>
+        <div style={{ textAlign: "center", cursor: "pointer" }} onClick={() => nav("projects")}><div className="plabel">Blocked</div><div className="big" style={{ color: blocked ? "#8a6a10" : undefined }}>{blocked}</div></div>
+        <Barcode value={serial} width={84} height={34} />
+      </div>
+    </div>
+  );
+}
+
+export default function Overview() {
+  const projects = useAsync(() => api.projects(), [], REFRESH);
+  const brief = useAsync(() => api.briefing(), [], REFRESH);
+  const sparkRows = useAsync(() => api.sparks(14), [], REFRESH);
+  const deckRef = useDragScroll<HTMLDivElement>();
+  const sparks = useMemo(() => {
+    const days: string[] = [];
+    for (let i = 13; i >= 0; i--) { const d = new Date(); d.setDate(d.getDate() - i); days.push(day(d)); }
+    const m = new Map<string, number[]>();
+    for (const r of sparkRows.data ?? []) {
+      const arr = m.get(r.project_id) ?? days.map(() => 0);
+      const i = days.indexOf(r.day);
+      if (i >= 0) arr[i] += r.n;
+      m.set(r.project_id, arr);
+    }
+    return (id: string) => m.get(id) ?? days.map(() => 0);
+  }, [sparkRows.data]);
+  const [unsorted, setUnsorted] = useState(false);
+  const [picked, setPicked] = useState<string | null>(null);
+  const { nav } = useNav();
+  const ps = projects.data ?? [];
+  const b = brief.data;
+
+  const workspaces = useMemo(() => {
+    const m = new Map<string, Row[]>();
+    for (const p of ps) if (unsorted || p.workspace !== "UNSORTED") m.set(p.workspace, [...(m.get(p.workspace) ?? []), p]);
+    const last = (list: Row[]) => list.map((p) => p.last_activity ?? "").sort().pop() ?? "";
+    return [...m.entries()].sort((a, c) => last(c[1]).localeCompare(last(a[1])));
+  }, [ps, unsorted]);
+  const ws = picked ?? workspaces[0]?.[0] ?? null;
+  const wsProjects = workspaces.find(([w]) => w === ws)?.[1] ?? [];
+  const sessions: Row[] = b?.sessions ?? [];
+  const live = sessions.filter((s) => sessionState(s.updated).cls).length;
+  const now = new Date();
+  const hour = now.getHours();
+
+  if (projects.error) return <ErrBox error={projects.error} />;
+  return (
+    <div>
+      <div className="hero">
+        <div>
+          <h1>{hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"}</h1>
+          <div className="when">{now.toLocaleDateString(undefined, { weekday: "long", day: "2-digit", month: "short", year: "numeric" })} · {ps.length} projects on file</div>
+        </div>
+        <div className="board">
+          <div><div className="v">{ps.reduce((a, p) => a + p.active_tasks, 0)}</div><div className="k">Open now</div></div>
+          <div style={{ cursor: "pointer" }} onClick={() => nav("projects")}><div className="v" style={{ color: "var(--gold)" }}>{ps.reduce((a, p) => a + p.blocked_tasks, 0)}</div><div className="k">Blocked</div></div>
+          <div style={{ cursor: "pointer" }} onClick={() => nav("agents")}><div className="v" style={{ color: live ? "var(--violet-glow)" : undefined }}>{live}</div><div className="k">Agents active</div></div>
+        </div>
+      </div>
+
+      <div className="sect">
+        <h2>Workspaces</h2><div className="rule" />
+        <label className="aside"><input type="checkbox" checked={unsorted} onChange={(e) => setUnsorted(e.target.checked)} /> include unsorted repos</label>
+      </div>
+      <div className="deck" ref={deckRef} style={{ cursor: "grab" }}>
+        {workspaces.map(([w, list]) => <AccessCard key={w} ws={w} projects={list} on={w === ws} onClick={() => setPicked(w)} />)}
+        {!workspaces.length && !projects.loading && <Empty>No projects yet. Set the vault and project roots in Settings.</Empty>}
+      </div>
+
+      {ws && (
+        <>
+          <div className="sect">
+            <h2>{ws}</h2><div className="rule" />
+            <span className="aside">{wsProjects.length} on file · by last activity</span>
+          </div>
+          <div className="tickets">{wsProjects.map((p) => <Ticket key={p.id} p={p} spark={sparks(p.id)} />)}</div>
+        </>
+      )}
+
+      <div className="sect"><h2>Briefing</h2><div className="rule" /><span className="aside">Since your last start</span></div>
+      <div className="split">
+        {b ? <DailyPass b={b} /> : brief.error ? <ErrBox error={brief.error} /> : <div className="skeleton" />}
+        <section className="card">
+          <div className="card-head"><span className="label">Agent radar</span><div className="right"><button className="btn sm" onClick={() => nav("agents")}>All sessions</button></div></div>
+          <div className="card-body list" style={{ paddingTop: 4, paddingBottom: 4 }}>
+            {sessions.slice(0, 6).map((s, i) => {
+              const st = sessionState(s.updated);
+              return (
+                <div key={i} className="li click" onClick={() => s.project_id && nav("projects", { id: s.project_id })}>
+                  <AgentChip agent={s.agent} />
+                  <div style={{ minWidth: 0 }}>
+                    <div className="ellipsis">{s.title || "(untitled)"}</div>
+                    <div className="dim small">{s.project ?? "unmapped"}{s.agent === "claude" ? ` · ${s.prompts} prompts · ${s.edits} edits` : ""}</div>
+                  </div>
+                  <div className="col" style={{ alignItems: "flex-end", gap: 3 }}>
+                    {st.cls && <span className={`chip ${st.cls}`}>{st.label}</span>}
+                    <span className="dim small mono">{ago(s.updated)}</span>
+                  </div>
+                </div>
+              );
+            })}
+            {b && !sessions.length && <Empty>No agent sessions since then</Empty>}
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
