@@ -7,7 +7,7 @@ not need a dev server at runtime.
 
 Continuity docs (canonical): Book of Secrets vault `02 Projects/Papertrail Command Center/`
 (`CONTINUITY LOG.md`, `TASKS.md`, `PROJECT LOG.md`, `DECISIONS.md`). Visual source of truth: PapertrailOS
-(`Book_Of_Secrets/02 Projects/PaperTrail OS/Papertrail OS/repo`, `DESIGN_SYSTEM.md`).
+(`Book_Of_Secrets/02 Projects/Papertrail Command Center/PaperTrail OS/Papertrail OS/repo`, `DESIGN_SYSTEM.md`).
 
 ## Build from source
 

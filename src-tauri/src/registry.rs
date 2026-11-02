@@ -250,6 +250,37 @@ pub fn discover(cfg: &Config) -> (Vec<Project>, Vec<String>) {
                 }
                 projects.push(Project { id, workspace: workspace_of(&name), name, repo: find_repo(&d, 3), vault_dir: Some(ds), source: "vault" });
             }
+            // Nested project folders that carry their own code repo (e.g. `Papertrail Command Center/PaperTrail OS`)
+            // join the parent folder's workspace. Plain note subfolders stay part of their parent.
+            let tops: Vec<PathBuf> = std::fs::read_dir(&root).map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect()).unwrap_or_default();
+            for top in tops {
+                let parent_ws = projects
+                    .iter()
+                    .find(|p| p.vault_dir.as_deref().map_or(false, |vd| norm(vd) == norm(&top.to_string_lossy())))
+                    .map(|p| p.workspace.clone())
+                    .unwrap_or_else(|| workspace_of(&top.file_name().unwrap().to_string_lossy()));
+                let Ok(rd) = std::fs::read_dir(&top) else { continue };
+                let mut subs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+                subs.sort();
+                for sub in subs {
+                    let ss = sub.to_string_lossy().replace('/', "\\");
+                    if projects.iter().any(|p| p.vault_dir.as_deref().map_or(false, |vd| norm(vd) == norm(&ss) || under(vd, &ss))) {
+                        continue;
+                    }
+                    let Some(repo) = find_repo(&sub, 2) else { continue };
+                    if projects.iter().any(|p| p.repo.as_deref().map(norm) == Some(norm(&repo))) {
+                        continue;
+                    }
+                    // Same convention as the registry: "Parent (Sub)", e.g. "Zathena Ventures (website)".
+                    let parent_name = top.file_name().unwrap().to_string_lossy().into_owned();
+                    let name = format!("{parent_name} ({})", sub.file_name().unwrap().to_string_lossy());
+                    let mut id = slug(&name);
+                    if projects.iter().any(|p| p.id == id) {
+                        id = format!("{id}-vault");
+                    }
+                    projects.push(Project { id, workspace: parent_ws.clone(), name, repo: Some(repo), vault_dir: Some(ss), source: "vault" });
+                }
+            }
         }
     }
     for m in &cfg.manual {

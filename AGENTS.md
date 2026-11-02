@@ -17,7 +17,7 @@ your column: write the request into `TASKS.md` instead of editing.
 
 ## Rules
 
-- Visual authority is PapertrailOS (`02 Projects/PaperTrail OS/Papertrail OS/repo/DESIGN_SYSTEM.md`, `src/app/globals.css`,
+- Visual authority is PapertrailOS (`02 Projects/Papertrail Command Center/PaperTrail OS/Papertrail OS/repo/DESIGN_SYSTEM.md`, `src/app/globals.css`,
   `assets/papertrail-os-landing.png`). Reuse its tokens; no new gradients, glows, or generic dashboard styling.
 - No fake data. Every number on screen must come from a backend command (`src/api.ts`).
 - No new runtime dependencies without a DECISIONS entry.
