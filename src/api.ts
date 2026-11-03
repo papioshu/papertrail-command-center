@@ -50,7 +50,17 @@ export const api = {
   sparks: (days: number) => invoke<Row[]>("get_sparks", { days }),
   toggleChat: () => invoke<boolean>("toggle_chat"),
   folders: (id: string) => invoke<Row[]>("get_folders", { id }),
+  taskTogglePreview: (id: number) => invoke<Row>("task_toggle_preview", { id }),
+  taskToggle: (id: number, before: string) => invoke<void>("task_toggle", { id, before }),
+  team: () => invoke<{ profiles: Row[]; me: Row | null }>("team_profiles"),
+  teamCreate: (name: string, pin: string, color: string) => invoke<Row>("team_create", { name, pin, color }),
+  login: (id: string, pin: string) => invoke<Row>("team_login", { id, pin }),
+  logout: () => invoke<void>("team_logout"),
+  actions: (projectId?: string) => invoke<Row[]>("actions_list", { projectId }),
+  actionOp: (projectId: string, op: ActionOp) => invoke<void>("action_op", { projectId, op }),
 };
+
+export type ActionOp = { kind: "add" | "edit" | "start" | "complete" | "reopen" | "remove"; id?: string; title?: string; notes?: string; assignee?: string };
 
 export function on(event: string, cb: (payload: any) => void): Promise<UnlistenFn> {
   return listen(event, (e) => cb(e.payload));

@@ -16,6 +16,7 @@ pub enum Job {
     Discovery,
 }
 
+#[derive(Clone)]
 pub struct Worker {
     tx: SyncSender<Job>,
 }
@@ -61,6 +62,7 @@ pub fn spawn(app: AppHandle, db_path: PathBuf) -> Worker {
                 };
                 // Scheduled refreshes also run discovery when its interval has elapsed.
                 let job = if scheduled && discovery::due(&conn) { Job::Discovery } else { job };
+                let refreshed = scheduled || matches!(job, Job::Refresh);
                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match job {
                     Job::Refresh => refresh(&conn, emit),
                     Job::Discovery => {
@@ -79,6 +81,15 @@ pub fn spawn(app: AppHandle, db_path: PathBuf) -> Worker {
                 if res.is_err() {
                     db::record_error(&conn, "indexer", "a job panicked; worker continues");
                     set_status(emit, json!({"state":"error","at":now_iso(),"message":"indexing job failed, see Settings › Diagnostics"}));
+                }
+                if refreshed {
+                    use tauri_plugin_notification::NotificationExt;
+                    for (title, body) in crate::alerts::check(&conn) {
+                        log("info", format!("alert: {title} · {body}"));
+                        if let Err(e) = app.notification().builder().title(&title).body(&body).show() {
+                            log("warn", format!("notification failed: {e}"));
+                        }
+                    }
                 }
             }
         })
@@ -415,6 +426,65 @@ pub fn refresh(conn: &Connection, emit: Emit) {
     log("info", format!("refresh done in {} ms ({} projects)", started.elapsed().as_millis(), projects.len()));
     set_status(emit, json!({"state":"idle","at":now_iso(),"ms":started.elapsed().as_millis() as u64}));
     emit("projects-updated", Value::Null);
+}
+
+/// Re-read one project's continuity files now (after the app itself edited one).
+pub fn reindex_project(conn: &Connection, id: &str) -> Result<(), String> {
+    let all = load_projects(conn);
+    let p = all.iter().find(|p| p.id == id).ok_or("unknown project")?;
+    index_continuity(conn, p, &all)?;
+    rebuild_search(conn)
+}
+
+/// What the watcher compares: continuity files, each repo's HEAD log (commits, checkouts) and the
+/// agent session folders. Not `.git/index`: git status rewrites it, which would loop.
+fn fingerprint(conn: &Connection, cfg: &Config) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut stat = |p: &Path| {
+        let m = std::fs::metadata(p).ok();
+        (p, m.as_ref().map(|m| m.len()), m.and_then(|m| m.modified().ok())).hash(&mut h);
+    };
+    for p in load_projects(conn) {
+        for (_, f) in continuity_files(&p) {
+            stat(&f);
+        }
+        if let Some(r) = &p.repo {
+            stat(&Path::new(r).join(".git").join("logs").join("HEAD"));
+        }
+        if let Some(v) = &p.vault_dir {
+            stat(&Path::new(v).join(crate::team::FILE)); // teammates' action items arrive by vault sync
+        }
+    }
+    // shortcut: folder mtimes see new sessions, not appends to an open one; the 15 min refresh covers those.
+    for d in [cfg.claude_dir.join("projects"), cfg.codex_dir.join("sessions")] {
+        stat(&d);
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            stat(&e.path());
+        }
+    }
+    h.finish()
+}
+
+/// Live updates without a watcher dependency: stat what matters every 10 s; once a change has settled
+/// (unchanged for one tick) and the last live refresh is 30 s old, queue a refresh.
+pub fn spawn_watcher(db_path: PathBuf, worker: Worker) {
+    let _ = std::thread::Builder::new().name("ptcc-watch".into()).spawn(move || {
+        let Ok(conn) = db::open(&db_path) else { return };
+        let tick = Duration::from_secs(10);
+        let mut last = fingerprint(&conn, &Config::load(&conn));
+        let (mut dirty, mut sent) = (false, Instant::now());
+        loop {
+            std::thread::sleep(tick);
+            let fp = fingerprint(&conn, &Config::load(&conn));
+            if fp != last {
+                (last, dirty) = (fp, true);
+            } else if dirty && sent.elapsed() >= Duration::from_secs(30) {
+                worker.send(Job::Refresh);
+                (dirty, sent) = (false, Instant::now());
+            }
+        }
+    });
 }
 
 /// Rows of the current projects as registry::Project (for modules that need paths).

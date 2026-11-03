@@ -66,6 +66,7 @@ export default function Settings() {
           <div className="col">
             <label className="row"><input type="checkbox" checked={!!s.data!.autostart} onChange={(e) => save({ autostart: e.target.checked })} /> Start at Windows login</label>
             <label className="row"><input type="checkbox" checked={!!form.close_to_tray} onChange={(e) => setForm({ ...form, close_to_tray: e.target.checked })} /> Closing the window keeps it in the tray (Quit from the tray menu)</label>
+            <label className="row"><input type="checkbox" checked={s.data!.notifications !== false} onChange={(e) => save({ notifications: e.target.checked })} /> Windows alerts: new blockers, indexing problems, projects waiting on NOW tasks (daily)</label>
             <div className="dim small">Agents you launch run in their own terminal windows and keep running if this app exits.</div>
           </div>
         </Card>

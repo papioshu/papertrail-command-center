@@ -86,7 +86,7 @@ pub fn open_migrated(path: &Path) -> Result<Connection, String> {
     }
 }
 
-fn migrate(conn: &Connection) -> rusqlite::Result<()> {
+pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     let v: usize = conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? as usize;
     for (i, sql) in MIGRATIONS.iter().enumerate().skip(v) {
         let tx = conn.unchecked_transaction()?;

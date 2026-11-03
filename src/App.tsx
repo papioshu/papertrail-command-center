@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { api, on, type LaunchReq, type Row } from "./api";
 import { ago, Barcode, Boundary, LaunchDialog, NavCtx, type View } from "./ui";
 import Overview from "./views/Overview";
+import Login from "./Login";
 
 // Heavy views load only when opened.
 const Projects = lazy(() => import("./views/Projects"));
@@ -12,11 +13,13 @@ const Graph = lazy(() => import("./views/Graph"));
 const Discovery = lazy(() => import("./views/Discovery"));
 const Timeline = lazy(() => import("./views/Timeline"));
 const Settings = lazy(() => import("./views/Settings"));
+const Actions = lazy(() => import("./views/Actions"));
 
 // PapertrailOS bracketed bottom navigation.
 const NAV: [View, string][] = [
   ["overview", "OVERVIEW"],
   ["projects", "PROJECTS"],
+  ["actions", "ACTIONS"],
   ["agents", "AGENTS"],
   ["launchpad", "LAUNCHPAD"],
   ["graph", "THE GRAPH"],
@@ -56,10 +59,14 @@ let alertless: (m: string) => void = () => {};
 
 export default function App() {
   const [view, setView] = useState<View>("overview");
+  // undefined = checking; null = not signed in (login shows until signed in or skipped)
+  const [me, setMe] = useState<Row | null | undefined>(undefined);
+  const [gate, setGate] = useState(true);
+  useEffect(() => { api.team().then((t) => { setMe(t.me); if (t.me) setGate(false); }, () => setMe(null)); }, []);
   const [params, setParams] = useState<Row>({});
   const [status, setStatus] = useState<Row>({ state: "idle" });
   const [lastRefresh, setLastRefresh] = useState<string | null>(null);
-  const [launching, setLaunching] = useState<{ p: Row; agent?: "claude" | "codex"; mode?: LaunchReq["mode"]; preset?: string } | null>(null);
+  const [launching, setLaunching] = useState<{ p: Row; agent?: "claude" | "codex"; mode?: LaunchReq["mode"]; preset?: string; task?: string } | null>(null);
 
   useEffect(() => {
     api.status().then((s) => { setStatus(s.status); setLastRefresh(s.last_refresh); }, () => {});
@@ -82,9 +89,9 @@ export default function App() {
     window.addEventListener("mouseup", mouse);
     return () => { window.removeEventListener("keydown", key); window.removeEventListener("mouseup", mouse); };
   }, [view, params]);
-  const launch = (p: Row, agent?: "claude" | "codex", mode?: LaunchReq["mode"], preset?: string) => setLaunching({ p, agent, mode, preset });
+  const launch = (p: Row, agent?: "claude" | "codex", mode?: LaunchReq["mode"], preset?: string, task?: string) => setLaunching({ p, agent, mode, preset, task });
   const busy = status.state === "indexing" || status.state === "discovery";
-  const page = { overview: <Overview />, workspace: <Workspace />, projects: <Projects />, agents: <Agents />, launchpad: <Launchpad />, graph: <Graph />, discovery: <Discovery />, timeline: <Timeline />, settings: <Settings /> }[view];
+  const page = { overview: <Overview />, workspace: <Workspace />, projects: <Projects />, actions: <Actions />, agents: <Agents />, launchpad: <Launchpad />, graph: <Graph />, discovery: <Discovery />, timeline: <Timeline />, settings: <Settings /> }[view];
 
   return (
     <NavCtx.Provider value={{ nav, params, launch }}>
@@ -100,6 +107,12 @@ export default function App() {
           </div>
           <div className="spacer" />
           <Search go={nav} />
+          {me ? (
+            <span className="userchip" title="Signed in: your name goes on action items">
+              <span className="avatar" style={{ background: me.color }}>{String(me.name)[0]}</span>{me.name}
+              <button className="btn sm ghost" onClick={() => api.logout().then(() => { setMe(null); setGate(true); })}>Lock</button>
+            </span>
+          ) : <button className="btn sm" onClick={() => setGate(true)}>Sign in</button>}
           <button className="btn sm" onClick={() => api.toggleChat().catch((e) => alertless(String(e)))} title="Slide-out chat (Discord by default; set the URL in Settings)">Chat</button>
           <button className="btn sm" onClick={() => api.refresh()} disabled={busy} title="Re-index projects, git and sessions">Refresh</button>
           <div className="sysstat">
@@ -131,7 +144,8 @@ export default function App() {
           </nav>
         </footer>
       </div>
-      {launching && <LaunchDialog project={launching.p} agent={launching.agent} mode={launching.mode} preset={launching.preset} onClose={() => setLaunching(null)} />}
+      {gate && me !== undefined && <Login onDone={(m) => { setMe(m); setGate(false); }} />}
+      {launching && <LaunchDialog project={launching.p} agent={launching.agent} mode={launching.mode} preset={launching.preset} task={launching.task} onClose={() => setLaunching(null)} />}
     </NavCtx.Provider>
   );
 }

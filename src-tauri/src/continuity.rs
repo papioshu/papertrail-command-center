@@ -121,6 +121,25 @@ pub fn parse_tasks(md: &str) -> Vec<Task> {
     out
 }
 
+/// One TASKS.md line ticked or unticked. A plain bullet becomes a checked box. `None`: not a bullet.
+pub fn toggle_line(l: &str) -> Option<String> {
+    let (pad, t) = l.split_at(l.len() - l.trim_start().len());
+    if let Some(r) = t.strip_prefix("- [ ]") {
+        Some(format!("{pad}- [x]{r}"))
+    } else if let Some(r) = t.strip_prefix("- [x]").or_else(|| t.strip_prefix("- [X]")) {
+        Some(format!("{pad}- [ ]{r}"))
+    } else {
+        t.strip_prefix("- ").or_else(|| t.strip_prefix("* ")).map(|r| format!("{pad}- [x] {r}"))
+    }
+}
+
+/// The text a task line contributes, as parse_tasks stores it (used to check an indexed line still holds that task).
+pub fn line_text(l: &str) -> String {
+    let t = l.trim_start();
+    let r = ["- [ ]", "- [x]", "- [X]", "- ", "* "].iter().find_map(|p| t.strip_prefix(p)).unwrap_or(t);
+    clean(r)
+}
+
 /// Dated headings (PROJECT LOG) and D### / dated headings (DECISIONS).
 pub fn parse_entries(md: &str, decisions: bool) -> Vec<Entry> {
     let lines: Vec<&str> = md.lines().collect();
@@ -227,6 +246,15 @@ next merge.
         assert_eq!(t2[0].text, "🟦 **CLAUDE:** saved for restart, next merge.");
         assert_eq!(t2[1].text, "**Fix build** in `a.tsx` - nested note");
         assert_eq!(t2[2].status, "active");
+    }
+    #[test]
+    fn toggle() {
+        assert_eq!(toggle_line("- [ ] 🟦 CLAUDE — a").as_deref(), Some("- [x] 🟦 CLAUDE — a"));
+        assert_eq!(toggle_line("  - [X] b").as_deref(), Some("  - [ ] b"));
+        assert_eq!(toggle_line("- plain").as_deref(), Some("- [x] plain"));
+        assert_eq!(toggle_line("paragraph"), None);
+        assert_eq!(line_text("- [ ] do  a"), "do a");
+        assert!(parse_tasks("## NOW\n- [ ] do a\n  more\n")[0].text.starts_with(&line_text("- [ ] do a")));
     }
     #[test]
     fn entries() {

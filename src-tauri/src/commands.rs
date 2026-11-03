@@ -700,3 +700,119 @@ pub fn get_folders(st: State<AppState>, id: String) -> R<Vec<Value>> {
         })
         .collect())
 }
+
+/* ---------- TASKS.md ticking (previewed write) ---------- */
+
+/// The exact TASKS.md line a tick would change. Refuses when the file moved on since indexing.
+fn task_line(c: &rusqlite::Connection, id: i64) -> R<(String, PathBuf, usize, String, String)> {
+    let r = rows(c, "SELECT project_id, source_file, line, text FROM tasks WHERE id=?1", [id])?.into_iter().next().ok_or("unknown task")?;
+    let file = PathBuf::from(r["source_file"].as_str().unwrap_or_default());
+    if file.file_name().and_then(|n| n.to_str()) != Some("TASKS.md") {
+        return Err("Only TASKS.md items can be ticked here.".into());
+    }
+    let n = r["line"].as_i64().unwrap_or(0) as usize;
+    let md = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+    let before = md.lines().nth(n.wrapping_sub(1)).unwrap_or_default().to_string();
+    let lt = crate::continuity::line_text(&before);
+    if lt.is_empty() || !r["text"].as_str().unwrap_or_default().starts_with(&lt) {
+        return Err("TASKS.md changed since it was read. Refresh and try again.".into());
+    }
+    let after = crate::continuity::toggle_line(&before).ok_or("This item is a paragraph, not a bullet. Open TASKS.md to change it.")?;
+    Ok((r["project_id"].as_str().unwrap_or_default().to_string(), file, n, before, after))
+}
+
+#[tauri::command(async)]
+pub fn task_toggle_preview(st: State<AppState>, id: i64) -> R<Value> {
+    with(&st, |c| {
+        let (_, file, line, before, after) = task_line(c, id)?;
+        Ok(json!({"file": file, "line": line, "before": before, "after": after}))
+    })
+}
+
+#[tauri::command(async)]
+pub fn task_toggle(st: State<AppState>, id: i64, before: String) -> R<()> {
+    with(&st, |c| {
+        let (pid, file, line, now, after) = task_line(c, id)?;
+        if now != before {
+            return Err("TASKS.md changed after the preview. Refresh and try again.".into());
+        }
+        let md = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
+        // Replace only that line, keeping each line's own ending (LF or CRLF).
+        let out: String = md
+            .split_inclusive('\n')
+            .enumerate()
+            .map(|(i, l)| if i + 1 == line { format!("{after}{}", &l[l.trim_end_matches(['\r', '\n']).len()..]) } else { l.to_string() })
+            .collect();
+        let tmp = file.with_extension("md.tmp");
+        std::fs::write(&tmp, out).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, &file).map_err(|e| e.to_string())?;
+        crate::util::log("info", format!("task ticked: {}:{line}", file.display()));
+        crate::indexer::reindex_project(c, &pid)
+    })
+}
+
+/* ---------- team login + action items ---------- */
+
+#[tauri::command(async)]
+pub fn team_profiles(st: State<AppState>) -> R<Value> {
+    let me = st.user.lock().unwrap().clone();
+    with(&st, |c| Ok(json!({"profiles": crate::team::profiles(c)?.iter().map(|p| p.public()).collect::<Vec<_>>(), "me": me})))
+}
+
+#[tauri::command(async)]
+pub fn team_create(st: State<AppState>, name: String, pin: String, color: String) -> R<Value> {
+    let p = with(&st, |c| crate::team::create_profile(c, &name, &pin, &color))?;
+    *st.user.lock().unwrap() = Some(p.public());
+    Ok(p.public())
+}
+
+#[tauri::command(async)]
+pub fn team_login(st: State<AppState>, id: String, pin: String) -> R<Value> {
+    match with(&st, |c| crate::team::verify(c, &id, &pin)) {
+        Ok(p) => {
+            *st.user.lock().unwrap() = Some(p.public());
+            Ok(p.public())
+        }
+        Err(e) => {
+            std::thread::sleep(std::time::Duration::from_millis(700)); // slows PIN guessing
+            Err(e)
+        }
+    }
+}
+
+#[tauri::command(async)]
+pub fn team_logout(st: State<AppState>) {
+    *st.user.lock().unwrap() = None;
+}
+
+/// Action items for one project, or for every project that has a vault folder.
+#[tauri::command(async)]
+pub fn actions_list(st: State<AppState>, project_id: Option<String>) -> R<Vec<Value>> {
+    with(&st, |c| {
+        let ps = rows(c, "SELECT id, name, vault_dir FROM projects WHERE hidden=0 AND vault_dir IS NOT NULL AND (?1 IS NULL OR id=?1)", [&project_id])?;
+        let mut out = vec![];
+        for p in ps {
+            let Ok(path) = crate::team::file_for(p["vault_dir"].as_str()) else { continue };
+            for it in crate::team::read(&path)? {
+                let mut v = serde_json::to_value(it).unwrap();
+                v["project_id"] = p["id"].clone();
+                v["project"] = p["name"].clone();
+                out.push(v);
+            }
+        }
+        Ok(out)
+    })
+}
+
+#[tauri::command(async)]
+pub fn action_op(st: State<AppState>, project_id: String, op: crate::team::Op) -> R<()> {
+    let me = st.user.lock().unwrap().clone().ok_or("Sign in first.")?;
+    let by = me["name"].as_str().unwrap_or_default().to_string();
+    with(&st, |c| {
+        let p = rows(c, "SELECT name, vault_dir FROM projects WHERE id=?1", [&project_id])?.into_iter().next().ok_or("unknown project")?;
+        let path = crate::team::file_for(p["vault_dir"].as_str())?;
+        crate::team::run_op(&path, p["name"].as_str().unwrap_or_default(), &op, &by)?;
+        crate::util::log("info", format!("action {} by {by} in {project_id}", op.kind));
+        Ok(())
+    })
+}

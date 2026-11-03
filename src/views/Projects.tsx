@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import FolderMap from "./FolderMap";
+import { ActionBoard } from "./Actions";
 import { api, type Row } from "../api";
 import {
   ago, AgentChip, Barcode, brand, Card, StatusBar, DataTable, DayChart, Empty, ErrBox, Modal, ProjectActions, RangePicker, rangeFor, sessionState, short, useAsync, useNav, type Col, type Range,
@@ -143,7 +144,7 @@ function Detail({ id }: { id: string }) {
 
   const tabs: [string, string, number | null][] = [
     ["overview", "Dossier", null], ["activity", "Activity", null], ["work", "Workstreams & agents", null],
-    ["tasks", "Task board", tasks.length], ["tasklist", "Task list", null], ["commits", "Commits", commits.data?.items.length ?? 0], ["files", "Files", files.length],
+    ["actions", "Action items", null], ["tasks", "Task board", tasks.length], ["tasklist", "Task list", null], ["commits", "Commits", commits.data?.items.length ?? 0], ["files", "Files", files.length],
     ["agentfiles", "Agent edits", agent_files.length], ["sessions", "Sessions", sessions.length],
     ["decisions", "Decisions", events.filter((e) => e.kind === "decision").length], ["log", "Log", events.filter((e) => e.kind === "log").length],
     ["links", "Related", links.length], ["reviews", "Review", reviews.length], ["launches", "Launches", launches.length],
@@ -315,7 +316,8 @@ function Detail({ id }: { id: string }) {
       </div>
       )}
       <section className={["overview", "activity", "work"].includes(tab) ? "" : "card"} style={{ overflow: "hidden" }}>
-        {tab === "tasks" && <TaskBoard tasks={tasks} />}
+        {tab === "tasks" && <TaskBoard tasks={tasks} project={p} reload={d.reload} />}
+        {tab === "actions" && <div className="card-body"><ActionBoard projectId={p.id} /></div>}
         {tab === "tasklist" && <DataTable rows={tasks} height={460} onRow={(r) => api.openPath(r.source_file)} cols={[
           { key: "status", label: "Status", width: "10%", render: (r) => <span className={`chip ${r.status}`}>{r.status}</span>, sort: (r) => STATUS_ORDER.indexOf(r.status) },
           { key: "section", label: "Section", width: "16%" },
@@ -374,8 +376,12 @@ function Detail({ id }: { id: string }) {
 }
 
 /** Status board: one column per status, items as cards. Click opens the TASKS.md it came from. */
-function TaskBoard({ tasks }: { tasks: Row[] }) {
+function TaskBoard({ tasks, project, reload }: { tasks: Row[]; project: Row; reload: () => void }) {
   const [showDone, setShowDone] = useState(false);
+  const { launch } = useNav();
+  const [tick, setTick] = useState<{ t: Row; pv?: Row; err?: string } | null>(null);
+  const openTick = (t: Row) => { setTick({ t }); api.taskTogglePreview(t.id).then((pv) => setTick({ t, pv }), (e) => setTick({ t, err: String(e) })); };
+  const confirmTick = () => tick?.pv && api.taskToggle(tick.t.id, tick.pv.before).then(() => { setTick(null); reload(); }, (e) => setTick({ ...tick, err: String(e) }));
   const cols = (["active", "pending", "blocked", "deferred", "done"] as const).filter((s) => s !== "done" || showDone);
   if (!tasks.length) return <div className="card-body"><Empty>No TASKS.md items for this project</Empty></div>;
   return (
@@ -401,6 +407,11 @@ function TaskBoard({ tasks }: { tasks: Row[] }) {
                       {t.author && <AgentChip agent={t.author} />}
                       <span className="dim mono ellipsis" style={{ fontSize: 9.5 }}>{t.section || "—"} · L{t.line}</span>
                     </div>
+                    <div className="row" style={{ marginTop: 8, gap: 6 }} onClick={(e) => e.stopPropagation()}>
+                      <button className="btn sm" onClick={() => openTick(t)} title="Tick or untick this item in TASKS.md (preview first)">{st === "done" ? "Reopen" : "Done ✓"}</button>
+                      {st !== "done" && <button className="btn sm claude" onClick={() => launch(project, "claude", "custom", undefined, t.text)} title="Open Claude Code on this task">Claude</button>}
+                      {st !== "done" && <button className="btn sm codex" onClick={() => launch(project, "codex", "custom", undefined, t.text)} title="Open Codex on this task">Codex</button>}
+                    </div>
                   </div>
                 ))}
                 {!items.length && <div className="dim small mono" style={{ padding: 8 }}>none</div>}
@@ -409,6 +420,18 @@ function TaskBoard({ tasks }: { tasks: Row[] }) {
           );
         })}
       </div>
+      {tick && (
+        <Modal title="Update TASKS.md" onClose={() => setTick(null)} foot={<button className="btn primary" disabled={!tick.pv} onClick={confirmTick}>Write change</button>}>
+          {tick.err ? <ErrBox error={tick.err} /> : !tick.pv ? <div className="skeleton" /> : (
+            <div className="col">
+              <div className="dim small mono">{String(tick.pv.file)} · line {tick.pv.line}</div>
+              <pre className="doc" style={{ color: "var(--muted)" }}>− {tick.pv.before}</pre>
+              <pre className="doc">+ {tick.pv.after}</pre>
+              <div className="dim small">Only this line changes. Agents and the vault see it immediately.</div>
+            </div>
+          )}
+        </Modal>
+      )}
     </div>
   );
 }

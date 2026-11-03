@@ -34,6 +34,8 @@ pub fn defaults() -> Value {
         "codex_dir": home().join(".codex"),
         "refresh_minutes": 15,
         "close_to_tray": true,
+        "notifications": true,
+        "simple_mode": false,
         "workstream_aliases": {},
         // Owner-defined grouping (2026-11-02): workspace or project name -> the workspace it belongs to.
         "workspace_groups": {

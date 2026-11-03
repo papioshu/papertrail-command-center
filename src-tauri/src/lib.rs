@@ -1,4 +1,5 @@
 mod agents;
+mod alerts;
 mod commands;
 mod continuity;
 mod db;
@@ -7,6 +8,7 @@ mod gitscan;
 mod indexer;
 mod launcher;
 mod registry;
+mod team;
 mod util;
 
 use serde_json::{json, Value};
@@ -23,6 +25,8 @@ pub struct AppState {
     pub briefing_since: String,
     pub task_snapshot: Value,
     pub close_to_tray: Mutex<bool>,
+    /// Signed-in team profile (memory only: every start shows the login).
+    pub user: Mutex<Option<Value>>,
 }
 
 /// WebView2 memory target: Low while hidden in the tray, Normal when shown.
@@ -74,6 +78,7 @@ fn briefing_since(conn: &rusqlite::Connection) -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
@@ -94,8 +99,9 @@ pub fn run() {
             db::set_setting(&conn, "task_snapshot", &Value::Object(now_snap))?;
             db::set_setting(&conn, "last_seen", &json!(util::now_iso()))?;
             let close_to_tray = registry::Config::load(&conn).close_to_tray;
-            let worker = indexer::spawn(app.handle().clone(), db_path);
+            let worker = indexer::spawn(app.handle().clone(), db_path.clone());
             worker.send(indexer::Job::Refresh); // cached data shows first; this refreshes behind it
+            indexer::spawn_watcher(db_path.clone(), worker.clone());
             app.manage(AppState {
                 db: Mutex::new(conn),
                 data_dir,
@@ -103,6 +109,7 @@ pub fn run() {
                 briefing_since: since,
                 task_snapshot: snapshot,
                 close_to_tray: Mutex::new(close_to_tray),
+                user: Mutex::new(None),
             });
 
             let open = MenuItem::with_id(app, "open", "Open Command Center", true, None::<&str>)?;
@@ -188,6 +195,14 @@ pub fn run() {
             commands::get_sparks,
             commands::toggle_chat,
             commands::get_folders,
+            commands::task_toggle_preview,
+            commands::task_toggle,
+            commands::team_profiles,
+            commands::team_create,
+            commands::team_login,
+            commands::team_logout,
+            commands::actions_list,
+            commands::action_op,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

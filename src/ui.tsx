@@ -22,9 +22,9 @@ export function brand(workspace: string): { img: string | null; glow: string } {
 }
 
 /* ---------- navigation ---------- */
-export type View = "overview" | "workspace" | "projects" | "agents" | "launchpad" | "graph" | "discovery" | "timeline" | "settings";
+export type View = "overview" | "workspace" | "projects" | "actions" | "agents" | "launchpad" | "graph" | "discovery" | "timeline" | "settings";
 export type NavFn = (v: View, params?: Row) => void;
-export const NavCtx = createContext<{ nav: NavFn; params: Row; launch: (p: Row, agent?: "claude" | "codex", mode?: LaunchReq["mode"], preset?: string) => void }>({
+export const NavCtx = createContext<{ nav: NavFn; params: Row; launch: (p: Row, agent?: "claude" | "codex", mode?: LaunchReq["mode"], preset?: string, task?: string) => void }>({
   nav: () => {},
   params: {},
   launch: () => {},
@@ -332,11 +332,11 @@ const MODES: { key: LaunchReq["mode"]; label: string; hint: string }[] = [
   { key: "custom", label: "Custom prompt", hint: "Your own task, combined with the project brief." },
 ];
 
-export function LaunchDialog({ project, agent: a0 = "claude", mode: m0 = "fresh", preset: p0, onClose }: { project: Row; agent?: "claude" | "codex"; mode?: LaunchReq["mode"]; preset?: string; onClose: () => void }) {
+export function LaunchDialog({ project, agent: a0 = "claude", mode: m0 = "fresh", preset: p0, task: t0 = "", onClose }: { project: Row; agent?: "claude" | "codex"; mode?: LaunchReq["mode"]; preset?: string; task?: string; onClose: () => void }) {
   const [agent, setAgent] = useState<"claude" | "codex">(a0);
   const [mode, setMode] = useState<LaunchReq["mode"]>(p0 ? "targeted" : m0);
   const [preset, setPreset] = useState<string | undefined>(p0);
-  const [task, setTask] = useState("");
+  const [task, setTask] = useState(t0);
   const [preview, setPreview] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<Row | null>(null);
