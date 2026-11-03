@@ -61,7 +61,8 @@ export default function App() {
   const [view, setView] = useState<View>("overview");
   // undefined = checking; null = not signed in (login shows until signed in or skipped)
   const [me, setMe] = useState<Row | null | undefined>(undefined);
-  const [gate, setGate] = useState(true);
+  // Solo use for now (owner 2026-11-03): no sign-in screen at launch; "Sign in" in the top bar still opens it.
+  const [gate, setGate] = useState(false);
   useEffect(() => { api.team().then((t) => { setMe(t.me); if (t.me) setGate(false); }, () => setMe(null)); }, []);
   const [params, setParams] = useState<Row>({});
   const [status, setStatus] = useState<Row>({ state: "idle" });
