@@ -85,7 +85,7 @@ export default function Login({ onDone }: { onDone: (me: Row | null) => void }) 
                 ? <button className="btn ghost" onClick={() => { setCreating(false); setErr(null); }}>Back</button>
                 : <button className="btn ghost" onClick={() => onDone(null)}>Skip for now</button>}
             </div>
-            <div className="dim small">Saved to the shared vault so teammates see your name on action items. The PIN marks who did what; it is not a password vault.</div>
+            <div className="dim small">Saved to the shared vault so teammates see your name on action items. The PIN only marks who did what. Anyone with the vault can work it out, so don't reuse your phone or bank PIN.</div>
           </div>
         ) : ready && who ? (
           <div className={`col login-in ${shake ? "shake" : ""}`} key={shake} style={{ gap: 12, alignItems: "center" }}>
