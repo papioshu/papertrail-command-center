@@ -1,8 +1,9 @@
 # CHAT: read and continue every agent chat in the app (design)
 
 🟦 CLAUDE · 2026-11-06 · Status: **draft, awaiting owner approval.** Nothing has been built.
-Inspiration: the owner pointed at an outside project's Chats tab as the feel to aim for. **Owner rule (2026-11-06): don't
-touch that repo; all work happens in this command center.** Nothing is copied from it or depended on.
+Reference: [internethokage/project-hq](https://github.com/internethokage/project-hq) (MIT). Its Chats tab is the feel to
+aim for. **Owner rule (2026-11-06): reference only.** Read it for ideas, never modify it, and build everything in this
+command center.
 
 ## Intent
 
@@ -124,9 +125,10 @@ thread and send approval requests. If it can, Codex gets the same cards. If not,
 3. **Reply for Claude:** runner, cards, Stop, modes, notification.
 4. **Codex reply:** spike, then build or skip.
 
-## Outside project
-None. Owner: "dont touch that REPO onlyn work on our command center". Everything here is written fresh in
-this repo; no code, files or dependencies from it.
+## Reference project
+Owner: "dont touch that REPO onlyn work on our command center" / "i jsut wanted to use that repo for refernce".
+Read it to see how it solves something (for example its permission-card flow or how it folds tool steps), then
+write our own version here. It is never edited, never a dependency, and no work happens in it.
 
 ## Verification
 - **Unit tests (Rust):** transcript normalising for both agents (fixtures: tool runs, images, meta entries, a partial
