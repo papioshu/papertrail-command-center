@@ -1,8 +1,8 @@
 # CHAT: read and continue every agent chat in the app (design)
 
 🟦 CLAUDE · 2026-11-06 · Status: **draft, awaiting owner approval.** Nothing has been built.
-Reference: [internethokage/project-hq](https://github.com/internethokage/project-hq) at `1d72de2` (MIT). Its Chats tab
-is the model for this feature; see "Borrowing from project-hq".
+Inspiration: the owner pointed at an outside project's Chats tab as the feel to aim for. **Owner rule (2026-11-06): don't
+touch that repo; all work happens in this command center.** Nothing is copied from it or depended on.
 
 ## Intent
 
@@ -86,7 +86,7 @@ States are worked out from evidence, most urgent first (owner's "in process or r
 
 ### 4. Reply in place (Claude)
 - **Engine:** a small Node **chat runner** (`sidecar/chat-runner.mjs`) using `@anthropic-ai/claude-agent-sdk`,
-  the same library and call shape project-hq uses: `query({ prompt, options: { cwd, resume: sessionId,
+  the Agent SDK's `query({ prompt, options: { cwd, resume: sessionId,
   permissionMode, abortController, canUseTool, settingSources: ['user','project','local'] } })`, plus
   `interrupt()` and `setPermissionMode()`. It uses the owner's existing Claude Code login and settings; no API key.
   - **Why Node:** the SDK is the supported way to resume a session with a per-action permission callback. The app is
@@ -124,15 +124,14 @@ thread and send approval requests. If it can, Codex gets the same cards. If not,
 3. **Reply for Claude:** runner, cards, Stop, modes, notification.
 4. **Codex reply:** spike, then build or skip.
 
-## Borrowing from project-hq
-It's MIT-licensed. Ideas are free to use. Any code adapted from it (for example the ask/timeout flow in
-`lib/agent.js`, or the transcript folding in `lib/transcript.js`) keeps its copyright notice in a header comment and
-gets a NOTICE line in the README. It's read as reference only and is not added as a dependency.
+## Outside project
+None. Owner: "dont touch that REPO onlyn work on our command center". Everything here is written fresh in
+this repo; no code, files or dependencies from it.
 
 ## Verification
 - **Unit tests (Rust):** transcript normalising for both agents (fixtures: tool runs, images, meta entries, a partial
   last line), status rules, and commit parsing (amended and missing hashes).
-- **Runner:** a fake-SDK mode (project-hq ships `scripts/fake-agent-sdk.mjs` for exactly this) so the card, deny,
+- **Runner:** a fake-SDK mode (our own small stand-in for the SDK) so the card, deny,
   timeout and stop flows are tested without spending tokens.
 - **Real check over CDP on the packaged exe:**
   - open a 100 MB+ transcript and confirm it stays responsive;
