@@ -75,7 +75,37 @@ impl Perm {
     }
 }
 
+impl Perm {
+    /// Stored/wire name, as in the architecture table: `TaskEditOwn` → `task.edit_own`.
+    pub fn name(self) -> String {
+        let mut words = Vec::new();
+        for c in format!("{self:?}").chars() {
+            if c.is_uppercase() {
+                words.push(String::new());
+            }
+            words.last_mut().expect("starts uppercase").push(c.to_ascii_lowercase());
+        }
+        format!("{}.{}", words[0], words[1..].join("_"))
+    }
+    pub fn parse(s: &str) -> Option<Perm> {
+        Perm::ALL.into_iter().find(|p| p.name() == s)
+    }
+}
+
 impl Role {
+    pub const ALL: [Role; 5] = [Role::Owner, Role::Admin, Role::Editor, Role::Contributor, Role::Viewer];
+    pub fn name(self) -> &'static str {
+        match self {
+            Role::Owner => "owner",
+            Role::Admin => "admin",
+            Role::Editor => "editor",
+            Role::Contributor => "contributor",
+            Role::Viewer => "viewer",
+        }
+    }
+    pub fn parse(s: &str) -> Option<Role> {
+        Role::ALL.into_iter().find(|r| r.name() == s)
+    }
     pub fn allows(self, p: Perm) -> bool {
         let reads = matches!(p, WorkspaceRead | ProjectRead | TaskRead | DocRead | MediaRead);
         let contribute = matches!(p, TaskCreate | TaskEditOwn | MediaUpload);
@@ -387,6 +417,19 @@ mod tests {
         }
         assert_eq!(publishable("task"), Some(Publishable::Task));
         assert_eq!(publishable("approved_doc"), Some(Publishable::ApprovedDoc));
+    }
+
+    #[test]
+    fn names_round_trip() {
+        assert_eq!(TaskEditOwn.name(), "task.edit_own");
+        assert_eq!(WorkspaceRead.name(), "workspace.read");
+        for p in Perm::ALL {
+            assert_eq!(Perm::parse(&p.name()), Some(p));
+        }
+        for r in Role::ALL {
+            assert_eq!(Role::parse(r.name()), Some(r));
+        }
+        assert_eq!(Perm::parse("TaskRead"), None);
     }
 
     #[test]

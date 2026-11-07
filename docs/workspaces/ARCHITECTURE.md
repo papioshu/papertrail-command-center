@@ -1,7 +1,7 @@
 # Multi-user workspaces — data ownership, privacy and access control
 
-Status: **Milestone 0, architecture.** Decided in D030. Only the access-control core
-(`crates/access`) is built so far. The hub, sync and UI are later milestones (§10).
+Status: **Milestone 1 built** (D030, D031): the access-control core (`crates/access`) and the hub binary (`hub/`, run
+`ptcc-hub` with no arguments for usage). Sync, the desktop module and the UI are later milestones (§13).
 Owner brief: self-hosted and optional; no Supabase or other hosted backend-as-a-service; the desktop exe stays light and
 local-first.
 

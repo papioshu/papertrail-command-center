@@ -1,0 +1,345 @@
+//! M1 gate (ARCHITECTURE.md §13): every route × role × scope, revoked device 401, hidden project 404, restore drill.
+use ptcc_hub::api::{new_workspace, revoke_user, Hub, Reply};
+use ptcc_hub::{private_bind, serve, store};
+use serde_json::{json, Value};
+use std::sync::Arc;
+
+struct Fx {
+    hub: Hub,
+    ws: String,
+    other_ws: String,
+    p1: String,
+    p2: String,
+    /// actor name → (user id, bearer)
+    who: Vec<(&'static str, String, String)>,
+    invite_viewer: String,
+}
+
+impl Fx {
+    fn call(&self, method: &str, path: &str, as_: Option<&str>, body: Value) -> Reply {
+        let auth = as_.map(|a| format!("Bearer {}", self.token(a)));
+        self.hub.handle(method, path, auth.as_deref(), body.to_string().as_bytes())
+    }
+    fn token(&self, a: &str) -> &str {
+        &self.who.iter().find(|w| w.0 == a).unwrap().2
+    }
+    fn user(&self, a: &str) -> &str {
+        &self.who.iter().find(|w| w.0 == a).unwrap().1
+    }
+}
+
+fn redeem(hub: &Hub, token: &str, name: &str) -> (String, String) {
+    let r = hub.handle("POST", "/v1/redeem", None, json!({ "token": token, "name": name, "device_name": "pc" }).to_string().as_bytes());
+    assert_eq!(r.code, 200, "{r:?}");
+    (r.body["user_id"].as_str().unwrap().into(), r.body["device"]["token"].as_str().unwrap().into())
+}
+
+/// Workspace with projects p1, p2 and one member per role, a member scoped to p1 and an outsider (owner elsewhere).
+fn fixture() -> Fx {
+    let hub = Hub::new(store::open(None).unwrap());
+    let (ws, owner_inv) = new_workspace(&hub.db.lock().unwrap(), "FLY WING").unwrap();
+    let (other_ws, other_inv) = new_workspace(&hub.db.lock().unwrap(), "OARA").unwrap();
+    let mut who = Vec::new();
+    let (u, t) = redeem(&hub, &owner_inv, "Rich");
+    who.push(("owner", u, t.clone()));
+    let auth = format!("Bearer {t}");
+    let post = |path: &str, b: Value| hub.handle("POST", path, Some(&auth), b.to_string().as_bytes());
+    let p1 = post(&format!("/v1/workspaces/{ws}/projects"), json!({ "name": "site" })).body["id"].as_str().unwrap().to_string();
+    let p2 = post(&format!("/v1/workspaces/{ws}/projects"), json!({ "name": "contracts" })).body["id"].as_str().unwrap().to_string();
+    for (actor, role, scope) in [("admin", "admin", None), ("editor", "editor", None), ("contributor", "contributor", None), ("viewer", "viewer", None), ("scoped", "editor", Some(json!([p1])))] {
+        let inv = post(&format!("/v1/workspaces/{ws}/invitations"), json!({ "role": role, "projects": scope }));
+        assert_eq!(inv.code, 200, "{inv:?}");
+        let (u, t) = redeem(&hub, inv.body["token"].as_str().unwrap(), actor);
+        who.push((actor, u, t));
+    }
+    let (u, t) = redeem(&hub, &other_inv, "Outsider");
+    who.push(("outsider", u, t));
+    let invite_viewer = post(&format!("/v1/workspaces/{ws}/invitations"), json!({ "role": "viewer" })).body["id"].as_str().unwrap().to_string();
+    Fx { hub, ws, other_ws, p1, p2, who, invite_viewer }
+}
+
+const ACTORS: [&str; 7] = ["owner", "admin", "editor", "contributor", "viewer", "scoped", "outsider"];
+
+#[test]
+fn every_route_by_every_role_and_scope() {
+    // (label, method, path template, body, expected status for ACTORS in order). {ws} {p1} {p2} {viewer} {contributor} {admin} {inv}
+    let cases: Vec<(&str, &str, &str, Value, [u16; 7])> = vec![
+        ("read workspace", "GET", "/v1/workspaces/{ws}", json!({}), [200, 200, 200, 200, 200, 200, 404]),
+        ("rename workspace", "PATCH", "/v1/workspaces/{ws}", json!({ "name": "New" }), [200, 200, 403, 403, 403, 403, 404]),
+        ("delete workspace", "DELETE", "/v1/workspaces/{ws}", json!({}), [200, 403, 403, 403, 403, 403, 404]),
+        ("list projects", "GET", "/v1/workspaces/{ws}/projects", json!({}), [200, 200, 200, 200, 200, 200, 404]),
+        ("create project", "POST", "/v1/workspaces/{ws}/projects", json!({ "name": "media" }), [200, 200, 403, 403, 403, 403, 404]),
+        ("read in-scope project", "GET", "/v1/workspaces/{ws}/projects/{p1}", json!({}), [200, 200, 200, 200, 200, 200, 404]),
+        ("read out-of-scope project", "GET", "/v1/workspaces/{ws}/projects/{p2}", json!({}), [200, 200, 200, 200, 200, 404, 404]),
+        ("list members", "GET", "/v1/workspaces/{ws}/members", json!({}), [200, 200, 200, 200, 200, 200, 404]),
+        ("change a viewer's role", "PATCH", "/v1/workspaces/{ws}/members/{viewer}", json!({ "role": "contributor" }), [200, 200, 403, 403, 403, 403, 404]),
+        ("promote a viewer to admin", "PATCH", "/v1/workspaces/{ws}/members/{viewer}", json!({ "role": "admin" }), [200, 403, 403, 403, 403, 403, 404]),
+        ("demote an admin", "PATCH", "/v1/workspaces/{ws}/members/{admin}", json!({ "role": "viewer" }), [200, 403, 403, 403, 403, 403, 404]),
+        ("remove a contributor", "DELETE", "/v1/workspaces/{ws}/members/{contributor}", json!({}), [200, 200, 403, 403, 403, 403, 404]),
+        ("invite an editor", "POST", "/v1/workspaces/{ws}/invitations", json!({ "role": "editor" }), [200, 200, 403, 403, 403, 403, 404]),
+        ("invite an admin", "POST", "/v1/workspaces/{ws}/invitations", json!({ "role": "admin" }), [200, 403, 403, 403, 403, 403, 404]),
+        ("invite an owner", "POST", "/v1/workspaces/{ws}/invitations", json!({ "role": "owner" }), [403, 403, 403, 403, 403, 403, 404]),
+        ("list invitations", "GET", "/v1/workspaces/{ws}/invitations", json!({}), [200, 200, 403, 403, 403, 403, 404]),
+        ("revoke an invitation", "DELETE", "/v1/workspaces/{ws}/invitations/{inv}", json!({}), [200, 200, 403, 403, 403, 403, 404]),
+        ("read audit", "GET", "/v1/workspaces/{ws}/audit", json!({}), [200, 200, 403, 403, 403, 403, 404]),
+        ("transfer ownership", "POST", "/v1/workspaces/{ws}/transfer", json!({ "user_id": "{admin}" }), [200, 403, 403, 403, 403, 403, 404]),
+        ("other workspace", "GET", "/v1/workspaces/{other}", json!({}), [404, 404, 404, 404, 404, 404, 200]),
+        ("unknown workspace", "GET", "/v1/workspaces/w_nope/projects", json!({}), [404, 404, 404, 404, 404, 404, 404]),
+        ("me", "GET", "/v1/me", json!({}), [200; 7]),
+        ("own devices", "GET", "/v1/devices", json!({}), [200; 7]),
+    ];
+    let mut failures = Vec::new();
+    for (label, method, tpl, body, want) in &cases {
+        for (i, actor) in ACTORS.iter().enumerate() {
+            let fx = fixture();
+            let fill = |s: &str| {
+                s.replace("{ws}", &fx.ws).replace("{other}", &fx.other_ws).replace("{p1}", &fx.p1).replace("{p2}", &fx.p2)
+                    .replace("{viewer}", fx.user("viewer")).replace("{contributor}", fx.user("contributor")).replace("{admin}", fx.user("admin"))
+                    .replace("{inv}", &fx.invite_viewer)
+            };
+            let body: Value = serde_json::from_str(&fill(&body.to_string())).unwrap();
+            let r = fx.call(method, &fill(tpl), Some(actor), body);
+            if r.code != want[i] {
+                failures.push(format!("{label} as {actor}: got {} want {} ({})", r.code, want[i], r.body));
+            }
+            // No anonymous access anywhere but health and redeem.
+            if i == 0 {
+                assert_eq!(fx.call(method, &fill(tpl), None, json!({})).code, 401, "{label} anonymous");
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{} mismatches:\n{}", failures.len(), failures.join("\n"));
+}
+
+#[test]
+fn scoped_member_lists_only_their_projects_and_hidden_looks_like_missing() {
+    let fx = fixture();
+    let list = fx.call("GET", &format!("/v1/workspaces/{}/projects", fx.ws), Some("scoped"), json!({}));
+    let ids: Vec<&str> = list.body["projects"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, [fx.p1.as_str()]);
+    assert_eq!(fx.call("GET", &format!("/v1/workspaces/{}/projects", fx.ws), Some("viewer"), json!({})).body["projects"].as_array().unwrap().len(), 2);
+    let hidden = fx.call("GET", &format!("/v1/workspaces/{}/projects/{}", fx.ws, fx.p2), Some("scoped"), json!({}));
+    let missing = fx.call("GET", &format!("/v1/workspaces/{}/projects/p_nope", fx.ws), Some("scoped"), json!({}));
+    assert_eq!((hidden.code, &hidden.body), (404, &missing.body), "a hidden project is indistinguishable from a missing one");
+    // Scopes and custom permissions are visible only to those who manage members.
+    let members = fx.call("GET", &format!("/v1/workspaces/{}/members", fx.ws), Some("scoped"), json!({}));
+    assert!(members.body["members"].as_array().unwrap().iter().all(|m| m.get("projects").is_none()), "{}", members.body);
+    let members = fx.call("GET", &format!("/v1/workspaces/{}/members", fx.ws), Some("admin"), json!({}));
+    assert!(members.body.to_string().contains(&fx.p1));
+}
+
+#[test]
+fn revoked_devices_users_and_members_lose_access() {
+    let fx = fixture();
+    let me = fx.call("GET", "/v1/me", Some("editor"), json!({}));
+    let dev = me.body["device_id"].as_str().unwrap().to_string();
+    assert_eq!(fx.call("DELETE", &format!("/v1/devices/{dev}"), Some("editor"), json!({})).code, 200);
+    assert_eq!(fx.call("GET", "/v1/me", Some("editor"), json!({})).code, 401, "revoked device");
+    // Another user's device can't be revoked (and looks missing).
+    let vdev = fx.call("GET", "/v1/me", Some("viewer"), json!({})).body["device_id"].as_str().unwrap().to_string();
+    assert_eq!(fx.call("DELETE", &format!("/v1/devices/{vdev}"), Some("admin"), json!({})).code, 404);
+    // Revoking a user (host CLI) revokes all their devices.
+    let extra = fx.call("POST", "/v1/devices", Some("viewer"), json!({ "name": "laptop" }));
+    let extra_token = extra.body["token"].as_str().unwrap().to_string();
+    assert_eq!(fx.hub.handle("GET", "/v1/me", Some(&format!("Bearer {extra_token}")), b"").code, 200);
+    assert!(revoke_user(&fx.hub.db.lock().unwrap(), fx.user("viewer")).unwrap());
+    assert_eq!(fx.call("GET", "/v1/me", Some("viewer"), json!({})).code, 401);
+    assert_eq!(fx.hub.handle("GET", "/v1/me", Some(&format!("Bearer {extra_token}")), b"").code, 401);
+    // A removed member sees the workspace as missing, then can rejoin only by a new invitation.
+    assert_eq!(fx.call("DELETE", &format!("/v1/workspaces/{}/members/{}", fx.ws, fx.user("contributor")), Some("admin"), json!({})).code, 200);
+    assert_eq!(fx.call("GET", &format!("/v1/workspaces/{}", fx.ws), Some("contributor"), json!({})).code, 404);
+    // Garbage and forged bearers.
+    for bad in ["Bearer", "Bearer x", "Bearer d_x.y", &format!("Bearer {dev}.00"), "Basic abc"] {
+        assert_eq!(fx.hub.handle("GET", "/v1/me", Some(bad), b"").code, 401, "{bad}");
+    }
+}
+
+#[test]
+fn invitations_are_single_use_expire_and_fail_the_same_way() {
+    let fx = fixture();
+    let inv = fx.call("POST", &format!("/v1/workspaces/{}/invitations", fx.ws), Some("owner"), json!({ "role": "viewer" }));
+    let token = inv.body["token"].as_str().unwrap().to_string();
+    redeem(&fx.hub, &token, "First");
+    let again = fx.hub.handle("POST", "/v1/redeem", None, json!({ "token": token, "name": "Second" }).to_string().as_bytes());
+    let unknown = fx.hub.handle("POST", "/v1/redeem", None, json!({ "token": "00", "name": "X" }).to_string().as_bytes());
+    assert_eq!((again.code, &again.body), (400, &unknown.body));
+    // Expired.
+    let inv = fx.call("POST", &format!("/v1/workspaces/{}/invitations", fx.ws), Some("owner"), json!({ "role": "viewer", "hours": 1 }));
+    fx.hub.db.lock().unwrap().execute("UPDATE invitations SET expires_at = '2000-01-01T00:00:00Z' WHERE id = ?1", [inv.body["id"].as_str().unwrap()]).unwrap();
+    let r = fx.hub.handle("POST", "/v1/redeem", None, json!({ "token": inv.body["token"], "name": "Late" }).to_string().as_bytes());
+    assert_eq!((r.code, &r.body), (400, &unknown.body));
+    // Revoked.
+    let inv = fx.call("POST", &format!("/v1/workspaces/{}/invitations", fx.ws), Some("owner"), json!({ "role": "viewer" }));
+    fx.call("DELETE", &format!("/v1/workspaces/{}/invitations/{}", fx.ws, inv.body["id"].as_str().unwrap()), Some("owner"), json!({}));
+    let r = fx.hub.handle("POST", "/v1/redeem", None, json!({ "token": inv.body["token"], "name": "Gone" }).to_string().as_bytes());
+    assert_eq!((r.code, &r.body), (400, &unknown.body));
+    // Over 7 days is refused; an existing member can't redeem into the same workspace and doesn't burn the invite.
+    assert_eq!(fx.call("POST", &format!("/v1/workspaces/{}/invitations", fx.ws), Some("owner"), json!({ "role": "viewer", "hours": 169 })).code, 400);
+    let inv = fx.call("POST", &format!("/v1/workspaces/{}/invitations", fx.ws), Some("owner"), json!({ "role": "viewer" }));
+    let r = fx.call("POST", "/v1/redeem", Some("editor"), json!({ "token": inv.body["token"] }));
+    assert_eq!(r.code, 409);
+    // A signed-in user joining a second workspace keeps one account and gets no new device.
+    let r = fx.call("POST", "/v1/redeem", Some("outsider"), json!({ "token": inv.body["token"] }));
+    assert_eq!(r.code, 200, "{r:?}");
+    assert!(r.body["device"].is_null());
+    assert_eq!(fx.call("GET", "/v1/me", Some("outsider"), json!({})).body["workspaces"].as_array().unwrap().len(), 2);
+    // A new user needs a name.
+    let inv = fx.call("POST", &format!("/v1/workspaces/{}/invitations", fx.ws), Some("owner"), json!({ "role": "viewer" }));
+    assert_eq!(fx.hub.handle("POST", "/v1/redeem", None, json!({ "token": inv.body["token"] }).to_string().as_bytes()).code, 400);
+}
+
+#[test]
+fn custom_permissions_and_ownership_rules() {
+    let fx = fixture();
+    let ws = &fx.ws;
+    let viewer = fx.user("viewer").to_string();
+    // Grant task.create to a viewer works; access-controlling permissions can't be granted.
+    assert_eq!(fx.call("PATCH", &format!("/v1/workspaces/{ws}/members/{viewer}"), Some("admin"), json!({ "grant": ["task.create"] })).code, 200);
+    assert_eq!(fx.call("PATCH", &format!("/v1/workspaces/{ws}/members/{viewer}"), Some("admin"), json!({ "grant": ["members.invite"] })).code, 400);
+    assert_eq!(fx.call("PATCH", &format!("/v1/workspaces/{ws}/members/{viewer}"), Some("admin"), json!({ "grant": ["nope"] })).code, 400);
+    // Denying project.read empties their project list; scoping to an unknown project is refused.
+    fx.call("PATCH", &format!("/v1/workspaces/{ws}/members/{viewer}"), Some("admin"), json!({ "deny": ["project.read"] }));
+    assert_eq!(fx.call("GET", &format!("/v1/workspaces/{ws}/projects"), Some("viewer"), json!({})).body["projects"], json!([]));
+    assert_eq!(fx.call("PATCH", &format!("/v1/workspaces/{ws}/members/{viewer}"), Some("admin"), json!({ "projects": ["p_nope"] })).code, 400);
+    // Scoping a member hides the other project at once.
+    let editor = fx.user("editor").to_string();
+    fx.call("PATCH", &format!("/v1/workspaces/{ws}/members/{editor}"), Some("owner"), json!({ "projects": [fx.p2] }));
+    assert_eq!(fx.call("GET", &format!("/v1/workspaces/{ws}/projects/{}", fx.p1), Some("editor"), json!({})).code, 404);
+    // Nobody can demote or remove the owner; transfer swaps owner and admin, and the old owner loses owner rights.
+    let owner = fx.user("owner").to_string();
+    assert_eq!(fx.call("DELETE", &format!("/v1/workspaces/{ws}/members/{owner}"), Some("admin"), json!({})).code, 403);
+    assert_eq!(fx.call("DELETE", &format!("/v1/workspaces/{ws}/members/{owner}"), Some("owner"), json!({})).code, 403, "not even themselves");
+    assert_eq!(fx.call("POST", &format!("/v1/workspaces/{ws}/transfer"), Some("owner"), json!({ "user_id": owner })).code, 400);
+    assert_eq!(fx.call("POST", &format!("/v1/workspaces/{ws}/transfer"), Some("owner"), json!({ "user_id": fx.user("admin") })).code, 200);
+    assert_eq!(fx.call("GET", &format!("/v1/workspaces/{ws}"), Some("owner"), json!({})).body["role"], "admin");
+    assert_eq!(fx.call("DELETE", &format!("/v1/workspaces/{ws}"), Some("owner"), json!({})).code, 403);
+    let owners = fx.hub.db.lock().unwrap().query_row("SELECT COUNT(*) FROM memberships WHERE workspace_id = ?1 AND role = 'owner' AND revoked = 0", [ws], |r| r.get::<_, i64>(0)).unwrap();
+    assert_eq!(owners, 1);
+    // A deleted workspace is gone for everyone, including its owner.
+    assert_eq!(fx.call("DELETE", &format!("/v1/workspaces/{ws}"), Some("admin"), json!({})).code, 200);
+    assert_eq!(fx.call("GET", &format!("/v1/workspaces/{ws}"), Some("admin"), json!({})).code, 404);
+}
+
+#[test]
+fn audit_records_actions_and_denials_and_is_append_only() {
+    let fx = fixture();
+    let ws = &fx.ws;
+    fx.call("PATCH", &format!("/v1/workspaces/{ws}"), Some("viewer"), json!({ "name": "x" }));
+    fx.call("PATCH", &format!("/v1/workspaces/{ws}"), Some("viewer"), json!({ "name": "x" }));
+    let log = fx.call("GET", &format!("/v1/workspaces/{ws}/audit"), Some("owner"), json!({}));
+    let actions: Vec<&str> = log.body["entries"].as_array().unwrap().iter().map(|e| e["action"].as_str().unwrap()).collect();
+    for a in ["workspace.created", "project.created", "invitation.created", "invitation.redeemed"] {
+        assert!(actions.contains(&a), "{a} in {actions:?}");
+    }
+    assert_eq!(actions.iter().filter(|a| **a == "access.denied").count(), 1, "denials are rate-limited");
+    let last = log.body["entries"].as_array().unwrap().last().unwrap()["seq"].as_i64().unwrap();
+    assert_eq!(fx.call("GET", &format!("/v1/workspaces/{ws}/audit?since={last}"), Some("owner"), json!({})).body["entries"], json!([]));
+    // No token ever lands in the audit log.
+    assert!(!log.body.to_string().contains(fx.token("owner").split('.').nth(1).unwrap()));
+    let c = fx.hub.db.lock().unwrap();
+    assert!(c.execute("UPDATE audit SET action = 'x'", []).is_err());
+    assert!(c.execute("DELETE FROM audit", []).is_err());
+}
+
+#[test]
+fn bad_requests_are_refused_cleanly() {
+    let fx = fixture();
+    let auth = format!("Bearer {}", fx.token("owner"));
+    assert_eq!(fx.hub.handle("POST", &format!("/v1/workspaces/{}/projects", fx.ws), Some(&auth), b"not json").code, 400);
+    assert_eq!(fx.hub.handle("POST", &format!("/v1/workspaces/{}/projects", fx.ws), Some(&auth), b"[1]").code, 400);
+    assert_eq!(fx.call("POST", &format!("/v1/workspaces/{}/projects", fx.ws), Some("owner"), json!({ "name": "" })).code, 400);
+    assert_eq!(fx.call("POST", &format!("/v1/workspaces/{}/projects", fx.ws), Some("owner"), json!({ "name": "x".repeat(81) })).code, 400);
+    assert_eq!(fx.call("GET", "/v1/nothing", Some("owner"), json!({})).code, 404);
+    assert_eq!(fx.call("GET", "/", Some("owner"), json!({})).code, 404);
+    assert_eq!(fx.hub.handle("GET", "/v1/health", None, b"").code, 200);
+}
+
+#[test]
+fn bind_policy_is_loopback_and_tailscale_only() {
+    for ok in ["127.0.0.1", "100.64.0.1", "100.101.102.103", "100.127.255.255", "::1", "fd7a:115c:a1e0::1"] {
+        assert!(private_bind(ok.parse().unwrap()), "{ok}");
+    }
+    for no in ["0.0.0.0", "192.168.1.5", "100.63.0.1", "100.128.0.1", "8.8.8.8", "::", "fd00::1"] {
+        assert!(!private_bind(no.parse().unwrap()), "{no}");
+    }
+}
+
+fn temp_dir(name: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("ptcc-hub-test-{name}-{}", store::random_hex(4).unwrap()));
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+#[test]
+fn restore_drill() {
+    let data = temp_dir("restore");
+    let (ws, backup) = {
+        let c = store::open(Some(&data)).unwrap();
+        let (ws, _) = new_workspace(&c, "Before").unwrap();
+        let b = store::daily_backup(&c, &store::backups_dir(&data)).unwrap().expect("first backup of the day");
+        assert!(store::daily_backup(&c, &store::backups_dir(&data)).unwrap().is_none(), "once a day");
+        new_workspace(&c, "After").unwrap();
+        (ws, b)
+    };
+    // Can't restore under a running hub.
+    let lock = store::lock(&data).unwrap();
+    assert!(store::restore(&data, &backup).unwrap_err().contains("running"));
+    drop(lock);
+    // A file that isn't a hub database is refused and the live one is untouched.
+    let junk = data.join("junk.db");
+    std::fs::write(&junk, b"not sqlite").unwrap();
+    assert!(store::restore(&data, &junk).is_err());
+    let saved = store::restore(&data, &backup).unwrap();
+    let c = store::open(Some(&data)).unwrap();
+    let names: Vec<String> = c.prepare("SELECT name FROM workspaces ORDER BY name").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+    assert_eq!(names, ["Before"], "back to the backup's state");
+    let id: String = c.query_row("SELECT id FROM workspaces", [], |r| r.get(0)).unwrap();
+    assert_eq!(id, ws);
+    // The pre-restore copy still has both workspaces.
+    let old = rusqlite::Connection::open(&saved).unwrap();
+    assert_eq!(old.query_row("SELECT COUNT(*) FROM workspaces", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+    drop((c, old));
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+#[test]
+fn daily_backups_rotate_keeping_14_and_monthlies() {
+    let data = temp_dir("rotate");
+    let dir = store::backups_dir(&data);
+    std::fs::create_dir_all(&dir).unwrap();
+    for d in 1..=28 {
+        std::fs::write(dir.join(format!("hub-2020-02-{d:02}.db")), b"").unwrap();
+    }
+    std::fs::write(dir.join("hub-2020-01-01.db"), b"").unwrap();
+    std::fs::write(dir.join("hub-2020-01-09.db"), b"").unwrap();
+    std::fs::write(dir.join("pre-migrate-v1-x.db"), b"").unwrap();
+    let c = store::open(None).unwrap();
+    store::daily_backup(&c, &dir).unwrap();
+    let mut left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+    left.sort();
+    assert!(left.contains(&"hub-2020-01-01.db".into()) && left.contains(&"hub-2020-02-01.db".into()), "monthlies kept");
+    assert!(!left.contains(&"hub-2020-01-09.db".into()) && !left.contains(&"hub-2020-02-02.db".into()));
+    assert!(left.contains(&"pre-migrate-v1-x.db".into()), "other backups untouched");
+    assert_eq!(left.iter().filter(|n| n.starts_with("hub-") && !n.ends_with("-01.db")).count(), 14);
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+#[test]
+fn real_http_round_trip() {
+    let hub = Arc::new(Hub::new(store::open(None).unwrap()));
+    let server = Arc::new(tiny_http::Server::http("127.0.0.1:0").unwrap());
+    let port = server.server_addr().to_ip().unwrap().port();
+    serve(hub, server.clone(), 2);
+    let get = |path: &str, extra: &str| {
+        use std::io::{Read, Write};
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        write!(s, "GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n{extra}\r\n").unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).unwrap();
+        out
+    };
+    assert!(get("/v1/health", "").starts_with("HTTP/1.1 200"));
+    let r = get("/v1/me", "Authorization: Bearer d_x.y\r\n");
+    assert!(r.starts_with("HTTP/1.1 401") && r.contains("application/json") && r.contains("no-store"), "{r}");
+    server.unblock();
+}
