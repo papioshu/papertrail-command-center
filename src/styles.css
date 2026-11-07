@@ -380,3 +380,69 @@ pre.doc { margin: 0; white-space: pre-wrap; word-break: break-word; font-family:
 .chat-pre.err { border-left: 3px solid #ff4d6d; } .chat-pre.del { border-left: 3px solid #ff4d6d; } .chat-pre.add { border-left: 3px solid var(--lime); }
 .chat-system { align-self: stretch; white-space: pre-wrap; color: var(--dim); font-size: 11.5px; font-family: var(--font-mono); max-height: 240px; overflow: auto; }
 .chat-img { max-width: 100%; border-radius: 6px; border: 1px solid var(--line); }
+
+/* ---------- phone (D027): Galaxy Z Fold cover (~380 px) and inner (~850 px) screens ---------- */
+.chat-view { height: calc(100vh - 190px); }
+body.phone .desk-only { display: none !important; }
+@media (max-width: 900px) {
+  .shell { height: 100dvh; grid-template-rows: auto 1fr auto; grid-template-columns: minmax(0, 1fr); }
+  .home { grid-template-columns: minmax(0, 1fr) !important; }
+  .home .board { display: grid; grid-template-columns: 1fr 1fr; }
+  .home .board > div { border-right: 0 !important; }
+  .home .board > div:nth-child(odd) { border-right: 1px solid var(--line) !important; }
+  .sysstat { min-width: 0; }
+  .sysstat .v { font-size: 10px; letter-spacing: 0.1em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .topbar { flex-wrap: wrap; gap: 8px 12px; padding: 8px 12px calc(8px) 12px; }
+  .wordmark .name { font-size: 12px; letter-spacing: 0.2em; }
+  .wordmark .tag, .ptbadge, .topbar .spacer { display: none; }
+  .sysstat { margin-left: auto; padding-left: 10px; }
+  .topbar .search { order: 9; flex: 1 0 100%; }
+  .topbar .search .input { width: 100% !important; }
+  .topbar .search .card { width: auto !important; left: 0; right: 0; }
+  .main { padding: 14px 12px 32px; }
+  .bottombar { padding: 0 0 env(safe-area-inset-bottom); gap: 0; }
+  .bottombar > :not(.bnav) { display: none; }
+  .bnav { margin: 0; width: 100%; overflow-x: auto; scrollbar-width: none; }
+  .bnav .br { display: none; }
+  .bnav button { padding: 15px 12px; flex: 0 0 auto; }
+  .hero { grid-template-columns: 1fr; gap: 14px; }
+  .hero h1 { font-size: 22px; letter-spacing: 0.12em; overflow-wrap: anywhere; }
+  .board { overflow-x: auto; }
+  .board > div { min-width: 92px; padding: 10px 14px; }
+  .board .v { font-size: 24px; }
+  .page-head { margin-bottom: 14px; }
+  .page-head h1 { font-size: 21px; letter-spacing: 0.14em; overflow-wrap: anywhere; }
+  .page-head .right { margin-left: 0; width: 100%; }
+  .page-head .right .input { flex: 1; }
+  .sect { margin: 26px 0 12px; }
+  .grid, .split { gap: 16px; }
+  .g2, .g3, .g4 { grid-template-columns: 1fr; }
+  .span2, .span3 { grid-column: auto; }
+  .home { height: auto; min-height: 0; gap: 16px; }
+  .sphere { height: 340px; min-height: 0; }
+  .deck { gap: 14px; padding: 10px 2px 16px; }
+  .acard { flex-basis: 150px; }
+  .pass { grid-template-columns: 1fr !important; }
+  .pass .stub { display: none; }
+  .pass .line { grid-template-columns: 78px 1fr; gap: 10px; }
+  .pass .ptitle { font-size: 18px; }
+  .tickets { grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); }
+  .ticket { grid-template-columns: 1fr 48px; }
+  .card-head, .card-body { padding-left: 14px; padding-right: 14px; }
+  .tabs { margin-bottom: 14px; scrollbar-width: none; }
+  .tabs button { padding: 13px 12px; }
+  .table-wrap table.t { min-width: 640px; }
+  .hbar { grid-template-columns: 96px 1fr 40px; }
+  .frow { grid-template-columns: 16px minmax(90px, 1.2fr) minmax(50px, 1fr) 44px; }
+  .frow > :nth-child(n + 5) { display: none; }
+  .wshero { flex-direction: column; gap: 16px; padding: 14px; }
+  .wshero .acard { height: 220px; width: 160px; flex: none; }
+  .wsname { font-size: 22px; letter-spacing: 0.14em; }
+  .modal { width: 96vw; max-height: 92dvh; }
+  .chat-cards { grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr)); }
+  .chat-row .row { flex-wrap: wrap; }
+  .chat-row .row > .mono { margin-left: 0 !important; }
+  .chat-view { height: calc(100dvh - 210px); }
+  .chat-you { max-width: 92%; }
+  .chat-block { max-width: 100%; }
+}

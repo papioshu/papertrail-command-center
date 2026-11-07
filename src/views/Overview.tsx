@@ -1,5 +1,5 @@
 import { lazy, Suspense, useMemo, useState, type CSSProperties, type ReactNode } from "react";
-import { api, type Row } from "../api";
+import { api, PHONE, type Row } from "../api";
 import { ago, AgentChip, Barcode, brand, day, Empty, ErrBox, orderDiscoveries, ProjectActions, RadarOrderControl, sessionState, short, Spark, StatusBar, useAsync, useDragScroll, useNav, type RadarOrder } from "../ui";
 
 export const counts = (p: Row) => ({ done: p.done_tasks, active: p.active_tasks, pending: p.pending_tasks, blocked: p.blocked_tasks, deferred: p.deferred_tasks });
@@ -290,7 +290,7 @@ export default function Overview() {
         {!workspaces.length && !projects.loading && <Empty>No projects yet. Set the vault and project roots in Settings.</Empty>}
       </div>
 
-      <Radar names={(id) => { const n = ps.find((p) => p.id === id)?.name ?? id; return n.match(/\((.+)\)/)?.[1] ?? n; }} />
+      {!PHONE && <Radar names={(id) => { const n = ps.find((p) => p.id === id)?.name ?? id; return n.match(/\((.+)\)/)?.[1] ?? n; }} />}
 
 
       <div className="sect"><h2>Briefing</h2><div className="rule" /><span className="aside">Since your last start</span></div>

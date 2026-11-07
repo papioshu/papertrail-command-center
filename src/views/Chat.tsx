@@ -201,19 +201,19 @@ function Conversation({ id }: { id: string }) {
   }, [expandAll, showSystem]);
 
   return (
-    <div className="col" style={{ gap: 10, height: "calc(100vh - 190px)" }}>
+    <div className="col chat-view" style={{ gap: 10 }}>
       <div className="row wrap" style={{ gap: 10, alignItems: "center" }}>
         <button className="btn ghost sm" onClick={() => session ? nav("chat", { project: session.card_id ?? "", name: session.card_name ?? UNMAPPED }) : nav("chat")}>← Chats</button>
         {session && <AgentChip agent={session.agent} />}
         <TempCopy name={session?.temp_copy} />
         <b className="ellipsis" style={{ maxWidth: 520 }}>{session?.title || id}</b>
         {session && <span className="dim small mono ellipsis">{session.project ?? UNMAPPED} · {session.cwd ?? "—"} · {session.branch ?? "—"}</span>}
-        <div className="row" style={{ gap: 6, marginLeft: "auto" }}>
+        <div className="row wrap" style={{ gap: 6, marginLeft: "auto" }}>
           <label className="small"><input type="checkbox" checked={expandAll} onChange={(e) => toggle(setExpandAll, e.target.checked)} /> Expand all tool steps</label>
           <label className="small"><input type="checkbox" checked={showSystem} onChange={(e) => toggle(setShowSystem, e.target.checked)} /> Show system entries</label>
-          <button className="btn sm" disabled={!session?.project_id} title={session?.project_id ? "" : "Map this chat to a project first"} onClick={terminal}>Continue in terminal</button>
-          <button className="btn sm ghost" disabled={!session?.cwd} onClick={() => api.openPath(session!.cwd)}>Open folder</button>
-          <button className="btn sm ghost" disabled={!session} onClick={() => navigator.clipboard.writeText(resumeCmd).then(() => setNote("Resume command copied."))}>Copy resume command</button>
+          <button className="btn sm desk-only" disabled={!session?.project_id} title={session?.project_id ? "" : "Map this chat to a project first"} onClick={terminal}>Continue in terminal</button>
+          <button className="btn sm ghost desk-only" disabled={!session?.cwd} onClick={() => api.openPath(session!.cwd)}>Open folder</button>
+          <button className="btn sm ghost desk-only" disabled={!session} onClick={() => navigator.clipboard.writeText(resumeCmd).then(() => setNote("Resume command copied."))}>Copy resume command</button>
         </div>
       </div>
       {note && <div className="dim small mono">{note}</div>}

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useState } from "react";
-import { api, on, type LaunchReq, type Row } from "./api";
+import { api, on, PHONE, phonePaired, type LaunchReq, type Row } from "./api";
 import { ago, Barcode, Boundary, LaunchDialog, NavCtx, type View } from "./ui";
 import Overview from "./views/Overview";
 import Login from "./Login";
@@ -39,7 +39,7 @@ function Search({ go }: { go: (v: View, p: Row) => void }) {
     return () => clearTimeout(t);
   }, [q]);
   return (
-    <div style={{ position: "relative" }}>
+    <div className="search" style={{ position: "relative" }}>
       <input className="input" style={{ width: 280 }} placeholder="Search the paper trail…" value={q} onChange={(e) => setQ(e.target.value)} />
       {hits.length > 0 && (
         <div className="card" style={{ position: "absolute", top: 38, right: 0, width: 480, maxHeight: 440, overflow: "auto", zIndex: 30, padding: "4px 14px" }}>
@@ -53,6 +53,19 @@ function Search({ go }: { go: (v: View, p: Row) => void }) {
         </div>
       )}
     </div>
+  );
+}
+
+// Phone (D027): read views only. Anything else stays on the PC.
+const PHONE_VIEWS: View[] = ["overview", "workspace", "projects", "chat", "agents", "timeline"];
+
+function Unpaired() {
+  return (
+    <div className="login"><div className="login-panel" style={{ textAlign: "center" }}>
+      <div className="display" style={{ fontSize: 18, letterSpacing: ".2em" }}>Pair this phone</div>
+      <div className="small">On the PC open <b>Settings › Phone access</b>, choose <b>Pair a phone</b>, then scan the QR code with this phone's camera.</div>
+      <div className="dim small">Tailscale must be on, on this phone and on the PC.</div>
+    </div></div>
   );
 }
 
@@ -81,6 +94,8 @@ export default function App() {
   }, []);
 
   const [notice, setNotice] = useState<string | null>(null);
+  const [unpaired, setUnpaired] = useState(PHONE && !phonePaired());
+  useEffect(() => { const f = () => setUnpaired(true); window.addEventListener("pt-unpaired", f); return () => window.removeEventListener("pt-unpaired", f); }, []);
   alertless = setNotice;
   const nav = (v: View, p: Row = {}) => { setView(v); setParams(p); };
   // From a project page, Escape or the mouse "back" button returns to the dashboard home (the map).
@@ -94,7 +109,8 @@ export default function App() {
   }, [view, params]);
   const launch = (p: Row, agent?: "claude" | "codex", mode?: LaunchReq["mode"], preset?: string, task?: string) => setLaunching({ p, agent, mode, preset, task });
   const busy = status.state === "indexing" || status.state === "discovery";
-  const page = { overview: <Overview />, workspace: <Workspace />, projects: <Projects />, actions: <Actions />, chat: <Chat />, agents: <Agents />, launchpad: <Launchpad />, graph: <Graph />, discovery: <Discovery />, timeline: <Timeline />, settings: <Settings /> }[view];
+  const blocked = PHONE && !PHONE_VIEWS.includes(view);
+  const page = blocked ? <div className="empty">This page is on the PC only. The phone is read-only.</div> : { overview: <Overview />, workspace: <Workspace />, projects: <Projects />, actions: <Actions />, chat: <Chat />, agents: <Agents />, launchpad: <Launchpad />, graph: <Graph />, discovery: <Discovery />, timeline: <Timeline />, settings: <Settings /> }[view];
 
   return (
     <NavCtx.Provider value={{ nav, params, launch }}>
@@ -110,14 +126,14 @@ export default function App() {
           </div>
           <div className="spacer" />
           <Search go={nav} />
-          {me ? (
+          {PHONE ? null : me ? (
             <span className="userchip" title="Signed in: your name goes on action items">
               <span className="avatar" style={{ background: me.color }}>{String(me.name)[0]}</span>{me.name}
               <button className="btn sm ghost" onClick={() => api.logout().then(() => { setMe(null); setGate(true); })}>Lock</button>
             </span>
           ) : <button className="btn sm" onClick={() => setGate(true)}>Sign in</button>}
-          <button className="btn sm" onClick={() => api.toggleChat().catch((e) => alertless(String(e)))} title="Slide-out chat (Discord by default; set the URL in Settings)">Chat</button>
-          <button className="btn sm" onClick={() => api.refresh()} disabled={busy} title="Re-index projects, git and sessions">Refresh</button>
+          <button className="btn sm desk-only" onClick={() => api.toggleChat().catch((e) => alertless(String(e)))} title="Slide-out chat (Discord by default; set the URL in Settings)">Chat</button>
+          <button className="btn sm desk-only" onClick={() => api.refresh()} disabled={busy} title="Re-index projects, git and sessions">Refresh</button>
           <div className="sysstat">
             <div className="label" style={{ fontSize: 9 }}>System status</div>
             <div className="v">
@@ -140,13 +156,14 @@ export default function App() {
           {notice && <span style={{ color: "var(--signal)", cursor: "pointer" }} onClick={() => setNotice(null)}>{notice} ✕</span>}
           <nav className="bnav">
             <span className="br">[</span>
-            {NAV.map(([k, label]) => (
+            {NAV.filter(([k]) => !PHONE || PHONE_VIEWS.includes(k)).map(([k, label]) => (
               <button key={k} className={view === k ? "on" : ""} onClick={() => nav(k)}>{label}</button>
             ))}
             <span className="br">]</span>
           </nav>
         </footer>
       </div>
+      {unpaired && <Unpaired />}
       {gate && me !== undefined && <Login onDone={(m) => { setMe(m); setGate(false); }} />}
       {launching && <LaunchDialog project={launching.p} agent={launching.agent} mode={launching.mode} preset={launching.preset} task={launching.task} onClose={() => setLaunching(null)} />}
     </NavCtx.Provider>

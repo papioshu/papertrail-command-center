@@ -8,6 +8,7 @@ mod discovery;
 mod gitscan;
 mod indexer;
 mod launcher;
+mod phone;
 mod registry;
 mod team;
 mod util;
@@ -112,6 +113,7 @@ pub fn run() {
                 close_to_tray: Mutex::new(close_to_tray),
                 user: Mutex::new(None),
             });
+            app.manage(phone::spawn(app.handle().clone()));
 
             let open = MenuItem::with_id(app, "open", "Open Command Center", true, None::<&str>)?;
             let refresh = MenuItem::with_id(app, "refresh", "Refresh index", true, None::<&str>)?;
@@ -209,6 +211,10 @@ pub fn run() {
             commands::team_logout,
             commands::actions_list,
             commands::action_op,
+            phone::phone_status,
+            phone::phone_set_enabled,
+            phone::phone_pair,
+            phone::phone_revoke,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

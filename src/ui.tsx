@@ -427,7 +427,7 @@ export function ProjectActions({ p, compact = false }: { p: Row; compact?: boole
   const dir = p.repo_path || p.vault_dir;
   const cls = compact ? "btn sm" : "btn";
   return (
-    <div className="actions row wrap">
+    <div className="actions row wrap desk-only">
       <button className={`${cls} claude`} onClick={() => launch(p, "claude")}>Claude</button>
       <button className={`${cls} codex`} onClick={() => launch(p, "codex")}>Codex</button>
       <button className={cls} onClick={() => launch(p, p.last_claude && (!p.last_codex || JSON.parse(p.last_claude).updated >= JSON.parse(p.last_codex).updated) ? "claude" : "codex", "continue")}

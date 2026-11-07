@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import FolderMap from "./FolderMap";
 import { ActionBoard } from "./Actions";
 import { ChatCard } from "./Chat";
-import { api, type Row } from "../api";
+import { api, PHONE, type Row } from "../api";
 import {
   ago, AgentChip, Barcode, brand, Card, StatusBar, DataTable, DayChart, Empty, ErrBox, Modal, ProjectActions, RangePicker, rangeFor, sessionState, short, useAsync, useNav, type Col, type Range,
 } from "../ui";
@@ -37,7 +37,7 @@ function ProjectList() {
       </div>
       {list.error && <ErrBox error={list.error} />}
       <Card title={`${list.data?.length ?? 0} projects`} body={false} right={<span className="dim small">Click a row to open · right column edits workspace / hides</span>}>
-        <DataTable rows={list.data ?? []} cols={[...cols, { key: "_e", label: "", width: "6%", render: (r) => <button className="btn sm" onClick={(e) => { e.stopPropagation(); setEdit(r); }}>Edit</button> }]}
+        <DataTable rows={list.data ?? []} cols={PHONE ? cols : [...cols, { key: "_e", label: "", width: "6%", render: (r) => <button className="btn sm" onClick={(e) => { e.stopPropagation(); setEdit(r); }}>Edit</button> }]}
           height={620} onRow={(r) => nav("projects", { id: r.id })} initialSort={["last_activity", -1]} />
       </Card>
       {edit && <EditProject p={edit} onClose={() => { setEdit(null); list.reload(); }} />}
@@ -94,7 +94,7 @@ export function EventList({ items }: { items: Row[] }) {
 
 function EvidenceLink({ e }: { e: Row }) {
   const file = e.source_file || (String(e.evidence).includes(":\\") ? String(e.evidence).replace(/:\d+$/, "") : null);
-  if (file) return <a href="#" onClick={(x) => { x.preventDefault(); api.openPath(file); }}>{String(e.evidence)}</a>;
+  if (file && !PHONE) return <a href="#" onClick={(x) => { x.preventDefault(); api.openPath(file); }}>{String(e.evidence)}</a>;
   return <span>{e.kind === "commit" ? `commit ${short(e.evidence, 10)}` : String(e.evidence)}</span>;
 }
 
@@ -144,13 +144,15 @@ function Detail({ id }: { id: string }) {
   const maxWs = Math.max(1, ...workstreams.map((w) => w.commits));
   const events: Row[] = docs.data?.items ?? [];
 
-  const tabs: [string, string, number | null][] = [
+  const allTabs: [string, string, number | null][] = [
     ["overview", "Dossier", null], ["activity", "Activity", null], ["work", "Workstreams & agents", null],
     ["actions", "Action items", null], ["tasks", "Task board", tasks.length], ["tasklist", "Task list", null], ["commits", "Commits", commits.data?.items.length ?? 0], ["files", "Files", files.length],
     ["agentfiles", "Agent edits", agent_files.length], ["sessions", "Sessions", sessions.length],
     ["decisions", "Decisions", events.filter((e) => e.kind === "decision").length], ["log", "Log", events.filter((e) => e.kind === "log").length],
     ["links", "Related", links.length], ["reviews", "Review", reviews.length], ["launches", "Launches", launches.length],
   ];
+  // Phone is read-only: no tabs whose job is to change things.
+  const tabs = PHONE ? allTabs.filter(([k]) => !["actions", "reviews", "launches"].includes(k)) : allTabs;
   const b = brand(p.workspace);
   const glow = { ["--glow" as string]: b.glow } as React.CSSProperties;
 
@@ -311,7 +313,7 @@ function Detail({ id }: { id: string }) {
             </tbody>
           </table>
           <div className="dim small" style={{ marginTop: 8 }}>Uncommitted changes are not attributed to any agent. Codex per-edit data lives in its rollout files, which are not parsed.</div>
-          <div className="row" style={{ marginTop: 10 }}>
+          <div className="row desk-only" style={{ marginTop: 10 }}>
             <button className="btn claude" onClick={() => launch(p, "claude", "targeted")}>Targeted Claude task</button>
             <button className="btn codex" onClick={() => launch(p, "codex", "targeted")}>Targeted Codex task</button>
           </div>
@@ -321,7 +323,7 @@ function Detail({ id }: { id: string }) {
       <section className={["overview", "activity", "work"].includes(tab) ? "" : "card"} style={{ overflow: "hidden" }}>
         {tab === "tasks" && <TaskBoard tasks={tasks} project={p} reload={d.reload} />}
         {tab === "actions" && <div className="card-body"><ActionBoard projectId={p.id} /></div>}
-        {tab === "tasklist" && <DataTable rows={tasks} height={460} onRow={(r) => api.openPath(r.source_file)} cols={[
+        {tab === "tasklist" && <DataTable rows={tasks} height={460} onRow={PHONE ? undefined : (r) => api.openPath(r.source_file)} cols={[
           { key: "status", label: "Status", width: "10%", render: (r) => <span className={`chip ${r.status}`}>{r.status}</span>, sort: (r) => STATUS_ORDER.indexOf(r.status) },
           { key: "section", label: "Section", width: "16%" },
           { key: "text", label: "Task", width: "56%" },
@@ -404,13 +406,13 @@ function TaskBoard({ tasks, project, reload }: { tasks: Row[]; project: Row; rel
               </div>
               <div className="col" style={{ gap: 8, maxHeight: 520, overflow: "auto", paddingRight: 2 }}>
                 {items.map((t) => (
-                  <div key={t.id} className="card" style={{ padding: "10px 12px", cursor: "pointer", borderLeft: `3px solid ${STATUS_COLOR[st]}` }} onClick={() => api.openPath(t.source_file)} title={`${t.source_file}:${t.line}`}>
+                  <div key={t.id} className="card" style={{ padding: "10px 12px", cursor: "pointer", borderLeft: `3px solid ${STATUS_COLOR[st]}` }} onClick={() => !PHONE && api.openPath(t.source_file)} title={`${t.source_file}:${t.line}`}>
                     <div className="small clamp3">{t.text}</div>
                     <div className="row" style={{ marginTop: 6, gap: 6 }}>
                       {t.author && <AgentChip agent={t.author} />}
                       <span className="dim mono ellipsis" style={{ fontSize: 9.5 }}>{t.section || "—"} · L{t.line}</span>
                     </div>
-                    <div className="row" style={{ marginTop: 8, gap: 6 }} onClick={(e) => e.stopPropagation()}>
+                    <div className="row desk-only" style={{ marginTop: 8, gap: 6 }} onClick={(e) => e.stopPropagation()}>
                       <button className="btn sm" onClick={() => openTick(t)} title="Tick or untick this item in TASKS.md (preview first)">{st === "done" ? "Reopen" : "Done ✓"}</button>
                       {st !== "done" && <button className="btn sm claude" onClick={() => launch(project, "claude", "custom", undefined, t.text)} title="Open Claude Code on this task">Claude</button>}
                       {st !== "done" && <button className="btn sm codex" onClick={() => launch(project, "codex", "custom", undefined, t.text)} title="Open Codex on this task">Codex</button>}
@@ -455,8 +457,8 @@ export function SessionModal({ s, onClose }: { s: Row; onClose: () => void }) {
   return (
     <Modal title={`${s.agent} session · ${short(s.id, 12)}`} onClose={onClose} foot={<>
       <button className="btn" onClick={() => { onClose(); nav("chat", { id: s.id }); }}>Open in CHAT</button>
-      {s.path && <button className="btn" onClick={() => api.openPath(String(s.path).replace(/[\\/][^\\/]+$/, ""))}>Open transcript folder</button>}
-      {s.project_row && <button className="btn primary" onClick={() => { onClose(); launch(s.project_row, s.agent, "continue"); }}>Continue this project</button>}
+      {s.path && <button className="btn desk-only" onClick={() => api.openPath(String(s.path).replace(/[\\/][^\\/]+$/, ""))}>Open transcript folder</button>}
+      {s.project_row && <button className="btn primary desk-only" onClick={() => { onClose(); launch(s.project_row, s.agent, "continue"); }}>Continue this project</button>}
     </>}>
       <div className="col">
         <div className="display" style={{ fontSize: 15 }}>{s.title}</div>
@@ -482,7 +484,7 @@ function EventTable({ rows }: { rows: Row[] }) {
         { key: "evidence", label: "Source", width: "20%", render: (r) => <span className="mono dim">{String(r.evidence).split("\\").pop()}</span> },
       ]} />
       {open && (
-        <Modal title={open.title} onClose={() => setOpen(null)} foot={<button className="btn" onClick={() => api.openPath(open.source_file)}>Open source file</button>}>
+        <Modal title={open.title} onClose={() => setOpen(null)} foot={<button className="btn desk-only" onClick={() => api.openPath(open.source_file)}>Open source file</button>}>
           <pre className="doc">{open.detail}</pre>
           <div className="mono dim small" style={{ marginTop: 8 }}>{open.evidence}</div>
         </Modal>

@@ -24,6 +24,9 @@ serde_json = "1"
 rusqlite = { version = "0.37", features = ["bundled"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 ureq = { version = "2", features = ["json"] }
+# Phone access (D027): small sync HTTP server + QR code for pairing.
+tiny_http = "0.12"
+qrcodegen = "1.8"
 
 [target.'cfg(windows)'.dependencies]
 # Same versions Tauri already links; used only to lower WebView2 memory while hidden.
