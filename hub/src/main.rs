@@ -44,7 +44,8 @@ fn run(mut args: Vec<String>) -> Result<(), String> {
             }
             let c = store::open(Some(&data))?;
             let (ws, token) = api::new_workspace(&c, name.trim())?;
-            println!("Workspace {ws} created.\nOwner invitation (single use, 72 h, shown once):\n\n  {token}\n");
+            let host = tailscale_ip().map_or("127.0.0.1".to_string(), |ip| ip.to_string());
+            println!("Workspace {ws} created.\nOwner invite link (single use, 72 h, shown once). Paste it into the Command Center:\n\n  http://{host}:8770#{token}\n\n(Change the port if you serve on another one.)");
             Ok(())
         }
         "backup" => {

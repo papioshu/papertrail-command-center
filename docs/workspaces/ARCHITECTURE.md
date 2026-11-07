@@ -1,7 +1,9 @@
 # Multi-user workspaces — data ownership, privacy and access control
 
-Status: **Milestone 2 built** (D030–D032): the access-control core (`crates/access`) and the hub binary (`hub/`, run
-`ptcc-hub` with no arguments for usage) with shared records and sync. The desktop module and the UI are later milestones (§13).
+Status: **Milestone 3 built** (D030–D034): the access-control core (`crates/access`), the hub binary (`hub/`, run
+`ptcc-hub` with no arguments for usage) with shared records and sync, and the desktop hub client
+(`src-tauri/src/hub_client.rs`: join by invite link, DPAPI-protected device key, per-workspace cache + outbox file, sync
+thread only once joined, link-project preview + action-item import). The UI is M4 (§13).
 Owner brief: self-hosted and optional; no Supabase or other hosted backend-as-a-service; the desktop exe stays light and
 local-first.
 
@@ -62,7 +64,8 @@ Rules:
 
 * **Account:** a hub user (`user_id`, display name). There are no passwords: a user is created by redeeming an
   invitation.
-* **Invitation:** a random 256-bit token shown once (link or QR). The hub stores only its SHA-256, the workspace, the role,
+* **Invitation:** a random 256-bit token shown once (link or QR). The link is `<hub url>#<token>`; the token rides in
+  the URL fragment so it never lands in server or proxy logs. The hub stores only its SHA-256, the workspace, the role,
   an optional project scope, an expiry (default 72 h, max 7 days), `max_uses = 1`, and who issued it. Redeeming is atomic
   (single-use check and insert in one transaction). Expired, used or revoked invitations all give the same error.
 * **Device session:** redeeming (or adding a device from an existing one) creates a device with a random 256-bit secret.
