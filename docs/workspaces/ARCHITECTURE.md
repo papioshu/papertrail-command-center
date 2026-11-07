@@ -165,7 +165,9 @@ The client sends `base_version`. If the hub has moved on:
 * **Delete vs edit** → the delete wins on the hub; the editor's text is kept as a conflict copy on their machine.
 
 ### 7.4a Media
-Files are uploaded first (`PUT …/projects/{p}/blobs/{sha256}`, max 25 MB, hash checked, media.upload on that project),
+Files are uploaded first (`PUT …/projects/{p}/blobs/{sha256}`, max 25 MB, hash checked, media.upload on that project;
+the hub records the upload against that workspace and project, and a media record may name only a hash uploaded into
+its own project, so knowing a hash never grants a file),
 then published as a `media` record naming the hash. Downloads go only through a live media record
 (`GET …/media/{record_id}`, media.read on its project) and are served as `application/octet-stream` attachments.
 

@@ -387,6 +387,15 @@ fn media_upload_record_and_download_are_checked() {
     let h = fx.call("GET", &format!("/v1/workspaces/{}/media/{hidden}", fx.ws), Some("scoped"), json!({}));
     let m = fx.call("GET", &format!("/v1/workspaces/{}/media/{}", fx.ws, uuid()), Some("scoped"), json!({}));
     assert_eq!((h.code, &h.body), (404, &m.body));
+    // Knowing a hash grants nothing: the outsider (owner of another workspace) and the p1-scoped member can't
+    // publish a record naming a file that was uploaded somewhere else.
+    let steal = |actor: &str, ws: &str, project: &str| {
+        fx.call("POST", &format!("/v1/workspaces/{ws}/ops"), Some(actor), json!({ "op_id": uuid(), "action": "create", "kind": "media", "record_id": uuid(), "project_id": project, "fields": { "sha256": sha, "name": "x" } })).code
+    };
+    let out_proj = fx.call("POST", &format!("/v1/workspaces/{}/projects", fx.other_ws), Some("outsider"), json!({ "name": "mine" })).body["id"].as_str().unwrap().to_string();
+    assert_eq!(steal("outsider", &fx.other_ws, &out_proj), 400, "cross-workspace hash reuse refused");
+    let p3 = fx.call("POST", &format!("/v1/workspaces/{}/projects", fx.ws), Some("owner"), json!({ "name": "p3" })).body["id"].as_str().unwrap().to_string();
+    assert_eq!(steal("owner", &fx.ws, &p3), 400, "cross-project hash reuse refused, even for the owner");
     // Deleted media can't be downloaded.
     c.queue("delete", "media", &id, &fx.p1, json!(null));
     c.sync();
@@ -414,7 +423,7 @@ fn migrating_a_v1_hub_backs_it_up_first() {
     {
         let c = store::open(Some(&data)).unwrap();
         ptcc_hub::api::new_workspace(&c, "Old").unwrap();
-        c.execute_batch("DROP TABLE records; DROP TABLE applied_ops; PRAGMA user_version = 1;").unwrap();
+        c.execute_batch("DROP TABLE records; DROP TABLE applied_ops; DROP TABLE blobs; PRAGMA user_version = 1;").unwrap();
     }
     let c = store::open(Some(&data)).unwrap();
     assert_eq!(c.query_row("SELECT COUNT(*) FROM records", [], |r| r.get::<_, i64>(0)).unwrap(), 0);

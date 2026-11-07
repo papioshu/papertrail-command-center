@@ -179,8 +179,12 @@ impl Hub {
                 let mut fields = f.clone();
                 if kind == "media" {
                     let sha = f["sha256"].as_str().unwrap_or("");
-                    let size = self.media.as_ref().and_then(|d| std::fs::metadata(d.join(sha)).ok()).map(|m| m.len());
-                    let Some(size) = size else { return Err(bad("upload the file (PUT …/blobs/<sha256>) before creating its record")) };
+                    // Only a file uploaded into this same project counts; a hash seen elsewhere grants nothing.
+                    let size: Option<i64> = db(c
+                        .query_row("SELECT size FROM blobs WHERE sha256 = ?1 AND workspace_id = ?2 AND project_id = ?3", params![sha, ws, project], |r| r.get(0))
+                        .optional())?;
+                    let on_disk = self.media.as_ref().is_some_and(|d| d.join(sha).exists());
+                    let Some(size) = size.filter(|_| on_disk) else { return Err(bad("upload the file (PUT …/blobs/<sha256>) to this project before creating its record")) };
                     fields.insert("size".into(), json!(size));
                 }
                 (Write::Insert(project.to_string(), fields), None)
@@ -325,6 +329,10 @@ impl Hub {
                 internal(e.to_string())
             })?;
         }
+        db(c.execute(
+            "INSERT OR IGNORE INTO blobs(sha256, workspace_id, project_id, size, uploaded_by, uploaded_at) VALUES(?1,?2,?3,?4,?5,?6)",
+            params![sha, ws, project, body.len() as i64, who.user, now()],
+        ))?;
         Ok(ok(json!({ "sha256": sha, "size": body.len() })))
     }
 
@@ -337,6 +345,11 @@ impl Hub {
         self.check(c, who, m.as_ref(), Perm::MediaRead, Target::Project { workspace: ws, project: &project }, "media.read")?;
         let row = row.filter(|r| !r.deleted).ok_or_else(not_found)?;
         let sha = row.fields.get("sha256").and_then(Value::as_str).filter(|s| sha_ok(s)).ok_or_else(not_found)?;
+        // Defence in depth: the file must have been uploaded into the record's own project.
+        let linked: i64 = db(c.query_row("SELECT COUNT(*) FROM blobs WHERE sha256 = ?1 AND workspace_id = ?2 AND project_id = ?3", params![sha, ws, row.project], |r| r.get(0)))?;
+        if linked == 0 {
+            return Err(not_found());
+        }
         let bytes = self.media.as_ref().and_then(|d| std::fs::read(d.join(sha)).ok()).ok_or_else(not_found)?;
         Ok(Reply { code: 200, body: json!({}), raw: Some(bytes) })
     }

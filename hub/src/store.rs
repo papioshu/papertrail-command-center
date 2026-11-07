@@ -47,6 +47,11 @@ CREATE INDEX records_feed ON records(workspace_id, seq);
 CREATE TABLE applied_ops(op_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, workspace_id TEXT NOT NULL, code INTEGER NOT NULL,
   reply TEXT NOT NULL, at TEXT NOT NULL);
 CREATE INDEX applied_ops_at ON applied_ops(at);
+"#, r#"
+-- Which project each uploaded file belongs to. Files are stored once by hash, but a media record may only name a hash
+-- that was uploaded into its own workspace and project, so knowing a hash never grants its content.
+CREATE TABLE blobs(sha256 TEXT NOT NULL, workspace_id TEXT NOT NULL, project_id TEXT NOT NULL, size INTEGER NOT NULL,
+  uploaded_by TEXT NOT NULL, uploaded_at TEXT NOT NULL, PRIMARY KEY(sha256, workspace_id, project_id));
 "#];
 
 pub fn now() -> String {
