@@ -10,7 +10,9 @@ use serde_json::{json, Map, Value};
 
 pub const MAX_BLOB: usize = 25 * 1024 * 1024;
 /// Must stay a subset of `ptcc_access::publishable` (checked in `op`).
-const KINDS: [&str; 3] = ["task", "milestone", "media"];
+const KINDS: [&str; 4] = ["task", "milestone", "media", "snapshot"];
+/// Kinds whose content is an uploaded file named by `sha256`.
+const FILE_KINDS: [&str; 2] = ["media", "snapshot"];
 const FEED_MAX: i64 = 500;
 
 /// Client-made ids are UUIDs (§7.1): 36 chars of hex and dashes.
@@ -88,6 +90,10 @@ fn validate(c: &Connection, ws: &str, project: &str, kind: &str, f: &Map<String,
             ("media", "sha256") => create && v.as_str().is_some_and(sha_ok),
             ("media", "name") => text(v, 1, 200),
             ("media", "caption") => text(v, 0, 1000),
+            // Snapshot (D035): the file list + map live in the uploaded JSON; the record carries only counts.
+            ("snapshot", "sha256") => create && v.as_str().is_some_and(sha_ok),
+            ("snapshot", "files" | "dirs") => v.as_i64().is_some_and(|n| (0..=1_000_000).contains(&n)),
+            ("snapshot", "note") => text(v, 0, 500),
             _ => return Err(bad(&format!("field {k} is not allowed on a {kind}"))),
         };
         if !good {
@@ -96,6 +102,7 @@ fn validate(c: &Connection, ws: &str, project: &str, kind: &str, f: &Map<String,
     }
     let required: &[&str] = match (kind, create) {
         ("media", true) => &["sha256", "name"],
+        ("snapshot", true) => &["sha256", "files", "dirs"],
         (_, true) => &["title"],
         _ => &[],
     };
@@ -120,6 +127,7 @@ impl Hub {
         let ck = |p: Perm, t: Target, a: &str| self.check(c, who, m, p, t, a);
         match (kind, created_by) {
             ("milestone", _) => ck(Perm::MilestoneEdit, proj, "milestone.edit")?,
+            ("snapshot", _) => ck(Perm::DocPublish, proj, "doc.publish")?,
             ("task", None) => ck(Perm::TaskCreate, proj, "task.create")?,
             (_, None) => ck(Perm::MediaUpload, proj, "media.upload")?,
             (_, Some(by)) => {
@@ -177,7 +185,7 @@ impl Hub {
                 }
                 validate(c, ws, project, kind, f, true)?;
                 let mut fields = f.clone();
-                if kind == "media" {
+                if FILE_KINDS.contains(&kind) {
                     let sha = f["sha256"].as_str().unwrap_or("");
                     // Only a file uploaded into this same project counts; a hash seen elsewhere grants nothing.
                     let size: Option<i64> = db(c
@@ -194,7 +202,18 @@ impl Hub {
                 if row.kind != kind {
                     return Err(bad("kind does not match the record"));
                 }
-                self.authorize(c, who, m.as_ref(), ws, &row.project, kind, Some(&row.created_by), if action == "delete" { &empty } else { f })?;
+                // Claiming (D035): anyone who may add tasks can put themselves on an unclaimed task or take
+                // themselves off; assigning other people or taking over a claim still needs task.assign.
+                let held = row.fields.get("assignee").and_then(Value::as_str);
+                let claim = kind == "task"
+                    && action == "update"
+                    && f.len() == 1
+                    && f.get("assignee").is_some_and(|v| (v.as_str() == Some(who.user.as_str()) && held.is_none()) || (v.is_null() && held == Some(who.user.as_str())));
+                if claim {
+                    self.check(c, who, m.as_ref(), Perm::TaskCreate, Target::Item { workspace: ws, project: &row.project, created_by: &row.created_by }, "task.claim")?;
+                } else {
+                    self.authorize(c, who, m.as_ref(), ws, &row.project, kind, Some(&row.created_by), if action == "delete" { &empty } else { f })?;
+                }
                 if action == "delete" {
                     (if row.deleted { Write::Nothing } else { Write::Tombstone(row.project) }, None)
                 } else if row.deleted {
@@ -285,6 +304,9 @@ impl Hub {
         if m.has(Perm::ProjectRead) && m.has(Perm::MediaRead) {
             kinds.push("media");
         }
+        if m.has(Perm::ProjectRead) && m.has(Perm::DocRead) {
+            kinds.push("snapshot");
+        }
         let mut st = db(c.prepare(&format!(
             "SELECT {RECORD_COLS} FROM records r
              JOIN memberships m ON m.workspace_id = r.workspace_id AND m.user_id = ?2 AND m.revoked = 0
@@ -336,13 +358,14 @@ impl Hub {
         Ok(ok(json!({ "sha256": sha, "size": body.len() })))
     }
 
-    /// `GET …/media/{record_id}`: the file of a live media record, checked with media.read on its project.
+    /// `GET …/media/{record_id}`: the file of a live media record (media.read) or snapshot (doc.read) on its project.
     pub(crate) fn get_media(&self, c: &Connection, who: &Caller, ws: &str, id: &str) -> Res {
         let m = membership(c, ws, &who.user);
-        let row = load(c, id)?.filter(|r| r.ws == ws && r.kind == "media");
+        let row = load(c, id)?.filter(|r| r.ws == ws && FILE_KINDS.contains(&r.kind.as_str()));
+        let perm = if row.as_ref().is_some_and(|r| r.kind == "snapshot") { Perm::DocRead } else { Perm::MediaRead };
         // Unknown ids are checked against the workspace so they refuse exactly like hidden ones.
         let project = row.as_ref().map(|r| r.project.clone()).unwrap_or_default();
-        self.check(c, who, m.as_ref(), Perm::MediaRead, Target::Project { workspace: ws, project: &project }, "media.read")?;
+        self.check(c, who, m.as_ref(), perm, Target::Project { workspace: ws, project: &project }, "media.read")?;
         let row = row.filter(|r| !r.deleted).ok_or_else(not_found)?;
         let sha = row.fields.get("sha256").and_then(Value::as_str).filter(|s| sha_ok(s)).ok_or_else(not_found)?;
         // Defence in depth: the file must have been uploaded into the record's own project.

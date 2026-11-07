@@ -253,6 +253,8 @@ pub enum Publishable {
     ActivityCount,
     ApprovedDoc,
     Media,
+    /// A linked project's file list + map, sent only after the owner approves a preview (D035). Never file contents.
+    Snapshot,
 }
 
 /// Unknown kinds are private. Sessions, transcripts, credentials, settings, paths, launches, discoveries,
@@ -267,6 +269,7 @@ pub fn publishable(kind: &str) -> Option<Publishable> {
         "activity_count" => Publishable::ActivityCount,
         "approved_doc" => Publishable::ApprovedDoc,
         "media" => Publishable::Media,
+        "snapshot" => Publishable::Snapshot,
         _ => return None,
     })
 }
@@ -417,6 +420,7 @@ mod tests {
         }
         assert_eq!(publishable("task"), Some(Publishable::Task));
         assert_eq!(publishable("approved_doc"), Some(Publishable::ApprovedDoc));
+        assert_eq!(publishable("snapshot"), Some(Publishable::Snapshot));
     }
 
     #[test]

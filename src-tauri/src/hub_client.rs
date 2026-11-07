@@ -215,18 +215,30 @@ impl Client {
         cfg["workspaces"].as_array().into_iter().flatten().filter_map(|w| w["id"].as_str().map(String::from)).collect()
     }
 
-    fn call(&self, method: &str, path: &str, body: Option<&Value>) -> Net {
-        let Some(url) = self.config().and_then(|c| c["url"].as_str().map(String::from)) else { return Net::Down("no hub".into()) };
+    fn request(&self, method: &str, path: &str) -> Result<ureq::Request, Net> {
+        let Some(url) = self.config().and_then(|c| c["url"].as_str().map(String::from)) else { return Err(Net::Down("no hub".into())) };
         // Re-checked on every call: hub.json is a plain file, and the bearer must never go anywhere else.
-        let Ok(url) = check_url(&url) else { return Net::Down("the saved hub address is not allowed".into()) };
+        let Ok(url) = check_url(&url) else { return Err(Net::Down("the saved hub address is not allowed".into())) };
         let mut req = self.agent.request(method, &format!("{url}{path}"));
         if let Some(t) = self.token() {
             req = req.set("Authorization", &format!("Bearer {t}"));
         }
+        Ok(req)
+    }
+
+    fn call(&self, method: &str, path: &str, body: Option<&Value>) -> Net {
+        let req = match self.request(method, path) {
+            Ok(r) => r,
+            Err(n) => return n,
+        };
         let res = match body {
             Some(b) => req.send_json(b.clone()),
             None => req.call(),
         };
+        Self::reply(res)
+    }
+
+    fn reply(res: Result<ureq::Response, ureq::Error>) -> Net {
         match res {
             Ok(r) => Net::Reply(r.status(), r.into_json().unwrap_or_default()),
             // 5xx = the hub is having trouble; retry later like a network error.
@@ -352,6 +364,7 @@ impl Client {
                 let _ = std::fs::remove_file(format!("{}{ext}", path.display()));
             }
         }
+        let _ = std::fs::remove_dir_all(self.dir.join("files").join(ws));
         let mut cfg = self.config().unwrap_or_default();
         if let Some(list) = cfg["workspaces"].as_array_mut() {
             list.retain(|w| w["id"] != ws);
@@ -379,7 +392,7 @@ impl Client {
     /* ----- local edits: cache + outbox in one transaction (§7.2) ----- */
 
     pub fn edit(&self, ws: &str, action: &str, kind: &str, record_id: Option<&str>, project: &str, fields: &Value) -> R<String> {
-        if !matches!(action, "create" | "update" | "delete") || !matches!(kind, "task" | "milestone") {
+        if !matches!(action, "create" | "update" | "delete") || !matches!(kind, "task" | "milestone" | "media" | "snapshot") {
             return Err("unsupported edit".into());
         }
         let mut c = self.open_ws(ws)?;
@@ -514,6 +527,8 @@ impl Client {
             let projects: Vec<String> = r["projects"].as_array().into_iter().flatten().filter_map(|p| p["id"].as_str().map(String::from)).collect();
             let known: Vec<String> = meta(c, "projects").and_then(|v| serde_json::from_value::<Vec<Value>>(v).ok()).unwrap_or_default().iter().filter_map(|p| p["id"].as_str().map(String::from)).collect();
             set_meta(c, "projects", &r["projects"])?;
+            // A project appearing or disappearing is a change the UI must show, even with no records.
+            changed |= projects.len() != known.len() || projects.iter().any(|p| !known.contains(p));
             if cursor > 0 && projects.iter().any(|p| !known.contains(p)) {
                 // A project became visible; its older records are behind the cursor.
                 set_meta(c, "cursor", &json!(0))?;
@@ -570,6 +585,8 @@ impl Client {
                               FROM records r WHERE r.deleted = 0 ORDER BY r.kind, r.updated_at DESC")?,
             "conflicts": rows("SELECT id, record_id, kind, mine, theirs, reason, at FROM conflicts ORDER BY id")?,
             "pending": c.query_row("SELECT count(*) FROM outbox", [], |r| r.get::<_, i64>(0)).map_err(e)?,
+            // hub project id -> local project id, for projects shared from this PC (their local chats/activity show).
+            "links": cfg["links"].as_object().map(|l| l.iter().filter(|(_, v)| v["workspace"] == ws).map(|(k, v)| (v["project"].as_str().unwrap_or("").to_string(), json!(k))).collect::<Map<String, Value>>()).unwrap_or_default(),
             "last_sync": meta(&c, "last_sync"),
         }))
     }
@@ -591,7 +608,7 @@ impl Client {
     pub fn invite(&self, ws: &str, role: &str, projects: Option<Vec<String>>) -> R<String> {
         let v = self.need("POST", &format!("/v1/workspaces/{ws}/invitations"), Some(&json!({ "role": role, "projects": projects })))?;
         let url = self.config().and_then(|c| c["url"].as_str().map(String::from)).unwrap_or_default();
-        Ok(format!("{url}#{}", v["token"].as_str().unwrap_or("")))
+        Ok(format!("{}#{}", shareable(&url, crate::phone::tailscale_ip().as_deref()), v["token"].as_str().unwrap_or("")))
     }
 
     pub fn new_project(&self, ws: &str, name: &str) -> R<Value> {
@@ -625,6 +642,8 @@ impl Client {
             self.edit(ws, "create", "task", None, &pid, &import_fields(it))?;
             n += 1;
         }
+        // Sync now so the new project (and its imported tasks) show at once.
+        let _ = self.sync_ws(ws);
         Ok(json!({ "project_id": pid, "imported": n }))
     }
 }
@@ -669,6 +688,169 @@ fn apply(c: &Connection, rec: &Value) -> R<()> {
     Ok(())
 }
 
+/* ---------- files: media and project snapshots (D035) ---------- */
+
+/// A link teammates can open: a loopback hub address is swapped for this PC's Tailscale address.
+pub fn shareable(url: &str, tailscale: Option<&str>) -> String {
+    match (url.split_once("://"), tailscale) {
+        (Some((scheme, rest)), Some(ip)) if rest.starts_with("127.0.0.1") || rest.starts_with("localhost") => {
+            let port = rest.rsplit_once(':').map(|(_, p)| format!(":{p}")).unwrap_or_default();
+            format!("{scheme}://{ip}{port}")
+        }
+        _ => url.to_string(),
+    }
+}
+
+const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+pub fn b64_encode(b: &[u8]) -> String {
+    let mut out = String::with_capacity(b.len().div_ceil(3) * 4);
+    for c in b.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        for i in 0..4 {
+            out.push(if i <= c.len() { B64[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+        }
+    }
+    out
+}
+
+pub fn b64_decode(s: &str) -> R<Vec<u8>> {
+    let s = s.split_once(',').map_or(s, |(_, d)| d); // accepts a data: URL
+    let mut out = Vec::with_capacity(s.len() / 4 * 3);
+    let (mut acc, mut bits) = (0u32, 0);
+    for ch in s.bytes().filter(|c| !c.is_ascii_whitespace() && *c != b'=') {
+        let v = B64.iter().position(|&x| x == ch).ok_or("bad base64")? as u32;
+        acc = (acc << 6 | v) & 0xffffff;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits & 0xff) as u8);
+        }
+    }
+    Ok(out)
+}
+
+fn sha256_hex(b: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// File names that may hold secrets never go into a snapshot, even if git tracks them.
+pub fn sensitive(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+    name.starts_with(".env")
+        || ["id_rsa", "id_ed25519", ".npmrc", ".pypirc", ".netrc", "credentials", ".git-credentials"].iter().any(|n| name.starts_with(n))
+        || [".pem", ".key", ".p12", ".pfx", ".kdbx", ".keystore", ".jks"].iter().any(|x| name.ends_with(x))
+        || name.contains("secret")
+        || name.contains("password")
+}
+
+/// The project's git-tracked file list (sizes, folder counts) and its map: folders as nodes, parent->child edges.
+/// Only names and sizes; never contents, never the folder's location on this PC.
+pub fn build_snapshot(repo: &Path) -> R<(Value, usize)> {
+    let out = crate::util::run("git", &["-c", "core.quotepath=off", "ls-files", "-z"], Some(repo), Duration::from_secs(30))?;
+    if !out.ok {
+        return Err("This project has no git repository to snapshot.".into());
+    }
+    let mut files = Vec::new();
+    let mut excluded = 0;
+    let mut dirs: std::collections::BTreeMap<String, (u64, u64)> = std::collections::BTreeMap::new();
+    for p in out.stdout.split('\0').filter(|p| !p.is_empty()) {
+        if sensitive(p) {
+            excluded += 1;
+            continue;
+        }
+        let size = std::fs::metadata(repo.join(p)).map(|m| m.len()).unwrap_or(0);
+        let mut d = p.rsplit_once('/').map_or(String::new(), |(d, _)| d.to_string());
+        loop {
+            let e = dirs.entry(d.clone()).or_default();
+            e.0 += 1;
+            e.1 += size;
+            match d.rsplit_once('/') {
+                Some((up, _)) => d = up.to_string(),
+                None if !d.is_empty() => d = String::new(),
+                None => break,
+            }
+        }
+        files.push(json!([p, size]));
+        if files.len() >= 50_000 {
+            break;
+        }
+    }
+    let nodes: Vec<Value> = dirs.iter().map(|(d, (n, b))| json!({ "id": d, "files": n, "bytes": b })).collect();
+    let edges: Vec<Value> = dirs.keys().filter(|d| !d.is_empty()).map(|d| json!([d.rsplit_once('/').map_or("", |(u, _)| u), d])).collect();
+    Ok((json!({ "version": 1, "made_at": now(), "files": files, "map": { "nodes": nodes, "edges": edges } }), excluded))
+}
+
+impl Client {
+    /// Uploads a file into a shared project, then queues its record. Needs the hub to be reachable.
+    pub fn publish_file(&self, ws: &str, project: &str, kind: &str, bytes: &[u8], fields: Value) -> R<String> {
+        if bytes.len() > 25 * 1024 * 1024 {
+            return Err("Files can be at most 25 MB.".into());
+        }
+        let sha = sha256_hex(bytes);
+        let req = self.request("PUT", &format!("/v1/workspaces/{ws}/projects/{project}/blobs/{sha}")).map_err(|_| "Can't reach the hub.".to_string())?;
+        match Self::reply(req.send_bytes(bytes)) {
+            Net::Reply(200, _) => {}
+            Net::Reply(code, v) => return Err(format!("The hub refused the upload ({code}: {})", v["error"].as_str().unwrap_or("error"))),
+            Net::Down(d) => return Err(format!("Can't reach the hub ({d}).")),
+        }
+        let mut f = fields.as_object().cloned().unwrap_or_default();
+        f.insert("sha256".into(), json!(sha));
+        let dir = self.dir.join("files").join(ws);
+        if std::fs::create_dir_all(&dir).is_ok() {
+            let _ = write_atomic(&dir.join(&sha), bytes);
+        }
+        self.edit(ws, "create", kind, None, project, &Value::Object(f))
+    }
+
+    /// A media or snapshot file: from this PC's cache if it still matches its hash, else downloaded and cached.
+    pub fn file(&self, ws: &str, record_id: &str) -> R<Vec<u8>> {
+        let c = self.open_ws(ws)?;
+        let fields: String = c.query_row("SELECT fields FROM records WHERE id = ?1 AND deleted = 0", [record_id], |r| r.get(0)).map_err(|_| "That file is gone.")?;
+        let sha = obj(&fields).get("sha256").and_then(Value::as_str).filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())).map(String::from).ok_or("That record has no file.")?;
+        let path = self.dir.join("files").join(ws).join(&sha);
+        if let Ok(b) = std::fs::read(&path) {
+            if sha256_hex(&b) == sha {
+                return Ok(b);
+            }
+        }
+        let req = self.request("GET", &format!("/v1/workspaces/{ws}/media/{record_id}")).map_err(|_| "Can't reach the hub.".to_string())?;
+        let res = req.call().map_err(|e| format!("Couldn't download it ({e})."))?;
+        let mut b = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::Read::take(res.into_reader(), 26 * 1024 * 1024), &mut b).map_err(e)?;
+        if sha256_hex(&b) != sha {
+            return Err("The downloaded file didn't match its fingerprint.".into());
+        }
+        std::fs::create_dir_all(path.parent().unwrap_or(&self.dir)).map_err(e)?;
+        write_atomic(&path, &b)?;
+        Ok(b)
+    }
+
+    /// Publishes a fresh snapshot for a shared project and retires this project's older ones.
+    pub fn publish_snapshot(&self, ws: &str, project: &str, snap: &Value) -> R<String> {
+        let files = snap["files"].as_array().map_or(0, Vec::len);
+        let dirs = snap["map"]["nodes"].as_array().map_or(0, Vec::len);
+        let old: Vec<String> = {
+            let c = self.open_ws(ws)?;
+            let mut st = c.prepare("SELECT id FROM records WHERE kind = 'snapshot' AND project_id = ?1 AND deleted = 0").map_err(e)?;
+            let v = st.query_map([project], |r| r.get(0)).map_err(e)?.filter_map(|r| r.ok()).collect();
+            v
+        };
+        let id = self.publish_file(ws, project, "snapshot", snap.to_string().as_bytes(), json!({ "files": files, "dirs": dirs }))?;
+        for o in old {
+            let _ = self.edit(ws, "delete", "snapshot", Some(&o), project, &Value::Null);
+        }
+        Ok(id)
+    }
+}
+
+/// The hub installed on this PC (D035): `%LOCALAPPDATA%\ptcc-hub\ptcc-hub.exe`, its data in the same folder.
+pub fn local_hub_exe() -> Option<PathBuf> {
+    let p = PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("ptcc-hub").join("ptcc-hub.exe");
+    p.is_file().then_some(p)
+}
+
 /* ---------- background sync (only once joined) ---------- */
 
 pub struct HubState {
@@ -702,6 +884,7 @@ pub fn start(app: &tauri::AppHandle) {
     std::thread::spawn(move || {
         use tauri::Emitter;
         let mut failures = 0u32;
+        let mut was_online: Option<bool> = None;
         loop {
             let st = app.state::<HubState>();
             if st.client.config().is_none() {
@@ -723,7 +906,10 @@ pub fn start(app: &tauri::AppHandle) {
                     }
                 }
             }
-            if result.as_ref().is_ok_and(|c| *c) || failures == 1 {
+            // Tell the UI when data changed or the hub went online/offline.
+            let online = Some(result.is_ok());
+            if result.as_ref().is_ok_and(|c| *c) || online != was_online {
+                was_online = online;
                 let _ = app.emit("hub-changed", ());
             }
             // §9: 60 s while the window is visible, 10 min in the tray; offline retries back off 5 s → 15 min.
@@ -837,6 +1023,97 @@ pub fn hub_link(st: State<AppState>, h: State<HubState>, project: String, worksp
     Ok(r)
 }
 
+fn mime(name: &str) -> &'static str {
+    match name.rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mp3" => "audio/mpeg",
+        "pdf" => "application/pdf",
+        _ => "application/octet-stream",
+    }
+}
+
+#[tauri::command(async)]
+pub fn hub_upload(h: State<HubState>, workspace: String, project_id: String, name: String, caption: Option<String>, data: String) -> R<String> {
+    let bytes = b64_decode(&data)?;
+    let mut f = json!({ "name": name.chars().take(200).collect::<String>() });
+    if let Some(c) = caption.filter(|c| !c.trim().is_empty()) {
+        f["caption"] = json!(c.chars().take(1000).collect::<String>());
+    }
+    let id = h.client.publish_file(&workspace, &project_id, "media", &bytes, f)?;
+    h.wake();
+    Ok(id)
+}
+
+/// Media as a data: URL for <img>/<video> (never opened as a page); a snapshot (no name) as parsed JSON.
+#[tauri::command(async)]
+pub fn hub_file(h: State<HubState>, workspace: String, record_id: String, name: Option<String>) -> R<Value> {
+    let b = h.client.file(&workspace, &record_id)?;
+    match name {
+        None => serde_json::from_slice(&b).map_err(|_| "That snapshot is unreadable.".to_string()),
+        Some(n) => Ok(json!(format!("data:{};base64,{}", mime(&n), b64_encode(&b)))),
+    }
+}
+
+fn repo_of(st: &State<AppState>, id: &str) -> R<PathBuf> {
+    let c = st.db.lock().map_err(|_| "database lock poisoned")?;
+    let repo: Option<String> = c.query_row("SELECT repo_path FROM projects WHERE id = ?1", [id], |r| r.get(0)).map_err(|_| "unknown project")?;
+    repo.map(PathBuf::from).filter(|p| p.is_dir()).ok_or_else(|| "This project has no git repository to snapshot.".into())
+}
+
+/// Exactly what a snapshot would send: counts, top-level folders, and how many secret-looking files are left out.
+#[tauri::command(async)]
+pub fn hub_snapshot_preview(st: State<AppState>, project: String) -> R<Value> {
+    let (snap, excluded) = build_snapshot(&repo_of(&st, &project)?)?;
+    let top: Vec<Value> = snap["map"]["nodes"].as_array().into_iter().flatten().filter(|n| n["id"].as_str().is_some_and(|d| !d.is_empty() && !d.contains('/'))).cloned().collect();
+    Ok(json!({ "files": snap["files"].as_array().map_or(0, Vec::len), "dirs": snap["map"]["nodes"].as_array().map_or(0, Vec::len), "excluded": excluded, "top": top,
+               "sent": ["file paths and sizes tracked by git", "the folder structure (the map)"],
+               "never": ["file contents", "untracked or ignored files", "secret-looking files (.env, keys, credentials)", "chats", "where the folder is on this PC"] }))
+}
+
+#[tauri::command(async)]
+pub fn hub_snapshot_publish(st: State<AppState>, h: State<HubState>, project: String) -> R<String> {
+    let link = h.client.config().map(|c| c["links"][&project].clone()).filter(|l| l.is_object()).ok_or("Share this project with a workspace first.")?;
+    let (snap, _) = build_snapshot(&repo_of(&st, &project)?)?;
+    let id = h.client.publish_snapshot(link["workspace"].as_str().unwrap_or(""), link["project"].as_str().unwrap_or(""), &snap)?;
+    h.wake();
+    Ok(id)
+}
+
+/// The hub installed on this PC, if any.
+#[tauri::command(async)]
+pub fn hub_host_status() -> Value {
+    json!({ "installed": local_hub_exe().is_some(), "tailscale": crate::phone::tailscale_ip() })
+}
+
+/// Creates a workspace on the hub installed on this PC and joins it as its owner.
+#[tauri::command(async)]
+pub fn hub_host_create_workspace(app: AppHandle, h: State<HubState>, name: String, me: Option<String>) -> R<Value> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 80 {
+        return Err("Give the workspace a name (up to 80 characters).".into());
+    }
+    let exe = local_hub_exe().ok_or("The hub isn't installed on this PC.")?;
+    let out = crate::util::run(&exe.to_string_lossy(), &["new-workspace", name], None, Duration::from_secs(30))?;
+    let token: String = out.stdout.split('#').nth(1).map(|t| t.chars().take_while(|c| c.is_ascii_hexdigit()).collect()).unwrap_or_default();
+    if token.len() != 64 {
+        return Err("The hub didn't create the workspace.".into());
+    }
+    // The hub on this PC serves on 8770; joining it while joined elsewhere fails with a clear message.
+    let url = "http://127.0.0.1:8770".to_string();
+    let who = me.filter(|m| !m.trim().is_empty()).or_else(|| h.client.config().and_then(|c| c["name"].as_str().map(String::from))).unwrap_or_else(|| "Owner".into());
+    let device = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "PC".into());
+    let r = h.client.join(&format!("{url}#{token}"), &who, &device)?;
+    start(&app);
+    h.wake();
+    Ok(r)
+}
+
 /* ---------- tests: against a real hub on loopback ---------- */
 
 #[cfg(test)]
@@ -923,6 +1200,82 @@ mod tests {
         set_url(&c, "http://100.64.0.1:80@127.0.0.1:9");
         assert!(matches!(c.call("GET", "/v1/me", None), Net::Down(m) if m.contains("not allowed")));
         let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn base64_round_trips_and_links_use_tailscale() {
+        for b in [&b""[..], b"f", b"fo", b"foo", b"foob", b"fooba", b"foobar", &[0u8, 255, 128, 7][..]] {
+            assert_eq!(b64_decode(&b64_encode(b)).unwrap(), b);
+        }
+        let big: Vec<u8> = (0..100_000u32).map(|i| (i * 7 % 251) as u8).collect();
+        assert_eq!(b64_decode(&b64_encode(&big)).unwrap(), big);
+        assert_eq!(b64_encode(b"foobar"), "Zm9vYmFy");
+        assert_eq!(b64_decode("data:image/png;base64,Zm9vYg==").unwrap(), b"foob");
+        assert_eq!(shareable("http://127.0.0.1:8770", Some("100.1.2.3")), "http://100.1.2.3:8770");
+        assert_eq!(shareable("http://127.0.0.1:8770", None), "http://127.0.0.1:8770");
+        assert_eq!(shareable("https://hub.ts.net", Some("100.1.2.3")), "https://hub.ts.net");
+    }
+
+    #[test]
+    fn snapshots_hold_tracked_names_only_and_skip_secrets() {
+        let repo = tmp("repo");
+        let git = |args: &[&str]| crate::util::run("git", args, Some(&repo), Duration::from_secs(30)).unwrap();
+        git(&["init", "-q"]);
+        for (p, body) in [("src/main.rs", "fn main(){}"), ("src/ui/app.tsx", "x"), (".env", "KEY=supersecret"), ("keys/server.pem", "-----"), ("README.md", "hi")] {
+            let f = repo.join(p);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, body).unwrap();
+        }
+        std::fs::write(repo.join("untracked.txt"), "x").unwrap();
+        git(&["add", "src", ".env", "keys", "README.md"]);
+        let (snap, excluded) = build_snapshot(&repo).unwrap();
+        let text = snap.to_string();
+        assert_eq!(excluded, 2);
+        let folder = repo.file_name().unwrap().to_string_lossy().to_string();
+        for leak in [".env", "server.pem", "supersecret", "untracked", "fn main", folder.as_str()] {
+            assert!(!text.contains(leak), "{leak} leaked");
+        }
+        assert_eq!(snap["files"].as_array().unwrap().len(), 3);
+        let dirs: Vec<&str> = snap["map"]["nodes"].as_array().unwrap().iter().map(|n| n["id"].as_str().unwrap()).collect();
+        assert_eq!(dirs, ["", "src", "src/ui"]);
+        assert_eq!(snap["map"]["nodes"][0]["files"], 3);
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn media_and_snapshots_round_trip_through_the_hub() {
+        let h = hub();
+        let (ws, link) = owner_invite(&h);
+        let (ad, bd) = (tmp("a"), tmp("b"));
+        let a = Client::new(&ad);
+        a.join(&link, "Rich", "PC").unwrap();
+        let p = a.new_project(&ws, "site").unwrap()["id"].as_str().unwrap().to_string();
+        let png = b"\x89PNG\r\n fake".to_vec();
+        let id = a.publish_file(&ws, &p, "media", &png, json!({ "name": "cover.png" })).unwrap();
+        a.sync_all().unwrap();
+        let b = Client::new(&bd);
+        b.join(&a.invite(&ws, "viewer", None).unwrap(), "Sam", "Laptop").unwrap();
+        b.sync_all().unwrap();
+        assert_eq!(b.file(&ws, &id).unwrap(), png, "downloaded");
+        assert_eq!(b.file(&ws, &id).unwrap(), png, "from cache");
+        // A tampered cached copy is ignored and fetched again.
+        std::fs::write(bd.join("hub/files").join(&ws).join(sha256_hex(&png)), b"tampered").unwrap();
+        assert_eq!(b.file(&ws, &id).unwrap(), png);
+        let s1 = a.publish_snapshot(&ws, &p, &json!({ "files": [["a.rs", 1]], "map": { "nodes": [{ "id": "" }], "edges": [] } })).unwrap();
+        a.sync_all().unwrap();
+        let s2 = a.publish_snapshot(&ws, &p, &json!({ "files": [], "map": { "nodes": [], "edges": [] } })).unwrap();
+        a.sync_all().unwrap();
+        b.sync_all().unwrap();
+        let recs = b.board(&ws).unwrap()["records"].to_string();
+        assert!(recs.contains(&s2) && !recs.contains(&s1), "older snapshot retired");
+        // Removal deletes cached files too.
+        let sam = b.config().unwrap()["user_id"].as_str().unwrap().to_string();
+        a.need("DELETE", &format!("/v1/workspaces/{ws}/members/{sam}"), None).unwrap();
+        b.sync_all().unwrap();
+        assert!(!bd.join("hub/files").join(&ws).exists());
+        for d in [ad, bd] {
+            let _ = std::fs::remove_dir_all(d);
+        }
     }
 
     #[test]
@@ -1089,6 +1442,10 @@ mod tests {
         assert!(preview["tasks"][0].get("assignee").is_none());
         let r = a.link(&ws, "bombsquad", "BOMBSQUAD", Some(&items)).unwrap();
         assert_eq!(r["imported"], 2);
+        let board = a.board(&ws).unwrap();
+        assert_eq!(board["projects"][0]["name"], "BOMBSQUAD", "shows at once, without waiting for the sync thread");
+        assert_eq!(board["links"][r["project_id"].as_str().unwrap()], "bombsquad");
+        assert_eq!(board["pending"], 0);
         assert!(a.link(&ws, "bombsquad", "BOMBSQUAD", None).is_err(), "linked once");
         a.sync_all().unwrap();
         let recs = a.board(&ws).unwrap()["records"].clone();

@@ -45,7 +45,7 @@ Every piece of data has exactly one class. Anything not listed is **P0**: the de
 |---|---|---|---|
 | **P0 Machine-private** | This PC | CLI session histories and transcripts (`sessions`, `session_*`, CHAT), credentials and tokens, settings, launch history, file paths, repo working state, discoveries, index errors, phone devices, private Book of Secrets notes | **Never.** No code path serializes P0 to the hub. |
 | **P1 Personal project** | The user | Every local project until it is explicitly linked to a workspace | No. Linking is an explicit owner action (§6.1). |
-| **P2 Workspace-shared** | **Hub is authoritative** | Workspace, members, roles, shared tasks, milestones, assignments, progress, published summaries, approved docs, media, activity metadata, audit log | Yes, only to members authorized for that workspace and project. |
+| **P2 Workspace-shared** | **Hub is authoritative** | Workspace, members, roles, shared tasks, milestones, assignments, progress, published summaries, approved docs, media, project snapshots (git-tracked file names + sizes + folder map, approved per publish, D035), activity metadata, audit log | Yes, only to members authorized for that workspace and project. |
 
 Rules:
 1. **Publish by allowlist, never by blocklist.** Outbound data is built from a fixed set of record kinds (`Publishable` in
@@ -94,6 +94,13 @@ Rules:
 ¹ Every role in a member action (the member's current role, the role being assigned, the role an invitation grants)
 must rank strictly below the caller's. Admins handle editors and below; owners also handle admins. Owners are made only
 by ownership transfer. A workspace always keeps at least one owner.
+
+**Claiming (D035):** anyone with task.create may set a task's assignee to themselves when it is unclaimed, or clear
+it when it is theirs (an op changing only `assignee`). Assigning other people or taking over a claim needs task.assign.
+
+**Snapshots (D035):** kind `snapshot`, published with doc.publish and read with doc.read. Its file (JSON: tracked paths,
+sizes, folder nodes/edges) is uploaded like media. Never file contents, untracked files, secret-looking names (.env, keys,
+credentials), chats or the folder's location on the PC.
 
 **Custom permissions:** a membership can carry explicit `grant` and `deny` sets on top of its role. **Deny beats
 grant beats role.** Owner-only actions and the access-controlling permissions (members.invite, members.manage,

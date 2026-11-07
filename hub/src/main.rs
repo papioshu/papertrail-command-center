@@ -95,6 +95,8 @@ fn serve_cmd(data: &Path, mut args: Vec<String>) -> Result<(), String> {
     while let Some(b) = take(&mut args, "--bind") {
         binds.push(b.parse().map_err(|_| format!("bad --bind {b}"))?);
     }
+    // With default binds, keep looking for the Tailscale address (signed in later, or changed) and add it.
+    let watch_tailscale = binds.is_empty();
     if binds.is_empty() {
         binds.push(IpAddr::from([127, 0, 0, 1]));
         match tailscale_ip() {
@@ -117,9 +119,28 @@ fn serve_cmd(data: &Path, mut args: Vec<String>) -> Result<(), String> {
         println!("ptcc-hub listening on http://{addr}");
         workers.extend(serve(hub.clone(), server, 4));
     }
-    // Nightly backup: checked hourly, written once per UTC day, rotated (§10).
+    // Nightly backup: checked hourly, written once per UTC day, rotated (§10). Tailscale checked every minute.
     let backups = store::backups_dir(data);
+    let mut minute = 0u64;
     loop {
+        if watch_tailscale {
+            if let Some(ip) = tailscale_ip().filter(|ip| !binds.contains(ip)) {
+                let addr = std::net::SocketAddr::new(ip, port);
+                match tiny_http::Server::http(addr) {
+                    Ok(srv) => {
+                        println!("ptcc-hub listening on http://{addr} (Tailscale)");
+                        binds.push(ip);
+                        workers.extend(serve(hub.clone(), Arc::new(srv), 4));
+                    }
+                    Err(e) => eprintln!("ptcc-hub: can't listen on {addr} yet: {e}"),
+                }
+            }
+        }
+        minute += 1;
+        if minute % 60 != 1 {
+            std::thread::sleep(Duration::from_secs(60));
+            continue;
+        }
         if let Ok(c) = hub.db.lock() {
             if let Err(e) = store::prune_ops(&c) {
                 eprintln!("ptcc-hub: pruning applied ops failed: {e}");
@@ -130,6 +151,6 @@ fn serve_cmd(data: &Path, mut args: Vec<String>) -> Result<(), String> {
                 Err(e) => eprintln!("ptcc-hub: backup failed: {e}"),
             }
         }
-        std::thread::sleep(Duration::from_secs(3600));
+        std::thread::sleep(Duration::from_secs(60));
     }
 }

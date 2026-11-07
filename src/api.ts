@@ -149,6 +149,13 @@ export const api = {
   hubNewProject: (workspace: string, name: string) => call<Row>("hub_new_project", { workspace, name }),
   hubLinkPreview: (project: string) => call<Row>("hub_link_preview", { project }),
   hubLink: (project: string, workspace: string, doImport: boolean) => call<Row>("hub_link", { project, workspace, import: doImport }),
+  hubUpload: (workspace: string, projectId: string, name: string, caption: string, data: string) => call<string>("hub_upload", { workspace, projectId, name, caption, data }),
+  /** Media: pass the file name, get a data: URL. Snapshot: no name, get its JSON. */
+  hubFile: (workspace: string, recordId: string, name?: string) => call<unknown>("hub_file", { workspace, recordId, name }),
+  hubSnapshotPreview: (project: string) => call<Row>("hub_snapshot_preview", { project }),
+  hubSnapshotPublish: (project: string) => call<string>("hub_snapshot_publish", { project }),
+  hubHostStatus: () => call<Row>("hub_host_status"),
+  hubHostCreate: (name: string, me: string) => call<Row>("hub_host_create_workspace", { name, me }),
 };
 
 export type ActionOp = { kind: "add" | "edit" | "start" | "complete" | "reopen" | "remove"; id?: string; title?: string; notes?: string; assignee?: string };

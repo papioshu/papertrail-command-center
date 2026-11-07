@@ -432,3 +432,76 @@ fn migrating_a_v1_hub_backs_it_up_first() {
     drop(c);
     let _ = std::fs::remove_dir_all(&data);
 }
+
+#[test]
+fn contributors_claim_and_unclaim_but_only_editors_assign_others() {
+    let fx = fixture();
+    let mut ed = Client::new(&fx, "editor");
+    let t = ed.create("task", &fx.p1, json!({ "title": "Design the flyer" }));
+    ed.sync();
+    let con = fx.user("contributor").to_string();
+    let viewer = fx.user("viewer").to_string();
+    let mut c = Client::new(&fx, "contributor");
+    c.queue("update", "task", &t, &fx.p1, json!({ "assignee": con }));
+    c.sync();
+    assert!(c.rejected.is_empty(), "claim an unclaimed task");
+    assert_eq!(c.field(&t, "assignee"), con.as_str());
+    // A second contributor-level claim on a claimed task, or assigning someone else, is refused.
+    let mut v = Client::new(&fx, "viewer");
+    v.queue("update", "task", &t, &fx.p1, json!({ "assignee": viewer }));
+    v.sync();
+    assert_eq!(v.rejected.len(), 1, "viewers can't claim");
+    c.queue("update", "task", &t, &fx.p1, json!({ "assignee": viewer }));
+    c.sync();
+    assert_eq!(c.rejected.len(), 1, "contributors can't assign others");
+    // Claim + another field at once isn't a plain claim: it needs edit rights on someone else's task.
+    c.queue("update", "task", &t, &fx.p1, json!({ "assignee": null, "title": "mine now" }));
+    c.sync();
+    assert_eq!(c.rejected.len(), 2);
+    // Unclaim their own claim.
+    c.queue("update", "task", &t, &fx.p1, json!({ "assignee": null }));
+    c.sync();
+    assert_eq!(c.rejected.len(), 2);
+    assert_eq!(c.field(&t, "assignee"), Value::Null);
+    // Editors can take over or assign anyone.
+    ed.sync();
+    ed.queue("update", "task", &t, &fx.p1, json!({ "assignee": viewer }));
+    ed.sync();
+    assert!(ed.rejected.is_empty() && ed.field(&t, "assignee") == viewer.as_str());
+    // ...and a contributor can't claim it away from them.
+    c.sync();
+    c.queue("update", "task", &t, &fx.p1, json!({ "assignee": con }));
+    c.sync();
+    assert_eq!(c.rejected.len(), 3);
+}
+
+#[test]
+fn snapshots_need_doc_publish_and_are_read_with_doc_read() {
+    let fx = fixture();
+    let snap = br#"{"files":[{"path":"src/main.rs","size":10}],"map":{"nodes":[],"edges":[]}}"#.to_vec();
+    let sha = store::hash_bytes(&snap);
+    let put = |actor: &str, project: &str| {
+        let auth = format!("Bearer {}", fx.token(actor));
+        fx.hub.handle("PUT", &format!("/v1/workspaces/{}/projects/{project}/blobs/{sha}", fx.ws), Some(&auth), &snap).code
+    };
+    assert_eq!(put("contributor", &fx.p1), 200);
+    let mut c = Client::new(&fx, "contributor");
+    c.create("snapshot", &fx.p1, json!({ "sha256": sha, "files": 1, "dirs": 1 }));
+    c.sync();
+    assert_eq!(c.rejected.len(), 1, "publishing a snapshot needs doc.publish (editor+)");
+    let mut e = Client::new(&fx, "editor");
+    let id = e.create("snapshot", &fx.p1, json!({ "sha256": sha, "files": 1, "dirs": 1, "path": "C:/secret" }));
+    e.sync();
+    assert_eq!(e.rejected.len(), 1, "fields are allowlisted");
+    let id2 = e.create("snapshot", &fx.p1, json!({ "sha256": sha, "files": 1, "dirs": 1 }));
+    e.sync();
+    assert!(e.cache[&id2]["version"] == 1 && !e.cache.get(&id).is_some_and(|r| r["version"].as_i64() > Some(0)));
+    let get = |actor: &str| fx.call("GET", &format!("/v1/workspaces/{}/media/{id2}", fx.ws), Some(actor), json!({}));
+    assert_eq!(get("viewer").raw.as_deref(), Some(&snap[..]));
+    assert_eq!(get("outsider").code, 404);
+    // Denying doc.read hides snapshots from the feed and the download.
+    fx.call("PATCH", &format!("/v1/workspaces/{}/members/{}", fx.ws, fx.user("viewer")), Some("admin"), json!({ "deny": ["doc.read"] }));
+    assert_eq!(get("viewer").code, 404);
+    let feed = fx.call("GET", &format!("/v1/workspaces/{}/changes", fx.ws), Some("viewer"), json!({}));
+    assert!(!feed.body.to_string().contains(&id2));
+}
