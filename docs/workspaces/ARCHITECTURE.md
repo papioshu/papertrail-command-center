@@ -88,13 +88,18 @@ Rules:
 | members.manage (roles, revoke), workspace.manage | ✓ | ✓¹ | | | |
 | workspace.delete, ownership transfer | ✓ | | | | |
 
-¹ An admin can't change or revoke an owner or another admin. A workspace always keeps at least one owner.
+¹ Every role in a member action (the member's current role, the role being assigned, the role an invitation grants)
+must rank strictly below the caller's. Admins handle editors and below; owners also handle admins. Owners are made only
+by ownership transfer. A workspace always keeps at least one owner.
 
 **Custom permissions:** a membership can carry explicit `grant` and `deny` sets on top of its role. **Deny beats
-grant beats role.** Owner-only actions can't be granted.
+grant beats role.** Owner-only actions and the access-controlling permissions (members.invite, members.manage,
+workspace.manage) come only from the role and can't be granted.
 
 **Project scope:** a membership may be limited to a list of projects. Outside that list, the member's project-level
-permissions don't apply, and those projects don't exist for them.
+permissions don't apply, and those projects don't exist for them. A scoped member never holds workspace-wide
+administration (members.invite, members.manage, audit.read, workspace.manage), whatever their role, so a scope can't be
+escaped by inviting or re-scoping members.
 
 **Decision procedure** (`access::decide`), deny by default:
 1. No active membership for the workspace → `NotFound`.

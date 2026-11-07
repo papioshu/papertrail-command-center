@@ -49,6 +49,15 @@ impl Perm {
     pub fn owner_only(self) -> bool {
         matches!(self, WorkspaceDelete | OwnershipTransfer)
     }
+    /// Can come only from the role, never from a custom grant: they control who gets access.
+    pub fn grantable(self) -> bool {
+        !self.owner_only() && !matches!(self, MembersInvite | MembersManage | WorkspaceManage)
+    }
+    /// Workspace-wide administration: unavailable to a member limited to some projects, whatever their role,
+    /// so a project scope can't be escaped by inviting or re-scoping members or reading the whole audit log.
+    fn workspace_admin(self) -> bool {
+        matches!(self, MembersInvite | MembersManage | AuditRead | WorkspaceManage | WorkspaceDelete | OwnershipTransfer)
+    }
     /// Checked against the project scope (workspace-level permissions are not).
     fn project_level(self) -> bool {
         matches!(self, ProjectRead | TaskRead | DocRead | MediaRead | TaskCreate | TaskEditOwn | MediaUpload | TaskEditAny | TaskAssign | MilestoneEdit | DocPublish | ProjectLink)
@@ -103,7 +112,7 @@ impl Membership {
     }
     /// Role + grants − denies, ignoring per-resource rules.
     pub fn has(&self, p: Perm) -> bool {
-        !self.deny.contains(&p) && (self.role.allows(p) || (self.grant.contains(&p) && !p.owner_only()))
+        !self.deny.contains(&p) && (self.role.allows(p) || (self.grant.contains(&p) && p.grantable()))
     }
 }
 
@@ -114,8 +123,10 @@ pub enum Target<'a> {
     Project { workspace: &'a str, project: &'a str },
     /// A task, milestone, doc or media item inside a project; `created_by` drives TaskEditOwn.
     Item { workspace: &'a str, project: &'a str, created_by: &'a str },
-    /// Another member, for MembersManage (an admin can't act on an owner or another admin).
-    Member { workspace: &'a str, role: Role },
+    /// A member (MembersManage) or an invitation (MembersInvite). `role` = their current role, or the role an
+    /// invitation grants; `new_role` = the role being assigned, if any. Every role involved must rank strictly below
+    /// the caller's: admins handle editors and below, owners also admins; owners are made only by OwnershipTransfer.
+    Member { workspace: &'a str, role: Role, new_role: Option<Role> },
 }
 
 impl Target<'_> {
@@ -154,7 +165,10 @@ pub fn decide(m: Option<&Membership>, p: Perm, t: Target) -> Decision {
         (_, Target::Workspace(_)) if p.project_level() && m.projects.is_some() => false,
         (TaskEditOwn, Target::Item { created_by, .. }) => created_by == m.user,
         (TaskEditOwn, _) => false,
-        (MembersManage, Target::Member { role, .. }) => m.role == Role::Owner || !matches!(role, Role::Owner | Role::Admin),
+        _ if p.workspace_admin() && m.projects.is_some() => false,
+        // Enum order is rank: Owner < Admin < Editor < …, so "strictly below the caller" is `r > m.role`.
+        (MembersManage | MembersInvite, Target::Member { role, new_role, .. }) => role > m.role && new_role.is_none_or(|r| r > m.role),
+        (MembersManage | MembersInvite, _) => false,
         _ => true,
     };
     if m.has(p) && rules_ok {
@@ -310,7 +324,7 @@ mod tests {
     #[test]
     fn admins_cant_manage_owners_or_admins() {
         let a = Membership::new("u", "w", Role::Admin);
-        let at = |role| Target::Member { workspace: "w", role };
+        let at = |role| Target::Member { workspace: "w", role, new_role: None };
         assert_eq!(decide(Some(&a), MembersManage, at(Role::Editor)), Allow);
         assert_eq!(decide(Some(&a), MembersManage, at(Role::Admin)), Forbidden);
         assert_eq!(decide(Some(&a), MembersManage, at(Role::Owner)), Forbidden);
@@ -318,6 +332,37 @@ mod tests {
         assert_eq!(decide(Some(&o), MembersManage, at(Role::Admin)), Allow);
         let ed = Membership::new("u", "w", Role::Editor);
         assert_eq!(decide(Some(&ed), MembersManage, at(Role::Viewer)), Forbidden);
+    }
+
+    #[test]
+    fn role_changes_and_invites_stay_below_the_caller() {
+        let a = Membership::new("u", "w", Role::Admin);
+        let change = |role, to| Target::Member { workspace: "w", role, new_role: Some(to) };
+        assert_eq!(decide(Some(&a), MembersManage, change(Role::Viewer, Role::Editor)), Allow);
+        assert_eq!(decide(Some(&a), MembersManage, change(Role::Viewer, Role::Admin)), Forbidden, "admin can't promote to admin");
+        assert_eq!(decide(Some(&a), MembersManage, change(Role::Viewer, Role::Owner)), Forbidden);
+        assert_eq!(decide(Some(&a), MembersInvite, Target::Member { workspace: "w", role: Role::Admin, new_role: None }), Forbidden);
+        assert_eq!(decide(Some(&a), MembersInvite, Target::Member { workspace: "w", role: Role::Editor, new_role: None }), Allow);
+        assert_eq!(decide(Some(&a), MembersManage, Target::Workspace("w")), Forbidden, "only with a member target");
+        let o = Membership::new("u", "w", Role::Owner);
+        assert_eq!(decide(Some(&o), MembersManage, change(Role::Editor, Role::Admin)), Allow);
+        assert_eq!(decide(Some(&o), MembersManage, change(Role::Admin, Role::Owner)), Forbidden, "owners only via OwnershipTransfer");
+        // Who-gets-access permissions can't be handed out by custom grant.
+        let mut e = Membership::new("u", "w", Role::Editor);
+        e.grant.extend([MembersInvite, MembersManage, WorkspaceManage]);
+        assert_eq!(decide(Some(&e), MembersInvite, Target::Member { workspace: "w", role: Role::Viewer, new_role: None }), Forbidden);
+    }
+
+    #[test]
+    fn a_project_scope_cant_be_escaped_through_admin_rights() {
+        let mut a = Membership::new("u", "w", Role::Admin);
+        a.projects = Some(["media".to_string()].into());
+        let viewer = Target::Member { workspace: "w", role: Role::Viewer, new_role: None };
+        assert_eq!(decide(Some(&a), MembersInvite, viewer), Forbidden);
+        assert_eq!(decide(Some(&a), MembersManage, viewer), Forbidden);
+        assert_eq!(decide(Some(&a), AuditRead, Target::Workspace("w")), Forbidden);
+        assert_eq!(decide(Some(&a), WorkspaceManage, Target::Workspace("w")), Forbidden);
+        assert_eq!(decide(Some(&a), TaskEditAny, item("w", "media", "x")), Allow, "still full rights inside the scope");
     }
 
     #[test]
