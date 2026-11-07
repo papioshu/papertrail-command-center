@@ -191,6 +191,146 @@ fn codex(cx: &Ctx, v: &Value) -> Vec<ChatEntry> {
     vec![e]
 }
 
+/* ---------- reading by byte offset ---------- */
+
+use std::fs::File;
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::path::Path;
+
+pub const PAGE_BYTES: u64 = 4 << 20;
+/// Most bytes one tail call reads, so a burst of output can't balloon memory.
+const TAIL_BYTES: u64 = 16 << 20;
+
+#[derive(Serialize, Debug, Default)]
+pub struct Page {
+    /// Oldest first.
+    pub entries: Vec<ChatEntry>,
+    /// Pass as `before` for older entries; None = start of file reached.
+    pub cursor: Option<u64>,
+    /// Offset just after the last complete line; pass as `from` to tail.
+    pub end: u64,
+    /// Tail only: the file is now shorter than `from` (rewritten).
+    pub reset: bool,
+    pub bad_lines: usize,
+}
+
+fn read_at(f: &mut File, lo: u64, hi: u64) -> Result<Vec<u8>, String> {
+    f.seek(SeekFrom::Start(lo)).map_err(|e| e.to_string())?;
+    let mut buf = vec![0u8; (hi - lo) as usize];
+    f.read_exact(&mut buf).map_err(|e| e.to_string())?;
+    Ok(buf)
+}
+
+/// Parse one line (without its `\n`); None for a blank line.
+fn parse_line(agent: &str, bytes: &[u8], off: u64, full: bool, bad: &mut usize) -> Option<Vec<ChatEntry>> {
+    let bytes = bytes.strip_suffix(b"\r").unwrap_or(bytes);
+    if bytes.iter().all(|b| b.is_ascii_whitespace()) {
+        return None;
+    }
+    match serde_json::from_slice::<Value>(bytes) {
+        Ok(v) => Some(normalize(agent, &v, off, full)),
+        Err(_) => {
+            *bad += 1;
+            None
+        }
+    }
+}
+
+/// Offset just after the last `\n` (0 when the file has none).
+fn last_line_end(f: &mut File, len: u64) -> Result<u64, String> {
+    let mut hi = len;
+    while hi > 0 {
+        let lo = hi.saturating_sub(PAGE_BYTES);
+        let buf = read_at(f, lo, hi)?;
+        if let Some(i) = buf.iter().rposition(|&b| b == b'\n') {
+            return Ok(lo + i as u64 + 1);
+        }
+        hi = lo;
+    }
+    Ok(0)
+}
+
+/// Entries ending at `before` (default: end of file), at least `limit` of them unless the file starts first.
+pub fn read_page(path: &Path, agent: &str, before: Option<u64>, limit: usize) -> Result<Page, String> {
+    let mut f = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let len = f.metadata().map_err(|e| e.to_string())?.len();
+    let end = last_line_end(&mut f, len)?;
+    let mut hi = before.unwrap_or(end).min(end);
+    let mut page = Page { end, ..Default::default() };
+    let mut lines: Vec<Vec<ChatEntry>> = vec![]; // newest first
+    let mut count = 0;
+    let mut win = PAGE_BYTES;
+    'outer: while hi > 0 {
+        let lo = hi.saturating_sub(win);
+        let buf = read_at(&mut f, lo, hi)?; // ends with '\n': `hi` is always a line end
+        let start = if lo == 0 {
+            0
+        } else {
+            // The first newline before the final one marks where whole lines begin.
+            match buf[..buf.len() - 1].iter().position(|&b| b == b'\n') {
+                Some(i) => i + 1,
+                None => {
+                    win *= 2; // one line longer than the window: widen until it fits
+                    continue;
+                }
+            }
+        };
+        let mut segs = vec![];
+        let mut s = start;
+        for (i, _) in buf.iter().enumerate().skip(start).filter(|(_, &b)| b == b'\n') {
+            segs.push((s, i));
+            s = i + 1;
+        }
+        for &(s, e) in segs.iter().rev() {
+            let off = lo + s as u64;
+            if let Some(es) = parse_line(agent, &buf[s..e], off, false, &mut page.bad_lines) {
+                count += es.len();
+                lines.push(es);
+            }
+            hi = off;
+            if count >= limit {
+                break 'outer;
+            }
+        }
+        win = PAGE_BYTES;
+    }
+    page.cursor = (hi > 0).then_some(hi);
+    page.entries = lines.into_iter().rev().flatten().collect();
+    Ok(page)
+}
+
+/// Entries from complete lines after `from`.
+pub fn read_tail(path: &Path, agent: &str, from: u64) -> Result<Page, String> {
+    let mut f = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let len = f.metadata().map_err(|e| e.to_string())?.len();
+    if len < from {
+        return Ok(Page { reset: true, end: from, ..Default::default() });
+    }
+    let buf = read_at(&mut f, from, len.min(from + TAIL_BYTES))?;
+    let mut page = Page { end: from, ..Default::default() };
+    let mut start = 0;
+    for (i, _) in buf.iter().enumerate().filter(|(_, &b)| b == b'\n') {
+        if let Some(es) = parse_line(agent, &buf[start..i], from + start as u64, false, &mut page.bad_lines) {
+            page.entries.extend(es);
+        }
+        start = i + 1;
+    }
+    page.end = from + start as u64;
+    page.cursor = None;
+    Ok(page)
+}
+
+/// One line in full (no caps), for "Load full".
+pub fn read_entry(path: &Path, agent: &str, off: u64) -> Result<Vec<ChatEntry>, String> {
+    let mut f = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    f.seek(SeekFrom::Start(off)).map_err(|e| e.to_string())?;
+    let mut line = vec![];
+    BufReader::new(f).read_until(b'\n', &mut line).map_err(|e| e.to_string())?;
+    let line = line.strip_suffix(b"\n").unwrap_or(&line);
+    let mut bad = 0;
+    parse_line(agent, line, off, true, &mut bad).ok_or_else(|| "That entry could not be read.".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,6 +406,115 @@ mod tests {
         assert_eq!(ct[0].input.as_ref().unwrap()["input"], "text(1)");
         assert!(normalize("codex", &json!({"type":"event_msg","payload":{"type":"agent_message","message":"dup"}}), 0, false).is_empty());
         assert!(normalize("codex", &json!({"type":"response_item","payload":{"type":"reasoning","summary":[]}}), 0, false).is_empty());
+    }
+
+    fn prompt(t: &str) -> String {
+        json!({"type":"user","timestamp":"t","message":{"content":t}}).to_string() + "\n"
+    }
+    fn tmp(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("ptcc-chat-{name}-{}.jsonl", std::process::id()));
+        std::fs::write(&p, bytes).unwrap();
+        p
+    }
+    fn texts(p: &Page) -> Vec<String> {
+        p.entries.iter().map(|e| e.text.clone()).collect()
+    }
+
+    #[test]
+    fn page_newest_first_then_older() {
+        let body: String = (0..10).map(|i| prompt(&format!("p{i}"))).collect();
+        let off7 = (0..7).map(|i| prompt(&format!("p{i}")).len()).sum::<usize>() as u64;
+        let path = tmp("page", body.as_bytes());
+        let a = read_page(&path, "claude", None, 3).unwrap();
+        assert_eq!(texts(&a), ["p7", "p8", "p9"]);
+        assert_eq!(a.cursor, Some(off7));
+        assert_eq!(a.end, body.len() as u64);
+        let b = read_page(&path, "claude", a.cursor, 3).unwrap();
+        assert_eq!(texts(&b), ["p4", "p5", "p6"]);
+        let mut seen = [texts(&b), texts(&a)].concat();
+        let mut cur = b.cursor;
+        while let Some(c) = cur {
+            let p = read_page(&path, "claude", Some(c), 3).unwrap();
+            seen = [texts(&p), seen].concat();
+            cur = p.cursor;
+        }
+        assert_eq!(seen, (0..10).map(|i| format!("p{i}")).collect::<Vec<_>>());
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn page_handles_line_bigger_than_window() {
+        let big = json!({"type":"assistant","message":{"content":[{"type":"text","text":"x".repeat(5 << 20)}]}}).to_string() + "\n";
+        let body = prompt("a") + &big + &prompt("b");
+        let path = tmp("big", body.as_bytes());
+        let mut all = vec![];
+        let mut cur = None;
+        loop {
+            let p = read_page(&path, "claude", cur, 1).unwrap();
+            all = [p.entries, all].concat();
+            cur = p.cursor;
+            if cur.is_none() {
+                break;
+            }
+        }
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].text, "a");
+        assert!(all[1].truncated);
+        assert_eq!(all[2].text, "b");
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn tail_skips_partial_line() {
+        let first = prompt("p0");
+        let second = prompt("p1");
+        let (head, rest) = second.split_at(10);
+        let path = tmp("tail", (first.clone() + head).as_bytes());
+        let t = read_tail(&path, "claude", 0).unwrap();
+        assert_eq!(texts(&t), ["p0"]);
+        assert_eq!(t.end, first.len() as u64);
+        use std::io::Write;
+        std::fs::OpenOptions::new().append(true).open(&path).unwrap().write_all(rest.as_bytes()).unwrap();
+        let t2 = read_tail(&path, "claude", t.end).unwrap();
+        assert_eq!(texts(&t2), ["p1"]);
+        assert!(!t2.reset);
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn tail_reports_reset() {
+        let body = prompt("p0");
+        let path = tmp("reset", body.as_bytes());
+        let t = read_tail(&path, "claude", body.len() as u64 + 100).unwrap();
+        assert!(t.reset);
+        assert!(t.entries.is_empty());
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn bad_lines_counted() {
+        let mut body = prompt("p0").into_bytes();
+        body.extend_from_slice(b"{not json\n");
+        body.extend_from_slice(&[0xff, 0xfe, b'\n']);
+        body.extend_from_slice(prompt("p1").as_bytes());
+        let path = tmp("bad", &body);
+        let p = read_page(&path, "claude", None, 50).unwrap();
+        assert_eq!(texts(&p), ["p0", "p1"]);
+        assert_eq!(p.bad_lines, 2);
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn read_entry_full() {
+        let big = "A".repeat(IMG_CAP + 1);
+        let line = json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"x","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":big}}]}]}}).to_string() + "\n";
+        let first = prompt("p0");
+        let path = tmp("entry", (first.clone() + &line).as_bytes());
+        let paged = read_page(&path, "claude", None, 10).unwrap();
+        assert!(paged.entries[1].images[0].omitted);
+        let e = read_entry(&path, "claude", first.len() as u64).unwrap();
+        assert!(e[0].images[0].data.is_some());
+        std::fs::remove_file(path).ok();
     }
 
     #[test]
