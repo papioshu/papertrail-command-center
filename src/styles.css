@@ -446,3 +446,4 @@ body.phone .desk-only { display: none !important; }
   .chat-you { max-width: 92%; }
   .chat-block { max-width: 100%; }
 }
+.reconnect { position: fixed; left: 50%; top: calc(8px + env(safe-area-inset-top)); transform: translateX(-50%); z-index: 90; max-width: calc(100vw - 24px); padding: 8px 14px; border-radius: 999px; background: rgba(13, 9, 26, 0.94); border: 1px solid var(--gold); color: var(--fg); font-size: 12px; box-shadow: 0 8px 30px -10px rgba(0, 0, 0, 0.8); }

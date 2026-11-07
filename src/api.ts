@@ -17,20 +17,43 @@ if (PHONE) {
   takePairKey();
   // Link opened while this page was already showing: same document, so pick the key up and start over.
   window.addEventListener("hashchange", () => { if (takePairKey()) location.reload(); });
+  // Pair once: ask Chrome not to evict this site's storage (and with it the key) when space runs low.
+  navigator.storage?.persist?.().catch(() => {});
 }
 export const phonePaired = () => !!localStorage.getItem(KEY);
 
+/** The PC couldn't be reached (Tailscale off, network switch, PC asleep or restarting), as opposed to a real error. */
+class Unreachable extends Error {}
+
+async function once<T>(cmd: string, args?: Row): Promise<T> {
+  let r: Response, body: any;
+  try {
+    r = await fetch(`/api/${cmd}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${localStorage.getItem(KEY) ?? ""}`, "Content-Type": "application/json" },
+      body: JSON.stringify(args ?? {}),
+      signal: AbortSignal.timeout(30000),
+    });
+    body = await r.json();
+  } catch { throw new Unreachable(); } // includes a reply cut off mid-way
+  if (r.status === 503) throw new Unreachable();
+  if (r.status === 401) window.dispatchEvent(new Event("pt-unpaired"));
+  if (!r.ok) throw String(body?.error ?? r.statusText); // same shape as Tauri errors: a string
+  return body as T;
+}
+
+/** Desktop: Tauri IPC. Phone: HTTP; every phone command is read-only, so an unreachable PC is simply waited out and
+ *  the call repeated. Callers never see a dropped connection, only a slower answer; the page keeps what it shows. */
 async function call<T>(cmd: string, args?: Row): Promise<T> {
   if (!PHONE) return invoke<T>(cmd, args);
-  const r = await fetch(`/api/${cmd}`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${localStorage.getItem(KEY) ?? ""}`, "Content-Type": "application/json" },
-    body: JSON.stringify(args ?? {}),
-  });
-  const body = await r.json().catch(() => ({ error: `${r.status} ${r.statusText}` }));
-  if (r.status === 401) window.dispatchEvent(new Event("pt-unpaired"));
-  if (!r.ok) throw String(body.error ?? r.statusText); // same shape as Tauri errors: a string
-  return body as T;
+  for (;;) {
+    try { return await once<T>(cmd, args); }
+    catch (e) {
+      if (!(e instanceof Unreachable)) throw e;
+      setOffline(true);
+      await new Promise<void>((r) => waiters.push(r));
+    }
+  }
 }
 
 export type LaunchReq = {
@@ -110,22 +133,62 @@ export function on(event: string, cb: (payload: any) => void): Promise<UnlistenF
   return listen(event, (e) => cb(e.payload));
 }
 
-// Phone: no push events, so one shared 10 s status poll stands in for index-status / projects-updated.
+/* ---------- phone: connection watch ----------
+   No push events on the phone, so one status poll (10 s; 3 s while the PC is unreachable) stands in for
+   index-status / projects-updated and tells waiting calls when the PC is back. */
 const subs = new Set<[string, (p: any) => void]>();
+const waiters: (() => void)[] = [];
+const watchers = new Set<(offlineSince: number) => void>();
+let offlineSince = 0; // 0 = connected
 let lastRefresh: string | undefined;
+let hiddenAt = 0;
 let timer = 0;
-function poll() {
-  if (document.hidden) return;
-  call<Row>("get_status").then((s) => {
-    const fire = (ev: string, p: unknown) => subs.forEach(([e, f]) => e === ev && f(p));
-    fire("index-status", s.status);
-    if (lastRefresh !== undefined && s.last_refresh !== lastRefresh) fire("projects-updated", null);
-    lastRefresh = s.last_refresh;
-  }, () => {});
+const fire = (ev: string, p: unknown) => subs.forEach(([e, f]) => e === ev && f(p));
+
+function setOffline(off: boolean) {
+  if (off === offlineSince > 0) return;
+  offlineSince = off ? Date.now() : 0;
+  watchers.forEach((f) => f(offlineSince));
+  if (!off) {
+    waiters.splice(0).forEach((r) => r()); // repeat everything that was waiting
+    fire("projects-updated", null); // and refresh what was loaded before the gap
+  }
+  schedule(0);
 }
+
+function poll() {
+  if (document.hidden) return schedule();
+  once<Row>("get_status").then((s) => {
+    const stale = hiddenAt && Date.now() - hiddenAt > 60000;
+    hiddenAt = 0;
+    if (offlineSince) setOffline(false);
+    else if (stale || (lastRefresh !== undefined && s.last_refresh !== lastRefresh)) fire("projects-updated", null);
+    fire("index-status", s.status);
+    lastRefresh = s.last_refresh;
+    schedule();
+  }, (e) => { if (e instanceof Unreachable) setOffline(true); schedule(); });
+}
+function schedule(ms = offlineSince ? 3000 : 10000) {
+  clearTimeout(timer);
+  timer = window.setTimeout(poll, ms);
+}
+if (PHONE) {
+  schedule(0);
+  // Phone woke up, came back to the tab or regained a network: check at once instead of waiting for the timer.
+  document.addEventListener("visibilitychange", () => { if (document.hidden) hiddenAt = Date.now(); else schedule(0); });
+  window.addEventListener("online", () => schedule(0));
+  window.addEventListener("pageshow", () => schedule(0));
+}
+
+/** Phone only: called with the time the PC became unreachable, or 0 when it's back. */
+export function onConnection(f: (offlineSince: number) => void) {
+  watchers.add(f);
+  f(offlineSince);
+  return () => { watchers.delete(f); };
+}
+
 function phoneOn(event: string, cb: (p: any) => void): UnlistenFn {
   const sub: [string, (p: any) => void] = [event, cb];
   subs.add(sub);
-  if (!timer) { timer = window.setInterval(poll, 10000); poll(); }
   return () => { subs.delete(sub); };
 }

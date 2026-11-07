@@ -15,7 +15,6 @@ use tauri::{AppHandle, Manager, State};
 // shortcut: fixed port, make it a setting if something else on this PC ever needs 8765.
 pub const PORT: u16 = 8765;
 const MAX_BODY: u64 = 64 * 1024;
-const WORKERS: usize = 4;
 
 #[derive(Default)]
 pub struct Status {
@@ -104,14 +103,14 @@ fn supervise(app: AppHandle, rx: Receiver<()>) {
                 match tiny_http::Server::http(addr.as_str()) {
                     Ok(s) => {
                         let s = Arc::new(s);
-                        for _ in 0..WORKERS {
-                            let (s, app) = (s.clone(), app.clone());
-                            std::thread::spawn(move || {
-                                while let Ok(req) = s.recv() {
-                                    handle(&app, req);
-                                }
-                            });
-                        }
+                        let (srv, app) = (s.clone(), app.clone());
+                        // One thread per request: a phone that vanishes mid-reply can't hold up anyone else.
+                        std::thread::spawn(move || {
+                            while let Ok(req) = srv.recv() {
+                                let app = app.clone();
+                                std::thread::spawn(move || handle(&app, req));
+                            }
+                        });
                         servers.push(s);
                         bound.push(addr.clone());
                     }
@@ -169,7 +168,9 @@ fn handle(app: &AppHandle, mut req: tiny_http::Request) {
             return json_reply(req, 405, json!({"error": "POST only"}));
         }
         let st = app.state::<AppState>();
-        let devs = st.db.lock().map(|c| devices(&c)).unwrap_or_default();
+        let Ok(devs) = st.db.lock().map(|c| devices(&c)) else {
+            return json_reply(req, 503, json!({"error": "busy, try again"}));
+        };
         let Some(device) = device_for(&devs, header(&req, "Authorization").as_deref()) else {
             return json_reply(req, 401, json!({"error": "This phone isn't paired. Pair it from Settings on the PC."}));
         };

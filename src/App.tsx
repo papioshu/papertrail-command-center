@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useState } from "react";
-import { api, on, PHONE, phonePaired, type LaunchReq, type Row } from "./api";
+import { api, on, onConnection, PHONE, phonePaired, type LaunchReq, type Row } from "./api";
 import { ago, Barcode, Boundary, LaunchDialog, NavCtx, type View } from "./ui";
 import Overview from "./views/Overview";
 import Login from "./Login";
@@ -69,17 +69,40 @@ function Unpaired() {
   );
 }
 
+/** Phone: a slim bar while the PC can't be reached. The page keeps showing what it had; calls resume on their own. */
+function Reconnecting() {
+  const [since, setSince] = useState(0);
+  const [, tick] = useState(0);
+  useEffect(() => onConnection(setSince), []);
+  useEffect(() => { if (!since) return; const t = setInterval(() => tick((n) => n + 1), 1000); return () => clearInterval(t); }, [since]);
+  if (!since) return null;
+  const s = Math.round((Date.now() - since) / 1000);
+  return (
+    <div className="reconnect" role="status">
+      <span className="dot busy" />Reconnecting to your PC…{s >= 15 ? " Check that Tailscale is on, on this phone and on the PC." : ""}
+    </div>
+  );
+}
+
+// Phone: where you were, so a tab Android reloads in the background reopens on the same page or chat.
+const SPOT = "pt-phone-spot";
+const savedSpot = (): { view: View; params: Row } | null => {
+  if (!PHONE) return null;
+  try { const s = JSON.parse(localStorage.getItem(SPOT) ?? "null"); return s && PHONE_VIEWS.includes(s.view) ? s : null; } catch { return null; }
+};
+
 // Errors surface in the status bar, never as blocking browser dialogs.
 let alertless: (m: string) => void = () => {};
 
 export default function App() {
-  const [view, setView] = useState<View>("overview");
+  const [view, setView] = useState<View>(() => savedSpot()?.view ?? "overview");
   // undefined = checking; null = not signed in (login shows until signed in or skipped)
   const [me, setMe] = useState<Row | null | undefined>(undefined);
   // Solo use for now (owner 2026-11-03): no sign-in screen at launch; "Sign in" in the top bar still opens it.
   const [gate, setGate] = useState(false);
   useEffect(() => { api.team().then((t) => { setMe(t.me); if (t.me) setGate(false); }, () => setMe(null)); }, []);
-  const [params, setParams] = useState<Row>({});
+  const [params, setParams] = useState<Row>(() => savedSpot()?.params ?? {});
+  useEffect(() => { if (PHONE) localStorage.setItem(SPOT, JSON.stringify({ view, params })); }, [view, params]);
   const [status, setStatus] = useState<Row>({ state: "idle" });
   const [lastRefresh, setLastRefresh] = useState<string | null>(null);
   const [launching, setLaunching] = useState<{ p: Row; agent?: "claude" | "codex"; mode?: LaunchReq["mode"]; preset?: string; task?: string } | null>(null);
@@ -109,6 +132,8 @@ export default function App() {
   }, [view, params]);
   const launch = (p: Row, agent?: "claude" | "codex", mode?: LaunchReq["mode"], preset?: string, task?: string) => setLaunching({ p, agent, mode, preset, task });
   const busy = status.state === "indexing" || status.state === "discovery";
+  const [offline, setOffline] = useState(0);
+  useEffect(() => (PHONE ? onConnection(setOffline) : undefined), []);
   const blocked = PHONE && !PHONE_VIEWS.includes(view);
   const page = blocked ? <div className="empty">This page is on the PC only. The phone is read-only.</div> : { overview: <Overview />, workspace: <Workspace />, projects: <Projects />, actions: <Actions />, chat: <Chat />, agents: <Agents />, launchpad: <Launchpad />, graph: <Graph />, discovery: <Discovery />, timeline: <Timeline />, settings: <Settings /> }[view];
 
@@ -137,8 +162,8 @@ export default function App() {
           <div className="sysstat">
             <div className="label" style={{ fontSize: 9 }}>System status</div>
             <div className="v">
-              <span className={`dot ${busy ? "busy" : status.state === "error" ? "err" : ""}`} />
-              {busy ? `${String(status.stage ?? status.state).toUpperCase()}${status.total ? ` ${status.done}/${status.total}` : ""}` : status.state === "error" ? "DEGRADED" : "ONLINE"}
+              <span className={`dot ${busy || offline ? "busy" : status.state === "error" ? "err" : ""}`} />
+              {offline ? "RECONNECTING" : busy ? `${String(status.stage ?? status.state).toUpperCase()}${status.total ? ` ${status.done}/${status.total}` : ""}` : status.state === "error" ? "DEGRADED" : "ONLINE"}
             </div>
           </div>
           <div className="ptbadge">PT</div>
@@ -163,6 +188,7 @@ export default function App() {
           </nav>
         </footer>
       </div>
+      {PHONE && <Reconnecting />}
       {unpaired && <Unpaired />}
       {gate && me !== undefined && <Login onDone={(m) => { setMe(m); setGate(false); }} />}
       {launching && <LaunchDialog project={launching.p} agent={launching.agent} mode={launching.mode} preset={launching.preset} task={launching.task} onClose={() => setLaunching(null)} />}
