@@ -3,6 +3,7 @@ name = "papertrail-command-center"
 version = "0.1.0"
 edition = "2021"
 description = "PAPERTRAIL // COMMAND CENTER"
+license = "MIT"
 
 [lib]
 name = "ptcc_lib"
