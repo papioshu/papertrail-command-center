@@ -73,6 +73,8 @@ function Conversation({ id }: { id: string }) {
   const [note, setNote] = useState<string | null>(null);
   const [force, setForce] = useState(false);
   const end = useRef(0);
+  const current = useRef(id);
+  const busy = useRef(false);
   const box = useRef<HTMLDivElement>(null);
   const keep = useRef<{ mode: "bottom" | "anchor"; h?: number } | null>(null);
 
@@ -80,6 +82,7 @@ function Conversation({ id }: { id: string }) {
     setErr(null);
     try {
       const r = await api.chatPage(id);
+      if (current.current !== id) return; // a newer chat was opened meanwhile
       setSession(r.session);
       setEntries(r.page.entries);
       setCursor(r.page.cursor ?? null);
@@ -87,21 +90,23 @@ function Conversation({ id }: { id: string }) {
       keep.current = { mode: "bottom" };
     } catch (e) { setErr(String(e)); }
   }
-  useEffect(() => { setEntries([]); setSession(null); load(); }, [id]);
+  useEffect(() => { current.current = id; end.current = 0; setEntries([]); setSession(null); load(); }, [id]);
 
   // Live tail every 3 s; stick to the bottom only if the reader was already there.
   useEffect(() => {
     const t = setInterval(async () => {
-      if (!end.current) return;
+      if (!end.current || busy.current) return;
+      busy.current = true;
       try {
         const p = await api.chatTail(id, end.current);
+        if (current.current !== id) return;
         if (p.reset) return load();
         end.current = p.end;
         if (!p.entries.length) return;
         const el = box.current;
         if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 80) keep.current = { mode: "bottom" };
         setEntries((xs) => [...xs, ...p.entries]);
-      } catch { /* transient: next tick retries */ }
+      } catch { /* transient: next tick retries */ } finally { busy.current = false; }
     }, 3000);
     return () => clearInterval(t);
   }, [id]);
@@ -114,13 +119,15 @@ function Conversation({ id }: { id: string }) {
   }, [entries]);
 
   async function earlier() {
-    if (cursor == null) return;
+    if (cursor == null || busy.current) return;
+    busy.current = true;
     try {
       const r = await api.chatPage(id, cursor);
+      if (current.current !== id) return;
       keep.current = { mode: "anchor", h: (box.current?.scrollHeight ?? 0) - (box.current?.scrollTop ?? 0) };
       setEntries((xs) => [...r.page.entries, ...xs]);
       setCursor(r.page.cursor ?? null);
-    } catch (e) { setErr(String(e)); }
+    } catch (e) { setErr(String(e)); } finally { busy.current = false; }
   }
   async function full(off: number) {
     try {
@@ -169,7 +176,7 @@ function Conversation({ id }: { id: string }) {
       <div ref={box} className="chat-log">
         {cursor != null && <button className="btn sm ghost" style={{ alignSelf: "center" }} onClick={earlier}>Load earlier</button>}
         {!err && session && !blocks.length && <Empty>Nothing to show yet.</Empty>}
-        {blocks.map((b) => <BlockView key={b.kind === "tools" ? `t${b.key}` : `${b.entry.off}:${b.entry.kind}:${b.entry.text.length}`} b={b} open={expandAll} full={full} />)}
+        {blocks.map((b) => <BlockView key={b.kind === "tools" ? `t${b.key}` : `${b.entry.off}:${b.entry.seq}`} b={b} open={expandAll} full={full} />)}
       </div>
     </div>
   );
@@ -194,7 +201,7 @@ function BlockView({ b, open, full }: { b: Block; open: boolean; full: (off: num
     return (
       <details className="chat-block chat-tools" open={open || undefined}>
         <summary className="mono small">{toolSummary(b.counts)}</summary>
-        {b.steps.map((s) => <StepView key={s.use.off + ":" + (s.use.tool_id ?? "")} s={s} full={full} />)}
+        {b.steps.map((s) => <StepView key={`${s.use.off}:${s.use.seq}`} s={s} full={full} />)}
       </details>
     );
   const e = b.entry;

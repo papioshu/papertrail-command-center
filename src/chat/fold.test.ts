@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { foldEntries, toolSummary, type ChatEntry } from "./fold";
 
 const e = (kind: ChatEntry["kind"], extra: Partial<ChatEntry> = {}, off = 0): ChatEntry =>
-  ({ off, ts: "", kind, text: "", is_error: false, images: [], truncated: false, ...extra });
+  ({ off, seq: 0, ts: "", kind, text: "", is_error: false, images: [], truncated: false, ...extra });
 
 describe("toolSummary", () => {
   it("orders and pluralises", () => {
@@ -29,7 +29,7 @@ describe("foldEntries", () => {
     expect(t.steps).toHaveLength(2);
     expect(t.steps.every((s) => s.result)).toBe(true);
     expect(t.counts).toEqual({ command: 1, edit: 1 });
-    expect(t.key).toBe("2");
+    expect(t.key).toBe("2:0");
   });
   it("shows system entries when asked", () => {
     expect(foldEntries(list, true).map((x) => x.kind)).toEqual(["you", "tools", "system", "agent"]);

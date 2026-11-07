@@ -1,6 +1,6 @@
 /** Turns flat transcript entries into display blocks: messages stay as they are, tool steps fold into runs. */
 export type ChatEntry = {
-  off: number; ts: string; kind: "you" | "agent" | "reasoning" | "system" | "tool_use" | "tool_result";
+  off: number; seq: number; ts: string; kind: "you" | "agent" | "reasoning" | "system" | "tool_use" | "tool_result";
   text: string; tool_id?: string | null; name?: string | null; input?: any; is_error: boolean;
   images: { media_type: string; data?: string | null; omitted: boolean }[]; truncated: boolean;
 };
@@ -35,7 +35,7 @@ export function foldEntries(entries: ChatEntry[], showSystem: boolean): Block[] 
       continue;
     }
     if (e.kind === "tool_use" || e.kind === "tool_result") {
-      if (!run) out.push((run = { kind: "tools", key: String(e.off), steps: [], counts: {} }));
+      if (!run) out.push((run = { kind: "tools", key: `${e.off}:${e.seq}`, steps: [], counts: {} }));
       const step: Step = { use: e };
       if (e.kind === "tool_use" && e.tool_id) byId.set(e.tool_id, step);
       run.steps.push(step);

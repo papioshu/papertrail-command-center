@@ -15,6 +15,8 @@ pub struct Img {
 #[derive(Serialize, Clone, Debug, PartialEq, Default)]
 pub struct ChatEntry {
     pub off: u64,
+    /// Position within its source line (a line can hold several entries); (off, seq) is unique.
+    pub seq: u32,
     pub ts: String,
     /// you | agent | reasoning | system | tool_use | tool_result
     pub kind: String,
@@ -68,7 +70,11 @@ fn str_of(v: &Value) -> &str {
 /// One transcript line → zero or more entries. `full` disables the size caps.
 pub fn normalize(agent: &str, line: &Value, off: u64, full: bool) -> Vec<ChatEntry> {
     let cx = Ctx { off, ts: str_of(&line["timestamp"]).to_string(), full };
-    if agent == "codex" { codex(&cx, line) } else { claude(&cx, line) }
+    let mut out = if agent == "codex" { codex(&cx, line) } else { claude(&cx, line) };
+    for (i, e) in out.iter_mut().enumerate() {
+        e.seq = i as u32;
+    }
+    out
 }
 
 fn you_or_system(cx: &Ctx, text: &str, meta: bool) -> ChatEntry {
@@ -255,7 +261,25 @@ pub fn read_page(path: &Path, agent: &str, before: Option<u64>, limit: usize) ->
     let mut f = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let len = f.metadata().map_err(|e| e.to_string())?.len();
     let end = last_line_end(&mut f, len)?;
-    let mut hi = before.unwrap_or(end).min(end);
+    // A cursor that isn't a line start (stale after a rewrite, or bogus) snaps back to the start of its line.
+    let mut hi = match before.map(|b| b.min(end)) {
+        Some(b) if b > 0 && read_at(&mut f, b - 1, b)?[0] != b'\n' => {
+            let mut h = b;
+            loop {
+                let lo = h.saturating_sub(PAGE_BYTES);
+                let buf = read_at(&mut f, lo, h)?;
+                if let Some(i) = buf.iter().rposition(|&x| x == b'\n') {
+                    break lo + i as u64 + 1;
+                }
+                if lo == 0 {
+                    break 0;
+                }
+                h = lo;
+            }
+        }
+        Some(b) => b,
+        None => end,
+    };
     let mut page = Page { end, ..Default::default() };
     let mut lines: Vec<Vec<ChatEntry>> = vec![]; // newest first
     let mut count = 0;
@@ -280,6 +304,9 @@ pub fn read_page(path: &Path, agent: &str, before: Option<u64>, limit: usize) ->
         for (i, _) in buf.iter().enumerate().skip(start).filter(|(_, &b)| b == b'\n') {
             segs.push((s, i));
             s = i + 1;
+        }
+        if segs.is_empty() {
+            break; // no whole line left in range: nothing more to read
         }
         for &(s, e) in segs.iter().rev() {
             let off = lo + s as u64;
@@ -308,6 +335,19 @@ pub fn read_tail(path: &Path, agent: &str, from: u64) -> Result<Page, String> {
     }
     let buf = read_at(&mut f, from, len.min(from + TAIL_BYTES))?;
     let mut page = Page { end: from, ..Default::default() };
+    if !buf.contains(&b'\n') && len > from + TAIL_BYTES {
+        // One line bigger than a tail read: take it whole (capped) so the tail can move past it.
+        f.seek(SeekFrom::Start(from)).map_err(|e| e.to_string())?;
+        let mut line = vec![];
+        BufReader::new(&mut f).read_until(b'\n', &mut line).map_err(|e| e.to_string())?;
+        if line.last() == Some(&b'\n') {
+            if let Some(es) = parse_line(agent, &line[..line.len() - 1], from, false, &mut page.bad_lines) {
+                page.entries.extend(es);
+            }
+            page.end = from + line.len() as u64;
+        }
+        return Ok(page);
+    }
     let mut start = 0;
     for (i, _) in buf.iter().enumerate().filter(|(_, &b)| b == b'\n') {
         if let Some(es) = parse_line(agent, &buf[start..i], from + start as u64, false, &mut page.bad_lines) {
@@ -333,7 +373,9 @@ pub fn read_entry(path: &Path, agent: &str, off: u64) -> Result<Vec<ChatEntry>, 
 
 /// Text of the newest agent reply near the end of the file, up to 160 chars; "" if none or unreadable.
 pub fn last_reply(path: &Path, agent: &str) -> String {
-    read_page(path, agent, None, 40)
+    // Only the last 256 KB: the list asks for 60 of these on every refresh.
+    let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    read_tail(path, agent, len.saturating_sub(256 << 10))
         .ok()
         .and_then(|p| p.entries.into_iter().rev().find(|e| e.kind == "agent" && !e.text.trim().is_empty()))
         .map(|e| crate::util::truncate(e.text.trim(), 160))
@@ -562,6 +604,47 @@ mod tests {
         assert_eq!(last_reply(&path, "claude"), "second answer");
         assert_eq!(last_reply(std::path::Path::new("C:/nope.jsonl"), "claude"), "");
         std::fs::remove_file(path).ok();
+    }
+
+
+    #[test]
+    fn tail_moves_past_huge_line() {
+        let huge = json!({"type":"assistant","message":{"content":[{"type":"text","text":"z".repeat((TAIL_BYTES + 1024) as usize)}]}}).to_string() + "
+";
+        let body = huge + &prompt("after");
+        let path = tmp("hugetail", body.as_bytes());
+        let mut from = 0;
+        let mut got = vec![];
+        for _ in 0..4 {
+            let t = read_tail(&path, "claude", from).unwrap();
+            got.extend(t.entries);
+            from = t.end;
+        }
+        assert_eq!(from, body.len() as u64, "tail must advance past a line bigger than TAIL_BYTES");
+        assert_eq!(got.len(), 2);
+        assert!(got[0].truncated);
+        assert_eq!(got[1].text, "after");
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn page_with_mid_line_cursor_terminates() {
+        let body = prompt("p0") + &prompt("p1") + &prompt("p2");
+        let path = tmp("midcur", body.as_bytes());
+        let first = prompt("p0").len() as u64;
+        let a = read_page(&path, "claude", Some(5), 10).unwrap(); // inside the first line
+        assert!(a.entries.is_empty());
+        assert_eq!(a.cursor, None);
+        let b = read_page(&path, "claude", Some(first + 7), 10).unwrap(); // inside p1: snaps to p1's start
+        assert_eq!(texts(&b), ["p0"]);
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn entries_numbered_within_a_line() {
+        let img = json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA"}});
+        let e = normalize("claude", &json!({"type":"user","message":{"content":[img, img, {"type":"text","text":"look"}]}}), 7, false);
+        assert_eq!(e.iter().map(|x| x.seq).collect::<Vec<_>>(), [0, 1, 2]);
     }
 
     #[test]
