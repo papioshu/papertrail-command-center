@@ -63,7 +63,7 @@ fn devices(c: &rusqlite::Connection) -> Vec<Value> {
 }
 
 /// The paired device a bearer header belongs to, if any.
-fn device_for(devs: &[Value], authorization: Option<&str>) -> Option<String> {
+pub(crate) fn device_for(devs: &[Value], authorization: Option<&str>) -> Option<String> {
     let token = authorization?.strip_prefix("Bearer ")?.trim();
     if token.len() < 32 {
         return None;
@@ -72,7 +72,7 @@ fn device_for(devs: &[Value], authorization: Option<&str>) -> Option<String> {
     devs.iter().find(|d| d["hash"].as_str() == Some(h.as_str())).and_then(|d| d["id"].as_str().map(String::from))
 }
 
-fn tailscale_ip() -> Option<String> {
+pub(crate) fn tailscale_ip() -> Option<String> {
     for exe in ["tailscale", r"C:\Program Files\Tailscale\tailscale.exe"] {
         if let Ok(o) = crate::util::run(exe, &["ip", "-4"], None, Duration::from_secs(5)) {
             if let Some(ip) = o.stdout.lines().map(str::trim).find(|l| l.starts_with("100.")) {
@@ -156,15 +156,16 @@ fn supervise(app: AppHandle, rx: Receiver<()>) {
         if bound != want {
             bound.clear();
         }
-        let _ = rx.recv_timeout(Duration::from_secs(20));
+        let retry = if bound.is_empty() && !want.is_empty() { 2 } else { 20 };
+        let _ = rx.recv_timeout(Duration::from_secs(retry));
     }
 }
 
-fn header(req: &tiny_http::Request, name: &'static str) -> Option<String> {
+pub(crate) fn header(req: &tiny_http::Request, name: &'static str) -> Option<String> {
     req.headers().iter().find(|h| h.field.equiv(name)).map(|h| h.value.as_str().to_string())
 }
 
-fn respond(req: tiny_http::Request, code: u16, mime: &str, body: Vec<u8>, extra: &[(&str, &str)]) {
+pub(crate) fn respond(req: tiny_http::Request, code: u16, mime: &str, body: Vec<u8>, extra: &[(&str, &str)]) {
     let mut r = tiny_http::Response::from_data(body).with_status_code(code);
     let mut add = |k: &str, v: &str| {
         if let Ok(h) = tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()) {
@@ -181,7 +182,7 @@ fn respond(req: tiny_http::Request, code: u16, mime: &str, body: Vec<u8>, extra:
     let _ = req.respond(r);
 }
 
-fn json_reply(req: tiny_http::Request, code: u16, v: Value) {
+pub(crate) fn json_reply(req: tiny_http::Request, code: u16, v: Value) {
     respond(req, code, "application/json", v.to_string().into_bytes(), &[("Cache-Control", "no-store")]);
 }
 
@@ -324,6 +325,7 @@ pub fn phone_set_enabled(app: AppHandle, enabled: bool) -> R<()> {
         let c = st.db.lock().map_err(|_| "database lock poisoned")?;
         db::set_setting(&c, "phone_enabled", &json!(enabled)).map_err(|e| e.to_string())?;
     }
+    crate::standby::register(enabled);
     wake(&app);
     Ok(())
 }

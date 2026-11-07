@@ -10,6 +10,7 @@ mod indexer;
 mod launcher;
 mod phone;
 mod registry;
+pub mod standby;
 mod team;
 mod util;
 
@@ -101,6 +102,10 @@ pub fn run() {
             db::set_setting(&conn, "task_snapshot", &Value::Object(now_snap))?;
             db::set_setting(&conn, "last_seen", &json!(util::now_iso()))?;
             let close_to_tray = registry::Config::load(&conn).close_to_tray;
+            standby::hold_app_lock(&data_dir);
+            if db::setting(&conn, "phone_enabled").and_then(|v| v.as_bool()) == Some(true) {
+                standby::register(true); // so a paired phone can start the dashboard once it's closed (D029)
+            }
             let worker = indexer::spawn(app.handle().clone(), db_path.clone());
             worker.send(indexer::Job::Refresh); // cached data shows first; this refreshes behind it
             indexer::spawn_watcher(db_path.clone(), worker.clone());

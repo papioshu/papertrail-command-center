@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useState } from "react";
-import { api, on, onConnection, PHONE, phonePaired, type LaunchReq, type Row } from "./api";
+import { api, dashboardClosed, on, onConnection, openOnPc, PHONE, phonePaired, type LaunchReq, type Row } from "./api";
 import { ago, Barcode, Boundary, LaunchDialog, NavCtx, type View } from "./ui";
 import Overview from "./views/Overview";
 import Login from "./Login";
@@ -73,10 +73,20 @@ function Unpaired() {
 function Reconnecting() {
   const [since, setSince] = useState(0);
   const [, tick] = useState(0);
-  useEffect(() => onConnection(setSince), []);
+  const [opening, setOpening] = useState<string | null>(null);
+  useEffect(() => onConnection((t) => { setSince(t); if (!t) setOpening(null); }), []);
   useEffect(() => { if (!since) return; const t = setInterval(() => tick((n) => n + 1), 1000); return () => clearInterval(t); }, [since]);
   if (!since) return null;
   const s = Math.round((Date.now() - since) / 1000);
+  if (dashboardClosed()) {
+    const open = async () => { setOpening("Starting the dashboard on your PC…"); const e = await openOnPc(); if (e) setOpening(e); };
+    return (
+      <div className="reconnect" role="status">
+        <span className="dot busy" />{opening ?? "The dashboard is closed on your PC."}
+        {opening !== "Starting the dashboard on your PC…" && <button className="btn sm" style={{ marginLeft: 10 }} onClick={open}>Open it</button>}
+      </div>
+    );
+  }
   return (
     <div className="reconnect" role="status">
       <span className="dot busy" />Reconnecting to your PC…{s >= 15 ? " Check that Tailscale is on, on this phone and on the PC." : ""}

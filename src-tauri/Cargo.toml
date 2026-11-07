@@ -27,6 +27,8 @@ ureq = { version = "2", features = ["json"] }
 # Phone access (D027): small sync HTTP server + QR code for pairing.
 tiny_http = "0.12"
 qrcodegen = "1.8"
+# Already linked via tauri-plugin-autostart; registers the phone standby at login (D029).
+auto-launch = "0.6"
 
 [target.'cfg(windows)'.dependencies]
 # Same versions Tauri already links; used only to lower WebView2 memory while hidden.

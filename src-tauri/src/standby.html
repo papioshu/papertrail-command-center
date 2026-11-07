@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0d091a" />
+<title>Papertrail // Command Center</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0d091a; color: #e8e2f4; font: 15px/1.5 system-ui, sans-serif; }
+  main { min-height: 100%; display: grid; place-content: center; gap: 18px; padding: 24px; text-align: center; box-sizing: border-box; }
+  .mark { letter-spacing: 0.3em; font-size: 12px; color: #c9a86a; }
+  h1 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: 0.04em; }
+  p { margin: 0; color: #a79fbb; max-width: 30em; }
+  button { justify-self: center; padding: 14px 26px; border-radius: 999px; border: 1px solid #c9a86a; background: #1d1533; color: #f3e6c8; font: inherit; font-weight: 600; letter-spacing: 0.06em; }
+  button:disabled { opacity: 0.6; }
+</style>
+</head>
+<body>
+<main>
+  <div class="mark">PAPERTRAIL // COMMAND CENTER</div>
+  <h1>The dashboard is closed on your PC</h1>
+  <p id="msg">Your PC is on and reachable. Open the dashboard on it from here.</p>
+  <button id="go">Open it on my PC</button>
+</main>
+<script>
+  // Standby page (D029): served by the PC's phone standby while the dashboard itself isn't running.
+  const KEY = "pt-phone-key";
+  const m = location.hash.match(/pair=([0-9a-f]{64})/);
+  if (m) { localStorage.setItem(KEY, m[1]); history.replaceState(null, "", location.pathname); }
+  const msg = document.getElementById("msg"), go = document.getElementById("go");
+  if (!localStorage.getItem(KEY)) {
+    msg.textContent = "This phone isn't paired yet. On the PC, open the dashboard, then Settings › Phone access › Pair a phone.";
+    go.hidden = true;
+  }
+  go.onclick = async () => {
+    go.disabled = true;
+    msg.textContent = "Starting the dashboard on your PC…";
+    try {
+      const r = await fetch("/api/launch", { method: "POST", headers: { Authorization: "Bearer " + localStorage.getItem(KEY) } });
+      if (!r.ok) { msg.textContent = (await r.json().catch(() => ({}))).error || "Couldn't start it (" + r.status + ")."; go.disabled = false; }
+    } catch { msg.textContent = "Lost the connection to your PC. Trying again shortly…"; go.disabled = false; }
+  };
+  // Whether opened from here or on the PC, switch to the real dashboard as soon as it answers.
+  setInterval(async () => {
+    try { const r = await fetch("/", { cache: "no-store" }); if (r.ok && !r.headers.get("X-PT-Standby")) location.reload(); } catch {}
+  }, 2500);
+</script>
+</body>
+</html>

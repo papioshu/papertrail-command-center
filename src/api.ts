@@ -24,18 +24,30 @@ export const phonePaired = () => !!localStorage.getItem(KEY);
 
 /** The PC couldn't be reached (Tailscale off, network switch, PC asleep or restarting), as opposed to a real error. */
 class Unreachable extends Error {}
+/** The PC is up but the dashboard isn't running: its phone standby answered instead (D029). */
+let closed = false;
+export const dashboardClosed = () => closed;
+const auth = () => ({ Authorization: `Bearer ${localStorage.getItem(KEY) ?? ""}` });
+/** Ask the PC's phone standby to start the dashboard. Resolves to an error message, or null once it's starting. */
+export async function openOnPc(): Promise<string | null> {
+  try {
+    const r = await fetch("/api/launch", { method: "POST", headers: auth() });
+    return r.ok ? null : ((await r.json().catch(() => ({}))).error ?? `Couldn't start it (${r.status}).`);
+  } catch { return "Lost the connection to your PC."; }
+}
 
-async function once<T>(cmd: string, args?: Row): Promise<T> {
+async function once<T>(cmd: string, args?: Row, wait = 30000): Promise<T> {
   let r: Response, body: any;
   try {
     r = await fetch(`/api/${cmd}`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${localStorage.getItem(KEY) ?? ""}`, "Content-Type": "application/json" },
+      headers: { ...auth(), "Content-Type": "application/json" },
       body: JSON.stringify(args ?? {}),
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(wait),
     });
     body = await r.json();
   } catch { throw new Unreachable(); } // includes a reply cut off mid-way
+  closed = r.status === 503 && !!body?.standby;
   if (r.status === 503) throw new Unreachable();
   if (r.status === 401) window.dispatchEvent(new Event("pt-unpaired"));
   if (!r.ok) throw String(body?.error ?? r.statusText); // same shape as Tauri errors: a string
@@ -158,7 +170,8 @@ function setOffline(off: boolean) {
 
 function poll() {
   if (document.hidden) return schedule();
-  once<Row>("get_status").then((s) => {
+  // Short timeout: a check caught in a PC-side handoff (standby -> dashboard) must not stall reconnecting.
+  once<Row>("get_status", undefined, 8000).then((s) => {
     const stale = hiddenAt && Date.now() - hiddenAt > 60000;
     hiddenAt = 0;
     if (offlineSince) setOffline(false);
