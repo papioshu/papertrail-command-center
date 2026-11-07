@@ -395,7 +395,7 @@ function TaskBoard({ tasks, project, reload }: { tasks: Row[]; project: Row; rel
         <div style={{ flex: 1 }}><StatusBar counts={Object.fromEntries(STATUS_ORDER.map((st) => [st, tasks.filter((t) => t.status === st).length]))} height={8} legend /></div>
         <label className="row small muted"><input type="checkbox" checked={showDone} onChange={(e) => setShowDone(e.target.checked)} /> show done</label>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: `repeat(${cols.length}, minmax(0, 1fr))`, gap: 14 }}>
+      <div className="taskcols" style={{ display: "grid", gridTemplateColumns: `repeat(${cols.length}, minmax(0, 1fr))`, gap: 14 }}>
         {cols.map((st) => {
           const items = tasks.filter((t) => t.status === st);
           return (
