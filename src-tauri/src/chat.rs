@@ -331,6 +331,25 @@ pub fn read_entry(path: &Path, agent: &str, off: u64) -> Result<Vec<ChatEntry>, 
     parse_line(agent, line, off, true, &mut bad).ok_or_else(|| "That entry could not be read.".to_string())
 }
 
+/// Text of the newest agent reply near the end of the file, up to 160 chars; "" if none or unreadable.
+pub fn last_reply(path: &Path, agent: &str) -> String {
+    read_page(path, agent, None, 40)
+        .ok()
+        .and_then(|p| p.entries.into_iter().rev().find(|e| e.kind == "agent" && !e.text.trim().is_empty()))
+        .map(|e| crate::util::truncate(e.text.trim(), 160))
+        .unwrap_or_default()
+}
+
+/// The transcript behind a chat id: (path, agent, session row with project name).
+pub fn transcript(c: &rusqlite::Connection, id: &str) -> Result<(std::path::PathBuf, String, Value), String> {
+    let row = crate::util::rows(c, "SELECT s.*, p.name project FROM sessions s LEFT JOIN projects p ON p.id=s.project_id WHERE s.id=?1", [id])?
+        .into_iter()
+        .next()
+        .ok_or("Unknown chat.")?;
+    let path = row["path"].as_str().map(std::path::PathBuf::from).filter(|p| p.is_file()).ok_or("This chat's transcript is no longer on disk.")?;
+    Ok((path, str_of(&row["agent"]).to_string(), row))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -514,6 +533,34 @@ mod tests {
         assert!(paged.entries[1].images[0].omitted);
         let e = read_entry(&path, "claude", first.len() as u64).unwrap();
         assert!(e[0].images[0].data.is_some());
+        std::fs::remove_file(path).ok();
+    }
+
+
+    #[test]
+    fn missing_file_message() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrate(&c).unwrap();
+        c.execute("INSERT INTO sessions(id,agent,path) VALUES('s1','claude','C:/nope/x.jsonl')", []).unwrap();
+        assert_eq!(transcript(&c, "s1").unwrap_err(), "This chat's transcript is no longer on disk.");
+        assert_eq!(transcript(&c, "zzz").unwrap_err(), "Unknown chat.");
+        let body = prompt("hi");
+        let path = tmp("known", body.as_bytes());
+        c.execute("INSERT INTO sessions(id,agent,path) VALUES('s2','codex',?1)", [path.display().to_string()]).unwrap();
+        let (p, agent, row) = transcript(&c, "s2").unwrap();
+        assert_eq!((p, agent.as_str(), row["id"].as_str()), (path.clone(), "codex", Some("s2")));
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn last_reply_is_newest_agent_text() {
+        let body = prompt("q") + &json!({"type":"assistant","message":{"content":[{"type":"text","text":"first"}]}}).to_string() + "
+"
+            + &json!({"type":"assistant","message":{"content":[{"type":"text","text":"second answer"}]}}).to_string() + "
+" + &prompt("q2");
+        let path = tmp("snippet", body.as_bytes());
+        assert_eq!(last_reply(&path, "claude"), "second answer");
+        assert_eq!(last_reply(std::path::Path::new("C:/nope.jsonl"), "claude"), "");
         std::fs::remove_file(path).ok();
     }
 

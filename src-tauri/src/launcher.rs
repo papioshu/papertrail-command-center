@@ -25,6 +25,9 @@ pub struct LaunchReq {
     pub preset_id: Option<String>,
     #[serde(default)]
     pub force: bool,
+    /// Continue mode: resume this chat instead of the project's latest one.
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 pub static GUARD: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
@@ -157,6 +160,23 @@ pub fn build_handoff(conn: &Connection, req: &LaunchReq) -> Result<String, Strin
     Ok(md)
 }
 
+/// The session a "continue" launch resumes: the chosen one if given (must belong to this project and agent), else the latest.
+fn pick_session(conn: &Connection, req: &LaunchReq) -> Result<(String, Option<String>), String> {
+    match &req.session_id {
+        Some(id) => conn
+            .query_row(
+                "SELECT id, cwd FROM sessions WHERE id=?1 AND project_id=?2 AND agent=?3",
+                params![id, req.project_id, req.agent],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "That chat doesn't belong to this project and agent.".to_string()),
+        None => latest_session(conn, &req.project_id, &req.agent)
+            .ok_or_else(|| "No recorded session for this project and agent. Use Fresh Handoff instead.".to_string()),
+    }
+}
+
 fn latest_session(conn: &Connection, project: &str, agent: &str) -> Option<(String, Option<String>)> {
     conn.query_row(
         "SELECT id, cwd FROM sessions WHERE project_id=?1 AND agent=?2 AND archived=0 ORDER BY updated DESC LIMIT 1",
@@ -256,8 +276,7 @@ fn launch_inner(conn: &Connection, data_dir: &Path, req: &LaunchReq) -> Result<V
     }
     let repo = p["repo_path"].as_str().or(p["vault_dir"].as_str()).map(PathBuf::from).filter(|d| d.is_dir());
     let (cwd, args, handoff): (PathBuf, Vec<String>, Option<PathBuf>) = if req.mode == "continue" {
-        let (id, scwd) = latest_session(conn, &req.project_id, &req.agent)
-            .ok_or("No recorded session for this project and agent. Use Fresh Handoff instead.")?;
+        let (id, scwd) = pick_session(conn, req)?;
         // Session ids come from local files: accept only UUID-style characters on a command line.
         if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
             return Err("recorded session id has unexpected characters; refusing to resume".into());
@@ -322,5 +341,27 @@ fn launch_inner(conn: &Connection, data_dir: &Path, req: &LaunchReq) -> Result<V
             db::record_error(conn, "launcher", &e);
             Err(e)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn req(session: Option<&str>) -> LaunchReq {
+        LaunchReq { project_id: "a".into(), agent: "claude".into(), mode: "continue".into(), task: None, preset_id: None, force: false, session_id: session.map(String::from) }
+    }
+    #[test]
+    fn continue_specific_session() {
+        let c = Connection::open_in_memory().unwrap();
+        db::migrate(&c).unwrap();
+        c.execute_batch(
+            "INSERT INTO sessions(id,agent,project_id,cwd,updated,archived) VALUES('s2','claude','a','C:/w','2026-01-01',0);
+             INSERT INTO sessions(id,agent,project_id,cwd,updated,archived) VALUES('s3','claude','a','C:/w','2026-02-01',0);
+             INSERT INTO sessions(id,agent,project_id,cwd,updated,archived) VALUES('other','claude','b','C:/x','2026-03-01',0);",
+        )
+        .unwrap();
+        assert_eq!(pick_session(&c, &req(Some("s2"))).unwrap().0, "s2");
+        assert_eq!(pick_session(&c, &req(None)).unwrap().0, "s3");
+        assert_eq!(pick_session(&c, &req(Some("other"))).unwrap_err(), "That chat doesn't belong to this project and agent.");
     }
 }
