@@ -547,7 +547,7 @@ impl Client {
                         let v: rusqlite::types::Value = r.get(i)?;
                         m.insert(n.clone(), match v {
                             rusqlite::types::Value::Integer(x) => json!(x),
-                            rusqlite::types::Value::Text(s) if n == "fields" || n == "mine" || n == "theirs" => serde_json::from_str(&s).unwrap_or(json!(s)),
+                            rusqlite::types::Value::Text(s) if matches!(n.as_str(), "fields" | "mine" | "theirs" | "reason") => serde_json::from_str(&s).unwrap_or(json!(s)),
                             rusqlite::types::Value::Text(s) => json!(s),
                             _ => Value::Null,
                         });
@@ -759,7 +759,7 @@ use tauri::{AppHandle, State};
 pub fn hub_status(h: State<HubState>) -> R<Value> {
     let Some(cfg) = h.client.config() else { return Ok(json!({ "joined": false })) };
     let s = h.status.lock().unwrap_or_else(|p| p.into_inner());
-    Ok(json!({ "joined": true, "url": cfg["url"], "name": cfg["name"], "revoked": cfg["revoked"] == true, "workspaces": cfg["workspaces"],
+    Ok(json!({ "joined": true, "url": cfg["url"], "name": cfg["name"], "user_id": cfg["user_id"], "revoked": cfg["revoked"] == true, "workspaces": cfg["workspaces"],
                "links": cfg["links"], "online": s.online, "last_sync": s.last_sync, "last_error": s.last_error }))
 }
 

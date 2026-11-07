@@ -15,12 +15,14 @@ const Timeline = lazy(() => import("./views/Timeline"));
 const Settings = lazy(() => import("./views/Settings"));
 const Actions = lazy(() => import("./views/Actions"));
 const Chat = lazy(() => import("./views/Chat"));
+const Team = lazy(() => import("./views/Team"));
 
 // PapertrailOS bracketed bottom navigation.
 const NAV: [View, string][] = [
   ["overview", "OVERVIEW"],
   ["projects", "PROJECTS"],
   ["actions", "ACTIONS"],
+  ["team", "TEAM"],
   ["chat", "CHAT"],
   ["agents", "AGENTS"],
   ["launchpad", "LAUNCHPAD"],
@@ -145,7 +147,7 @@ export default function App() {
   const [offline, setOffline] = useState(0);
   useEffect(() => (PHONE ? onConnection(setOffline) : undefined), []);
   const blocked = PHONE && !PHONE_VIEWS.includes(view);
-  const page = blocked ? <div className="empty">This page is on the PC only. The phone is read-only.</div> : { overview: <Overview />, workspace: <Workspace />, projects: <Projects />, actions: <Actions />, chat: <Chat />, agents: <Agents />, launchpad: <Launchpad />, graph: <Graph />, discovery: <Discovery />, timeline: <Timeline />, settings: <Settings /> }[view];
+  const page = blocked ? <div className="empty">This page is on the PC only. The phone is read-only.</div> : { overview: <Overview />, workspace: <Workspace />, projects: <Projects />, actions: <Actions />, team: <Team />, chat: <Chat />, agents: <Agents />, launchpad: <Launchpad />, graph: <Graph />, discovery: <Discovery />, timeline: <Timeline />, settings: <Settings /> }[view];
 
   return (
     <NavCtx.Provider value={{ nav, params, launch }}>

@@ -136,6 +136,19 @@ export const api = {
   phoneSetEnabled: (enabled: boolean) => call<void>("phone_set_enabled", { enabled }),
   phonePair: (name: string) => call<{ url: string; qr_svg: string }>("phone_pair", { name }),
   phoneRevoke: (id: string) => call<void>("phone_revoke", { id }),
+  // Workspace hub (D030–D034): shared team tasks. Every edit is checked again by the hub.
+  hubStatus: () => call<Row>("hub_status"),
+  hubJoin: (link: string, name: string) => call<Row>("hub_join", { link, name }),
+  hubLeave: () => call<void>("hub_leave"),
+  hubSyncNow: () => call<void>("hub_sync_now"),
+  hubBoard: (workspace: string) => call<Row>("hub_board", { workspace }),
+  hubEdit: (workspace: string, action: "create" | "update" | "delete", kind: "task" | "milestone", projectId: string, fields: Row | null, recordId?: string) =>
+    call<string>("hub_edit", { workspace, action, kind, recordId, projectId, fields }),
+  hubResolve: (workspace: string, conflict: number, keepMine: boolean) => call<void>("hub_resolve", { workspace, conflict, keepMine }),
+  hubInvite: (workspace: string, role: string, projects?: string[]) => call<string>("hub_invite", { workspace, role, projects }),
+  hubNewProject: (workspace: string, name: string) => call<Row>("hub_new_project", { workspace, name }),
+  hubLinkPreview: (project: string) => call<Row>("hub_link_preview", { project }),
+  hubLink: (project: string, workspace: string, doImport: boolean) => call<Row>("hub_link", { project, workspace, import: doImport }),
 };
 
 export type ActionOp = { kind: "add" | "edit" | "start" | "complete" | "reopen" | "remove"; id?: string; title?: string; notes?: string; assignee?: string };
