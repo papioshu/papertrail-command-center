@@ -354,3 +354,24 @@ pre.doc { margin: 0; white-space: pre-wrap; word-break: break-word; font-family:
   .login-panel::before, .login-in, .login-tile, .shake { animation: none !important; }
 }
 .login .avatar { border-radius: 50%; }
+
+/* CHAT */
+.chat-list { gap: 6px; }
+.chat-row { text-align: left; background: rgba(13, 9, 26, 0.72); border: 1px solid var(--line); border-radius: 0.6rem; padding: 10px 14px; color: inherit; cursor: pointer; font: inherit; }
+.chat-row:hover { border-color: var(--line-2); }
+.chat-row.live { border-color: var(--violet); box-shadow: 0 0 0 1px var(--violet) inset; }
+.chat-log { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 10px; padding: 6px 4px 20px; }
+.chat-block { max-width: 920px; line-height: 1.5; }
+.chat-you { align-self: flex-end; white-space: pre-wrap; background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 0.8rem 0.8rem 0.2rem 0.8rem; padding: 10px 14px; max-width: 760px; overflow-wrap: anywhere; }
+.chat-agent { align-self: flex-start; padding: 2px 4px; overflow-wrap: anywhere; }
+.chat-p { margin: 0 0 8px; white-space: pre-wrap; }
+.chat-h { font-weight: 600; margin: 10px 0 6px; } .chat-h.h1 { font-size: 17px; } .chat-h.h2 { font-size: 15px; }
+.chat-li { padding-left: 10px; white-space: pre-wrap; }
+.chat-agent code, .chat-li code, .chat-p code { font-family: var(--font-mono); font-size: 12px; background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+.chat-tools, .chat-reason { align-self: stretch; border: 1px solid var(--line); border-radius: 0.6rem; padding: 6px 12px; background: rgba(13, 9, 26, 0.5); }
+.chat-tools > summary, .chat-reason > summary { cursor: pointer; color: var(--muted); }
+.chat-step { border-top: 1px solid var(--line); padding: 8px 0; display: flex; flex-direction: column; gap: 4px; }
+.chat-pre { font-family: var(--font-mono); font-size: 11.5px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; padding: 8px 10px; background: rgba(0, 0, 0, 0.35); border-radius: 6px; max-height: 420px; overflow: auto; }
+.chat-pre.err { border-left: 3px solid #ff4d6d; } .chat-pre.del { border-left: 3px solid #ff4d6d; } .chat-pre.add { border-left: 3px solid var(--lime); }
+.chat-system { align-self: stretch; white-space: pre-wrap; color: var(--dim); font-size: 11.5px; font-family: var(--font-mono); max-height: 240px; overflow: auto; }
+.chat-img { max-width: 100%; border-radius: 6px; border: 1px solid var(--line); }

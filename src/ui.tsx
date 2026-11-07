@@ -22,7 +22,7 @@ export function brand(workspace: string): { img: string | null; glow: string } {
 }
 
 /* ---------- navigation ---------- */
-export type View = "overview" | "workspace" | "projects" | "actions" | "agents" | "launchpad" | "graph" | "discovery" | "timeline" | "settings";
+export type View = "overview" | "workspace" | "projects" | "actions" | "chat" | "agents" | "launchpad" | "graph" | "discovery" | "timeline" | "settings";
 export type NavFn = (v: View, params?: Row) => void;
 export const NavCtx = createContext<{ nav: NavFn; params: Row; launch: (p: Row, agent?: "claude" | "codex", mode?: LaunchReq["mode"], preset?: string, task?: string) => void }>({
   nav: () => {},

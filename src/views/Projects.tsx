@@ -448,9 +448,10 @@ export const sessionCols: Col[] = [
 
 export function SessionModal({ s, onClose }: { s: Row; onClose: () => void }) {
   const files = useAsync(() => api.sessionFiles(s.id), [s.id]);
-  const { launch } = useNav();
+  const { launch, nav } = useNav();
   return (
     <Modal title={`${s.agent} session · ${short(s.id, 12)}`} onClose={onClose} foot={<>
+      <button className="btn" onClick={() => { onClose(); nav("chat", { id: s.id }); }}>Open in CHAT</button>
       {s.path && <button className="btn" onClick={() => api.openPath(String(s.path).replace(/[\\/][^\\/]+$/, ""))}>Open transcript folder</button>}
       {s.project_row && <button className="btn primary" onClick={() => { onClose(); launch(s.project_row, s.agent, "continue"); }}>Continue this project</button>}
     </>}>

@@ -11,7 +11,12 @@ export type LaunchReq = {
   task?: string;
   preset_id?: string;
   force?: boolean;
+  /** Continue mode: resume this chat instead of the project's latest. */
+  session_id?: string;
 };
+
+import type { ChatEntry } from "./chat/fold";
+export type ChatPage = { entries: ChatEntry[]; cursor?: number | null; end: number; reset: boolean; bad_lines: number };
 
 export const api = {
   status: () => invoke<Row>("get_status"),
@@ -21,6 +26,10 @@ export const api = {
   activity: (project: string | null, from: string, to: string, workspace?: string) => invoke<Row[]>("get_activity", { project, from, to, workspace }),
   timeline: (f: Row) => invoke<{ items: Row[] }>("get_timeline", { f }),
   sessions: (agent?: string) => invoke<Row[]>("get_sessions", { agent }),
+  chatList: (agent?: string) => invoke<Row[]>("chat_list", { agent }),
+  chatPage: (id: string, before?: number) => invoke<{ session: Row; page: ChatPage }>("chat_page", { id, before }),
+  chatTail: (id: string, from: number) => invoke<ChatPage>("chat_tail", { id, from }),
+  chatEntry: (id: string, off: number) => invoke<ChatEntry[]>("chat_entry", { id, off }),
   sessionFiles: (id: string) => invoke<Row[]>("get_session_files", { id }),
   graph: () => invoke<Row>("get_graph"),
   search: (q: string) => invoke<Row[]>("search", { q }),

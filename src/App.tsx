@@ -14,12 +14,14 @@ const Discovery = lazy(() => import("./views/Discovery"));
 const Timeline = lazy(() => import("./views/Timeline"));
 const Settings = lazy(() => import("./views/Settings"));
 const Actions = lazy(() => import("./views/Actions"));
+const Chat = lazy(() => import("./views/Chat"));
 
 // PapertrailOS bracketed bottom navigation.
 const NAV: [View, string][] = [
   ["overview", "OVERVIEW"],
   ["projects", "PROJECTS"],
   ["actions", "ACTIONS"],
+  ["chat", "CHAT"],
   ["agents", "AGENTS"],
   ["launchpad", "LAUNCHPAD"],
   ["graph", "THE GRAPH"],
@@ -92,7 +94,7 @@ export default function App() {
   }, [view, params]);
   const launch = (p: Row, agent?: "claude" | "codex", mode?: LaunchReq["mode"], preset?: string, task?: string) => setLaunching({ p, agent, mode, preset, task });
   const busy = status.state === "indexing" || status.state === "discovery";
-  const page = { overview: <Overview />, workspace: <Workspace />, projects: <Projects />, actions: <Actions />, agents: <Agents />, launchpad: <Launchpad />, graph: <Graph />, discovery: <Discovery />, timeline: <Timeline />, settings: <Settings /> }[view];
+  const page = { overview: <Overview />, workspace: <Workspace />, projects: <Projects />, actions: <Actions />, chat: <Chat />, agents: <Agents />, launchpad: <Launchpad />, graph: <Graph />, discovery: <Discovery />, timeline: <Timeline />, settings: <Settings /> }[view];
 
   return (
     <NavCtx.Provider value={{ nav, params, launch }}>
