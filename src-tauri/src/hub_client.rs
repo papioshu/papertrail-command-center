@@ -94,22 +94,42 @@ fn write_atomic(path: &Path, data: &[u8]) -> R<()> {
 }
 
 /// The bearer only travels over HTTPS or to this PC / the Tailscale network (§9).
+/// The address is `scheme://host[:port]` and nothing else: no user info (`a@b`), path, query or fragment, so no
+/// parser can read a different host than the one checked here.
 pub fn check_url(url: &str) -> R<String> {
     let url = url.trim().trim_end_matches('/');
-    let (scheme, rest) = url.split_once("://").ok_or("The hub address must start with http:// or https://")?;
-    let host = rest.split('/').next().unwrap_or("");
-    let host = if host.starts_with('[') { host.split(']').next().unwrap_or("").trim_start_matches('[') } else { host.rsplit_once(':').map_or(host, |(h, _)| h) };
-    let private = host == "localhost"
-        || match host.parse::<std::net::IpAddr>() {
+    let bad = || -> String { "The hub address must look like http://100.x.y.z:8770 or https://name.ts.net".into() };
+    let (scheme, auth) = url.split_once("://").ok_or_else(bad)?;
+    if auth.is_empty() || !auth.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':' | b'[' | b']')) {
+        return Err(bad());
+    }
+    let (host, port) = if let Some(v6) = auth.strip_prefix('[') {
+        let (h, rest) = v6.split_once(']').ok_or_else(bad)?;
+        (h, rest.strip_prefix(':'))
+    } else {
+        match auth.split_once(':') {
+            Some((h, p)) => (h, Some(p)),
+            None => (auth, None),
+        }
+    };
+    if host.is_empty() || port.is_some_and(|p| p.parse::<u16>().map_or(true, |n| n == 0)) || (!auth.starts_with('[') && host.contains(['[', ']'])) {
+        return Err(bad());
+    }
+    let ip = host.parse::<std::net::IpAddr>();
+    if auth.starts_with('[') != matches!(ip, Ok(std::net::IpAddr::V6(_))) {
+        return Err(bad());
+    }
+    let private = host.eq_ignore_ascii_case("localhost")
+        || match ip {
             Ok(std::net::IpAddr::V4(v)) => v.is_loopback() || (v.octets()[0] == 100 && (64..128).contains(&v.octets()[1])),
             Ok(std::net::IpAddr::V6(v)) => v.is_loopback() || v.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0],
             Err(_) => false,
         };
     match scheme {
-        "https" if !host.is_empty() => Ok(url.to_string()),
+        "https" => Ok(url.to_string()),
         "http" if private => Ok(url.to_string()),
         "http" => Err("Plain http is only allowed to this PC or a Tailscale address (100.x). Use https for anything else.".into()),
-        _ => Err("The hub address must start with http:// or https://".into()),
+        _ => Err(bad()),
     }
 }
 
@@ -197,6 +217,8 @@ impl Client {
 
     fn call(&self, method: &str, path: &str, body: Option<&Value>) -> Net {
         let Some(url) = self.config().and_then(|c| c["url"].as_str().map(String::from)) else { return Net::Down("no hub".into()) };
+        // Re-checked on every call: hub.json is a plain file, and the bearer must never go anywhere else.
+        let Ok(url) = check_url(&url) else { return Net::Down("the saved hub address is not allowed".into()) };
         let mut req = self.agent.request(method, &format!("{url}{path}"));
         if let Some(t) = self.token() {
             req = req.set("Authorization", &format!("Bearer {t}"));
@@ -876,11 +898,31 @@ mod tests {
         for ok in ["http://127.0.0.1:8770", "http://100.101.1.2:8770/", "https://hub.tail1234.ts.net", "http://localhost:8770", "http://[fd7a:115c:a1e0::1]:8770"] {
             assert!(check_url(ok).is_ok(), "{ok}");
         }
-        for bad in ["http://192.168.1.4:8770", "http://example.com", "ftp://x", "hub", "http://100.200.1.1"] {
+        for bad in [
+            "http://192.168.1.4:8770", "http://example.com", "ftp://x", "hub", "http://100.200.1.1",
+            // Parser tricks: user info, paths, queries, fragments, backslashes, bad ports, stray brackets.
+            "http://100.64.0.1:80@evil.com", "http://100.64.0.1@evil.com", "http://user:pw@127.0.0.1:8770", "https://a@b.ts.net",
+            "http://127.0.0.1:8770/path", "http://127.0.0.1:8770?x", r"http://127.0.0.1\@evil.com", "http://127.0.0.1:99999",
+            "http://127.0.0.1:0", "http://127.0.0.1:80:81", "http://[127.0.0.1]:80", "http://[::1", "http://127.0.0.1]", "http://",
+            "http://127.0.0.1 :80", "http://evil.com#127.0.0.1",
+        ] {
             assert!(check_url(bad).is_err(), "{bad}");
         }
         assert!(parse_invite("http://127.0.0.1:1#abc").is_err());
+        assert!(parse_invite(&format!("http://100.64.0.1:80@evil.com#{}", "a".repeat(64))).is_err());
         assert!(parse_invite(&format!("http://127.0.0.1:1#{}", "a".repeat(64))).is_ok());
+    }
+
+    #[test]
+    fn a_tampered_saved_address_never_gets_the_bearer() {
+        let h = hub();
+        let (_, link) = owner_invite(&h);
+        let d = tmp("tamper");
+        let c = Client::new(&d);
+        c.join(&link, "Rich", "PC").unwrap();
+        set_url(&c, "http://100.64.0.1:80@127.0.0.1:9");
+        assert!(matches!(c.call("GET", "/v1/me", None), Net::Down(m) if m.contains("not allowed")));
+        let _ = std::fs::remove_dir_all(d);
     }
 
     #[test]
