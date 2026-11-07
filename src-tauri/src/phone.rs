@@ -15,6 +15,23 @@ use tauri::{AppHandle, Manager, State};
 // shortcut: fixed port, make it a setting if something else on this PC ever needs 8765.
 pub const PORT: u16 = 8765;
 const MAX_BODY: u64 = 64 * 1024;
+/// Requests handled at once; past this the server answers 503 and the phone waits and repeats (D028).
+const MAX_INFLIGHT: usize = 32;
+static INFLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Takes a request slot, or None when all MAX_INFLIGHT are busy. The slot frees itself when dropped.
+struct Slot;
+impl Slot {
+    fn take() -> Option<Slot> {
+        use std::sync::atomic::Ordering::SeqCst;
+        INFLIGHT.fetch_update(SeqCst, SeqCst, |n| (n < MAX_INFLIGHT).then_some(n + 1)).ok().map(|_| Slot)
+    }
+}
+impl Drop for Slot {
+    fn drop(&mut self) {
+        INFLIGHT.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 #[derive(Default)]
 pub struct Status {
@@ -104,11 +121,19 @@ fn supervise(app: AppHandle, rx: Receiver<()>) {
                     Ok(s) => {
                         let s = Arc::new(s);
                         let (srv, app) = (s.clone(), app.clone());
-                        // One thread per request: a phone that vanishes mid-reply can't hold up anyone else.
+                        // One thread per request, capped: a phone that vanishes mid-reply can't hold up anyone else,
+                        // and a flood of connections can't start unbounded threads.
                         std::thread::spawn(move || {
                             while let Ok(req) = srv.recv() {
+                                let Some(slot) = Slot::take() else {
+                                    json_reply(req, 503, json!({"error": "busy, try again"}));
+                                    continue;
+                                };
                                 let app = app.clone();
-                                std::thread::spawn(move || handle(&app, req));
+                                std::thread::spawn(move || {
+                                    let _slot = slot;
+                                    handle(&app, req);
+                                });
                             }
                         });
                         servers.push(s);
@@ -354,6 +379,15 @@ mod tests {
         for w in ["launch_agent", "open_path", "save_settings", "task_toggle", "action_op", "bos_append", "refresh_now", "team_login", "phone_pair", "get_diagnostics"] {
             assert!(!READ_ONLY.contains(&w), "{w}");
         }
+    }
+
+    #[test]
+    fn request_slots_are_capped_and_freed() {
+        let held: Vec<Slot> = std::iter::from_fn(Slot::take).take(MAX_INFLIGHT + 5).collect();
+        assert_eq!(held.len(), MAX_INFLIGHT);
+        assert!(Slot::take().is_none());
+        drop(held);
+        assert!(Slot::take().is_some());
     }
 
     #[test]
