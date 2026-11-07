@@ -1,5 +1,6 @@
 mod agents;
 mod alerts;
+mod chat;
 mod commands;
 mod continuity;
 mod db;

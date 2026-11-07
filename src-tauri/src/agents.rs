@@ -28,7 +28,7 @@ struct Acc {
     bad_lines: usize,
 }
 
-fn is_real_prompt(text: &str) -> bool {
+pub(crate) fn is_real_prompt(text: &str) -> bool {
     let t = text.trim_start();
     !t.is_empty() && !t.starts_with('<') && !t.starts_with("Caveat:") && !t.starts_with("[Request interrupted")
 }
