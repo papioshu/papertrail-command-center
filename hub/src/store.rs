@@ -34,6 +34,19 @@ CREATE TABLE audit(seq INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, work
 CREATE INDEX audit_ws ON audit(workspace_id, seq);
 CREATE TRIGGER audit_no_update BEFORE UPDATE ON audit BEGIN SELECT RAISE(ABORT, 'audit is append-only'); END;
 CREATE TRIGGER audit_no_delete BEFORE DELETE ON audit BEGIN SELECT RAISE(ABORT, 'audit is append-only'); END;
+"#, r#"
+-- M2 shared records (§7): task, milestone, media. Client-made UUID ids; version bumps on every write; field_versions
+-- holds {field: [version, device]} for the last change of each field (per-field merge); deleted = tombstone;
+-- seq = change-feed order.
+CREATE TABLE records(id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+  project_id TEXT NOT NULL REFERENCES projects(id), kind TEXT NOT NULL, fields TEXT NOT NULL DEFAULT '{}',
+  field_versions TEXT NOT NULL DEFAULT '{}', version INTEGER NOT NULL, created_by TEXT NOT NULL, updated_by TEXT NOT NULL,
+  updated_at TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0, seq INTEGER NOT NULL UNIQUE);
+CREATE INDEX records_feed ON records(workspace_id, seq);
+-- Idempotency (§7.2): the reply an op got, so a retry gets the same answer. Pruned after 30 days.
+CREATE TABLE applied_ops(op_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, workspace_id TEXT NOT NULL, code INTEGER NOT NULL,
+  reply TEXT NOT NULL, at TEXT NOT NULL);
+CREATE INDEX applied_ops_at ON applied_ops(at);
 "#];
 
 pub fn now() -> String {
@@ -42,6 +55,16 @@ pub fn now() -> String {
 
 pub fn hash(s: &str) -> String {
     Sha256::digest(s.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+pub fn hash_bytes(b: &[u8]) -> String {
+    Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// Drops idempotency records older than 30 days (§7.2).
+pub fn prune_ops(c: &Connection) -> R<usize> {
+    let cutoff = (chrono::Utc::now() - chrono::Duration::days(30)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    c.execute("DELETE FROM applied_ops WHERE at < ?1", [cutoff]).map_err(err)
 }
 
 pub fn random_hex(bytes: usize) -> R<String> {

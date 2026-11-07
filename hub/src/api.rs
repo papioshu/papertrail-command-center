@@ -1,4 +1,4 @@
-//! Hub HTTP API, M1 (ARCHITECTURE.md §4, §5, §11): accounts by invitation, device sessions, workspaces, projects,
+//! Hub HTTP API (ARCHITECTURE.md §4, §5, §11; records and sync in sync.rs): accounts by invitation, device sessions, workspaces, projects,
 //! members, invitations and the audit log. Every route except health and redeem needs a device bearer, and every
 //! workspace route asks `access::decide` before touching data. NotFound and "doesn't exist" give the same reply.
 use crate::store::{err, hash, new_id, now, random_hex, R};
@@ -12,6 +12,8 @@ use std::time::{Duration, Instant};
 pub struct Hub {
     /// shortcut: one connection for reads and writes; add a read pool if a team ever outgrows it (§10).
     pub db: Mutex<Connection>,
+    /// Content-addressed media files (sha256 names); None = media uploads off.
+    pub media: Option<std::path::PathBuf>,
     denials: Mutex<HashMap<String, Instant>>,
 }
 
@@ -19,35 +21,37 @@ pub struct Hub {
 pub struct Reply {
     pub code: u16,
     pub body: Value,
+    /// A file download instead of JSON.
+    pub raw: Option<Vec<u8>>,
 }
 
-fn ok(body: Value) -> Reply {
-    Reply { code: 200, body }
+pub(crate) fn ok(body: Value) -> Reply {
+    Reply { code: 200, body, raw: None }
 }
-fn fail(code: u16, error: &str) -> Reply {
-    Reply { code, body: json!({ "error": error }) }
+pub fn fail(code: u16, error: &str) -> Reply {
+    Reply { code, body: json!({ "error": error }), raw: None }
 }
-fn not_found() -> Reply {
+pub(crate) fn not_found() -> Reply {
     fail(404, "not_found")
 }
-fn bad(msg: &str) -> Reply {
+pub(crate) fn bad(msg: &str) -> Reply {
     fail(400, msg)
 }
-fn internal(e: String) -> Reply {
+pub(crate) fn internal(e: String) -> Reply {
     eprintln!("ptcc-hub: internal error: {e}");
     fail(500, "internal")
 }
 
-type Res = Result<Reply, Reply>;
+pub(crate) type Res = Result<Reply, Reply>;
 
-struct Caller {
-    user: String,
-    device: String,
+pub(crate) struct Caller {
+    pub(crate) user: String,
+    pub(crate) device: String,
 }
 
 impl Hub {
-    pub fn new(c: Connection) -> Hub {
-        Hub { db: Mutex::new(c), denials: Mutex::new(HashMap::new()) }
+    pub fn new(c: Connection, media: Option<std::path::PathBuf>) -> Hub {
+        Hub { db: Mutex::new(c), media, denials: Mutex::new(HashMap::new()) }
     }
 }
 
@@ -61,7 +65,7 @@ fn name_arg(b: &Value, k: &str) -> Result<String, Reply> {
     Ok(s.to_string())
 }
 
-fn db<T>(r: rusqlite::Result<T>) -> Result<T, Reply> {
+pub(crate) fn db<T>(r: rusqlite::Result<T>) -> Result<T, Reply> {
     r.map_err(|e| internal(e.to_string()))
 }
 
@@ -74,7 +78,7 @@ pub fn audit(c: &Connection, ws: Option<&str>, caller: Option<(&str, &str)>, act
     .map_err(err)
 }
 
-fn log(c: &Connection, ws: Option<&str>, who: &Caller, action: &str, target: Option<&str>, detail: Value) -> Result<(), Reply> {
+pub(crate) fn log(c: &Connection, ws: Option<&str>, who: &Caller, action: &str, target: Option<&str>, detail: Value) -> Result<(), Reply> {
     audit(c, ws, Some((&who.user, &who.device)), action, target, detail).map_err(internal)
 }
 
@@ -107,7 +111,7 @@ where
 }
 
 /// The caller's active membership in a live workspace.
-fn membership(c: &Connection, ws: &str, user: &str) -> Option<Membership> {
+pub(crate) fn membership(c: &Connection, ws: &str, user: &str) -> Option<Membership> {
     c.query_row(
         "SELECT m.role, m.grants, m.denies, m.scope FROM memberships m JOIN workspaces w ON w.id = m.workspace_id AND w.deleted = 0
          WHERE m.workspace_id = ?1 AND m.user_id = ?2 AND m.revoked = 0",
@@ -125,7 +129,7 @@ fn membership(c: &Connection, ws: &str, user: &str) -> Option<Membership> {
 }
 
 /// A member row as the caller's `decide` target needs it (active members only).
-fn member_role(c: &Connection, ws: &str, user: &str) -> Result<Option<Role>, Reply> {
+pub(crate) fn member_role(c: &Connection, ws: &str, user: &str) -> Result<Option<Role>, Reply> {
     let r: Option<String> = db(c
         .query_row("SELECT role FROM memberships WHERE workspace_id = ?1 AND user_id = ?2 AND revoked = 0", params![ws, user], |r| r.get(0))
         .optional())?;
@@ -134,7 +138,7 @@ fn member_role(c: &Connection, ws: &str, user: &str) -> Result<Option<Role>, Rep
 
 impl Hub {
     /// Refusal reply; denials are audited at most once a minute per device and action (§11).
-    fn refuse(&self, c: &Connection, who: &Caller, ws: &str, action: &str, d: Decision) -> Reply {
+    pub(crate) fn refuse(&self, c: &Connection, who: &Caller, ws: &str, action: &str, d: Decision) -> Reply {
         let key = format!("{}|{ws}|{action}", who.device);
         let mut seen = self.denials.lock().unwrap_or_else(|e| e.into_inner());
         if seen.get(&key).is_none_or(|t| t.elapsed() > Duration::from_secs(60)) {
@@ -148,7 +152,7 @@ impl Hub {
         }
     }
 
-    fn check(&self, c: &Connection, who: &Caller, m: Option<&Membership>, p: Perm, t: Target, action: &str) -> Result<(), Reply> {
+    pub(crate) fn check(&self, c: &Connection, who: &Caller, m: Option<&Membership>, p: Perm, t: Target, action: &str) -> Result<(), Reply> {
         match decide(m, p, t) {
             Decision::Allow => Ok(()),
             d => Err(self.refuse(c, who, t_ws(&t), action, d)),
@@ -235,6 +239,13 @@ pub fn revoke_user(c: &Connection, user: &str) -> R<bool> {
 impl Hub {
     pub fn handle(&self, method: &str, path: &str, auth: Option<&str>, body: &[u8]) -> Reply {
         let mut c = self.db.lock().unwrap_or_else(|e| e.into_inner());
+        if method == "PUT" {
+            let seg: Vec<&str> = path.trim_matches('/').split('/').collect();
+            if let ["v1", "workspaces", ws, "projects", p, "blobs", sha] = seg[..] {
+                let Some(who) = authenticate(&c, auth) else { return fail(401, "unauthorized") };
+                return self.put_blob(&c, &who, ws, p, sha, body).unwrap_or_else(|r| r);
+            }
+        }
         let b: Value = if body.iter().all(u8::is_ascii_whitespace) {
             json!({})
         } else {
@@ -277,6 +288,9 @@ impl Hub {
             ("POST", ["workspaces", ws, "invitations"]) => self.invite(&c, &who, ws, &b),
             ("DELETE", ["workspaces", ws, "invitations", id]) => self.revoke_invitation(&c, &who, ws, id),
             ("GET", ["workspaces", ws, "audit"]) => self.audit_log(&c, &who, ws, query),
+            ("POST", ["workspaces", ws, "ops"]) => self.op(&mut c, &who, ws, &b),
+            ("GET", ["workspaces", ws, "changes"]) => self.changes(&c, &who, ws, query),
+            ("GET", ["workspaces", ws, "media", id]) => self.get_media(&c, &who, ws, id),
             _ => Err(not_found()),
         };
         r.unwrap_or_else(|r| r)
@@ -397,7 +411,7 @@ impl Hub {
     }
 
     /// Scoped in SQL by the caller's own membership row (a join, not a post-filter, §5).
-    fn projects(&self, c: &Connection, who: &Caller, ws: &str) -> Res {
+    pub(crate) fn projects(&self, c: &Connection, who: &Caller, ws: &str) -> Res {
         let m = membership(c, ws, &who.user);
         self.check(c, who, m.as_ref(), Perm::WorkspaceRead, Target::Workspace(ws), "project.list")?;
         if !m.as_ref().is_some_and(|m| m.has(Perm::ProjectRead)) {

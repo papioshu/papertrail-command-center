@@ -1,64 +1,14 @@
 //! M1 gate (ARCHITECTURE.md §13): every route × role × scope, revoked device 401, hidden project 404, restore drill.
-use ptcc_hub::api::{new_workspace, revoke_user, Hub, Reply};
+mod common;
+use common::*;
+use ptcc_hub::api::{new_workspace, revoke_user, Hub};
 use ptcc_hub::{private_bind, serve, store};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-struct Fx {
-    hub: Hub,
-    ws: String,
-    other_ws: String,
-    p1: String,
-    p2: String,
-    /// actor name → (user id, bearer)
-    who: Vec<(&'static str, String, String)>,
-    invite_viewer: String,
+fn op(kind: &str, project: &str, fields: Value) -> Value {
+    json!({ "op_id": "11111111-1111-4111-8111-111111111111", "record_id": "22222222-2222-4222-8222-222222222222", "kind": kind, "action": "create", "project_id": project, "fields": fields })
 }
-
-impl Fx {
-    fn call(&self, method: &str, path: &str, as_: Option<&str>, body: Value) -> Reply {
-        let auth = as_.map(|a| format!("Bearer {}", self.token(a)));
-        self.hub.handle(method, path, auth.as_deref(), body.to_string().as_bytes())
-    }
-    fn token(&self, a: &str) -> &str {
-        &self.who.iter().find(|w| w.0 == a).unwrap().2
-    }
-    fn user(&self, a: &str) -> &str {
-        &self.who.iter().find(|w| w.0 == a).unwrap().1
-    }
-}
-
-fn redeem(hub: &Hub, token: &str, name: &str) -> (String, String) {
-    let r = hub.handle("POST", "/v1/redeem", None, json!({ "token": token, "name": name, "device_name": "pc" }).to_string().as_bytes());
-    assert_eq!(r.code, 200, "{r:?}");
-    (r.body["user_id"].as_str().unwrap().into(), r.body["device"]["token"].as_str().unwrap().into())
-}
-
-/// Workspace with projects p1, p2 and one member per role, a member scoped to p1 and an outsider (owner elsewhere).
-fn fixture() -> Fx {
-    let hub = Hub::new(store::open(None).unwrap());
-    let (ws, owner_inv) = new_workspace(&hub.db.lock().unwrap(), "FLY WING").unwrap();
-    let (other_ws, other_inv) = new_workspace(&hub.db.lock().unwrap(), "OARA").unwrap();
-    let mut who = Vec::new();
-    let (u, t) = redeem(&hub, &owner_inv, "Rich");
-    who.push(("owner", u, t.clone()));
-    let auth = format!("Bearer {t}");
-    let post = |path: &str, b: Value| hub.handle("POST", path, Some(&auth), b.to_string().as_bytes());
-    let p1 = post(&format!("/v1/workspaces/{ws}/projects"), json!({ "name": "site" })).body["id"].as_str().unwrap().to_string();
-    let p2 = post(&format!("/v1/workspaces/{ws}/projects"), json!({ "name": "contracts" })).body["id"].as_str().unwrap().to_string();
-    for (actor, role, scope) in [("admin", "admin", None), ("editor", "editor", None), ("contributor", "contributor", None), ("viewer", "viewer", None), ("scoped", "editor", Some(json!([p1])))] {
-        let inv = post(&format!("/v1/workspaces/{ws}/invitations"), json!({ "role": role, "projects": scope }));
-        assert_eq!(inv.code, 200, "{inv:?}");
-        let (u, t) = redeem(&hub, inv.body["token"].as_str().unwrap(), actor);
-        who.push((actor, u, t));
-    }
-    let (u, t) = redeem(&hub, &other_inv, "Outsider");
-    who.push(("outsider", u, t));
-    let invite_viewer = post(&format!("/v1/workspaces/{ws}/invitations"), json!({ "role": "viewer" })).body["id"].as_str().unwrap().to_string();
-    Fx { hub, ws, other_ws, p1, p2, who, invite_viewer }
-}
-
-const ACTORS: [&str; 7] = ["owner", "admin", "editor", "contributor", "viewer", "scoped", "outsider"];
 
 #[test]
 fn every_route_by_every_role_and_scope() {
@@ -85,6 +35,15 @@ fn every_route_by_every_role_and_scope() {
         ("transfer ownership", "POST", "/v1/workspaces/{ws}/transfer", json!({ "user_id": "{admin}" }), [200, 403, 403, 403, 403, 403, 404]),
         ("other workspace", "GET", "/v1/workspaces/{other}", json!({}), [404, 404, 404, 404, 404, 404, 200]),
         ("unknown workspace", "GET", "/v1/workspaces/w_nope/projects", json!({}), [404, 404, 404, 404, 404, 404, 404]),
+        ("change feed", "GET", "/v1/workspaces/{ws}/changes", json!({}), [200, 200, 200, 200, 200, 200, 404]),
+        ("create task in p1", "POST", "/v1/workspaces/{ws}/ops", op("task", "{p1}", json!({ "title": "x" })), [200, 200, 200, 200, 403, 200, 404]),
+        ("create task in p2", "POST", "/v1/workspaces/{ws}/ops", op("task", "{p2}", json!({ "title": "x" })), [200, 200, 200, 200, 403, 404, 404]),
+        ("create assigned task", "POST", "/v1/workspaces/{ws}/ops", op("task", "{p1}", json!({ "title": "x", "assignee": "{viewer}" })), [200, 200, 200, 403, 403, 200, 404]),
+        ("create milestone", "POST", "/v1/workspaces/{ws}/ops", op("milestone", "{p1}", json!({ "title": "v1" })), [200, 200, 200, 403, 403, 200, 404]),
+        // The test body is the JSON text "{}", so the blob name is sha256("{}").
+        ("upload blob to p1", "PUT", "/v1/workspaces/{ws}/projects/{p1}/blobs/44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a", json!({}), [200, 200, 200, 200, 403, 200, 404]),
+        ("upload blob to p2", "PUT", "/v1/workspaces/{ws}/projects/{p2}/blobs/44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a", json!({}), [200, 200, 200, 200, 403, 404, 404]),
+        ("download unknown media", "GET", "/v1/workspaces/{ws}/media/00000000-0000-4000-8000-000000000000", json!({}), [404; 7]),
         ("me", "GET", "/v1/me", json!({}), [200; 7]),
         ("own devices", "GET", "/v1/devices", json!({}), [200; 7]),
     ];
@@ -326,7 +285,7 @@ fn daily_backups_rotate_keeping_14_and_monthlies() {
 
 #[test]
 fn real_http_round_trip() {
-    let hub = Arc::new(Hub::new(store::open(None).unwrap()));
+    let hub = Arc::new(Hub::new(store::open(None).unwrap(), None));
     let server = Arc::new(tiny_http::Server::http("127.0.0.1:0").unwrap());
     let port = server.server_addr().to_ip().unwrap().port();
     serve(hub, server.clone(), 2);

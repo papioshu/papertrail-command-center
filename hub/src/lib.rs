@@ -1,7 +1,9 @@
 //! ptcc-hub: the optional, self-hosted workspace hub (D030, docs/workspaces/ARCHITECTURE.md). Milestone 1:
-//! accounts, devices, workspaces, projects, members, invitations, audit and backups. No sync yet (M2).
+//! accounts, devices, workspaces, projects, members, invitations, audit and backups (M1); shared records,
+//! change feed, conflicts, idempotent ops and media (M2).
 pub mod api;
 pub mod store;
+pub mod sync;
 
 use std::io::Read;
 use std::net::IpAddr;
@@ -18,8 +20,13 @@ pub fn private_bind(ip: IpAddr) -> bool {
 }
 
 fn respond(req: tiny_http::Request, r: api::Reply) {
-    let mut resp = tiny_http::Response::from_data(r.body.to_string().into_bytes()).with_status_code(r.code);
-    for (k, v) in [("Content-Type", "application/json"), ("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff")] {
+    // Downloads are never rendered: a fixed binary type, attachment, nosniff.
+    let (data, kind, disp) = match r.raw {
+        Some(raw) => (raw, "application/octet-stream", "attachment"),
+        None => (r.body.to_string().into_bytes(), "application/json", "inline"),
+    };
+    let mut resp = tiny_http::Response::from_data(data).with_status_code(r.code);
+    for (k, v) in [("Content-Type", kind), ("Content-Disposition", disp), ("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff")] {
         if let Ok(h) = tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()) {
             resp.add_header(h);
         }
@@ -28,9 +35,10 @@ fn respond(req: tiny_http::Request, r: api::Reply) {
 }
 
 fn serve_one(hub: &api::Hub, mut req: tiny_http::Request) {
+    let max = if *req.method() == tiny_http::Method::Put && req.url().contains("/blobs/") { sync::MAX_BLOB } else { MAX_BODY };
     let mut body = Vec::new();
-    if req.as_reader().take(MAX_BODY as u64 + 1).read_to_end(&mut body).is_err() || body.len() > MAX_BODY {
-        return respond(req, api::Reply { code: 413, body: serde_json::json!({ "error": "too_large" }) });
+    if req.as_reader().take(max as u64 + 1).read_to_end(&mut body).is_err() || body.len() > max {
+        return respond(req, api::fail(413, "too_large"));
     }
     let auth = req.headers().iter().find(|h| h.field.equiv("Authorization")).map(|h| h.value.as_str().to_string());
     let r = hub.handle(req.method().as_str(), req.url(), auth.as_deref(), &body);

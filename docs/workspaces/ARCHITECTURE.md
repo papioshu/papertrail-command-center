@@ -1,7 +1,7 @@
 # Multi-user workspaces — data ownership, privacy and access control
 
-Status: **Milestone 1 built** (D030, D031): the access-control core (`crates/access`) and the hub binary (`hub/`, run
-`ptcc-hub` with no arguments for usage). Sync, the desktop module and the UI are later milestones (§13).
+Status: **Milestone 2 built** (D030–D032): the access-control core (`crates/access`) and the hub binary (`hub/`, run
+`ptcc-hub` with no arguments for usage) with shared records and sync. The desktop module and the UI are later milestones (§13).
 Owner brief: self-hosted and optional; no Supabase or other hosted backend-as-a-service; the desktop exe stays light and
 local-first.
 
@@ -144,16 +144,30 @@ and only while the hub is reachable. `op_id` makes retries idempotent: the hub k
 window) and answers a duplicate with the original result.
 
 ### 7.3 Inbound
-`GET /v1/workspaces/{id}/changes?since={seq}` returns authorized changes after `seq` (paged, capped). The cursor is
-stored per workspace. No WebSocket or SSE.
+`GET /v1/workspaces/{id}/changes?since={seq}&limit={n}` returns the latest state (tombstones included) of authorized
+records changed after `seq`, paged (max 500, `more` + `next`), plus the caller's authorized project ids. The cursor is
+stored per workspace. A client drops cached records of projects missing from that list, and resyncs from `since=0` when
+a new project appears (its older records sit behind the cursor). A workspace that answers 404 has been revoked for this
+user (§7.5); the hub doesn't say "revoked", so a revoked member learns nothing they couldn't already infer. Writes go
+through `POST /v1/workspaces/{id}/ops`, one op per request: `{op_id, action: create|update|delete, kind, record_id,
+project_id (create), base_version (update), fields}`. Fields are checked against a per-kind allowlist (task: title, status,
+assignee, due, notes, milestone; milestone: title, status, due, progress; media: sha256 (create only), name, caption).
+No WebSocket or SSE.
 
 ### 7.4 Conflicts
 The client sends `base_version`. If the hub has moved on:
 * **Disjoint fields** (e.g. one member changed status, another changed the assignee) → the hub merges per field and
   accepts.
-* **Same field** → the hub answers `409` with the current record. The client keeps the local change as a **conflict copy**
+* **Same field** → the hub answers `409` with the current record. "Same field" means another **device** changed it after
+  `base_version` (each field remembers the version and device of its last change). Ops from one device are sent in order,
+  so a device never conflicts with its own queued edits; the same user's other device still does. The client keeps the local change as a **conflict copy**
   on that record, shown to the author with "keep mine / keep theirs". Nothing is silently dropped.
 * **Delete vs edit** → the delete wins on the hub; the editor's text is kept as a conflict copy on their machine.
+
+### 7.4a Media
+Files are uploaded first (`PUT …/projects/{p}/blobs/{sha256}`, max 25 MB, hash checked, media.upload on that project),
+then published as a `media` record naming the hash. Downloads go only through a live media record
+(`GET …/media/{record_id}`, media.read on its project) and are served as `application/octet-stream` attachments.
 
 ### 7.5 Revocation
 If the change feed or any call returns `revoked` for a workspace (or the device is revoked):

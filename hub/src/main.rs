@@ -108,7 +108,7 @@ fn serve_cmd(data: &Path, mut args: Vec<String>) -> Result<(), String> {
         eprintln!("ptcc-hub: WARNING binding public address {b}");
     }
     let _lock = store::lock(data)?;
-    let hub = Arc::new(api::Hub::new(store::open(Some(data))?));
+    let hub = Arc::new(api::Hub::new(store::open(Some(data))?, Some(data.join("media"))));
     let mut workers = Vec::new();
     for ip in &binds {
         let addr = std::net::SocketAddr::new(*ip, port);
@@ -120,6 +120,9 @@ fn serve_cmd(data: &Path, mut args: Vec<String>) -> Result<(), String> {
     let backups = store::backups_dir(data);
     loop {
         if let Ok(c) = hub.db.lock() {
+            if let Err(e) = store::prune_ops(&c) {
+                eprintln!("ptcc-hub: pruning applied ops failed: {e}");
+            }
             match store::daily_backup(&c, &backups) {
                 Ok(Some(p)) => println!("ptcc-hub: backup {}", p.display()),
                 Ok(None) => {}
