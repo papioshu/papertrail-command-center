@@ -2573,6 +2573,7 @@ dependencies = [
  "auto-launch",
  "chrono",
  "getrandom 0.2.17",
+ "ptcc-hub",
  "qrcodegen",
  "rusqlite",
  "serde",
@@ -2836,6 +2837,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "ptcc-access"
+version = "0.1.0"
+
+[[package]]
+name = "ptcc-hub"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "getrandom 0.2.17",
+ "ptcc-access",
+ "rusqlite",
+ "serde_json",
+ "sha2",
+ "tiny_http",
 ]
 
 [[package]]

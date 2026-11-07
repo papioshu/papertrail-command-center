@@ -6,6 +6,7 @@ mod continuity;
 mod db;
 mod discovery;
 mod gitscan;
+mod hub_client;
 mod indexer;
 mod launcher;
 mod phone;
@@ -119,6 +120,9 @@ pub fn run() {
                 user: Mutex::new(None),
             });
             app.manage(phone::spawn(app.handle().clone()));
+            // Workspace hub (M3): just a struct until the user joins; the sync thread starts only if joined.
+            app.manage(hub_client::HubState::new(&app.path().app_data_dir()?));
+            hub_client::start(app.handle());
 
             let open = MenuItem::with_id(app, "open", "Open Command Center", true, None::<&str>)?;
             let refresh = MenuItem::with_id(app, "refresh", "Refresh index", true, None::<&str>)?;
@@ -220,6 +224,17 @@ pub fn run() {
             phone::phone_set_enabled,
             phone::phone_pair,
             phone::phone_revoke,
+            hub_client::hub_status,
+            hub_client::hub_join,
+            hub_client::hub_leave,
+            hub_client::hub_sync_now,
+            hub_client::hub_board,
+            hub_client::hub_edit,
+            hub_client::hub_resolve,
+            hub_client::hub_invite,
+            hub_client::hub_new_project,
+            hub_client::hub_link_preview,
+            hub_client::hub_link,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

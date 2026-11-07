@@ -35,6 +35,10 @@ auto-launch = "0.6"
 webview2-com = "=0.39.1"
 windows-core = "=0.62.2"
 
+# Tests only: a real hub on loopback for the hub client (never linked into the app).
+[dev-dependencies]
+ptcc-hub = { path = "../hub" }
+
 [profile.release]
 codegen-units = 1
 lto = true
