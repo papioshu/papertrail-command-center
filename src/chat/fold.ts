@@ -48,3 +48,13 @@ export function foldEntries(entries: ChatEntry[], showSystem: boolean): Block[] 
   }
   return out;
 }
+
+const HEAD_KEYS = ["command", "cmd", "file_path", "notebook_path", "pattern", "path"];
+/** The field a step is best named by (a command, a file), and the remaining input fields to show below it. */
+export function stepHead(input: any): { head: string | null; rest: any } {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return { head: null, rest: input };
+  const k = HEAD_KEYS.find((k) => typeof input[k] === "string");
+  if (!k) return { head: null, rest: input };
+  const { [k]: head, ...rest } = input;
+  return { head, rest };
+}

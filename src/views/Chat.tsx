@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, type Row } from "../api";
 import { AgentChip, ago, Empty, ErrBox, sessionState, useAsync, useNav } from "../ui";
-import { foldEntries, toolSummary, type Block, type ChatEntry, type Step } from "../chat/fold";
+import { foldEntries, stepHead, toolSummary, type Block, type ChatEntry, type Step } from "../chat/fold";
 import { inline, mdBlocks } from "../chat/md";
 
 /** CHAT: every Claude Code / Codex chat, and any one of them as its complete conversation. */
@@ -139,6 +139,15 @@ function Conversation({ id }: { id: string }) {
   }
   const resumeCmd = session ? `cd "${session.cwd ?? ""}"; ${session.agent === "codex" ? "codex resume" : "claude --resume"} ${id}` : "";
   const blocks = useMemo(() => foldEntries(entries, showSystem), [entries, showSystem]);
+  const toggle = (set: (v: boolean) => void, v: boolean) => {
+    const el = box.current;
+    if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 80) keep.current = { mode: "bottom" };
+    set(v);
+  };
+  useLayoutEffect(() => {
+    const el = box.current, k = keep.current;
+    if (el && k?.mode === "bottom") { el.scrollTop = el.scrollHeight; keep.current = null; }
+  }, [expandAll, showSystem]);
 
   return (
     <div className="col" style={{ gap: 10, height: "calc(100vh - 190px)" }}>
@@ -148,8 +157,8 @@ function Conversation({ id }: { id: string }) {
         <b className="ellipsis" style={{ maxWidth: 520 }}>{session?.title || id}</b>
         {session && <span className="dim small mono ellipsis">{session.project ?? "unmapped"} · {session.cwd ?? "—"} · {session.branch ?? "—"}</span>}
         <div className="row" style={{ gap: 6, marginLeft: "auto" }}>
-          <label className="small"><input type="checkbox" checked={expandAll} onChange={(e) => setExpandAll(e.target.checked)} /> Expand all tool steps</label>
-          <label className="small"><input type="checkbox" checked={showSystem} onChange={(e) => setShowSystem(e.target.checked)} /> Show system entries</label>
+          <label className="small"><input type="checkbox" checked={expandAll} onChange={(e) => toggle(setExpandAll, e.target.checked)} /> Expand all tool steps</label>
+          <label className="small"><input type="checkbox" checked={showSystem} onChange={(e) => toggle(setShowSystem, e.target.checked)} /> Show system entries</label>
           <button className="btn sm" disabled={!session?.project_id} title={session?.project_id ? "" : "Map this chat to a project first"} onClick={terminal}>Continue in terminal</button>
           <button className="btn sm ghost" disabled={!session?.cwd} onClick={() => api.openPath(session!.cwd)}>Open folder</button>
           <button className="btn sm ghost" disabled={!session} onClick={() => navigator.clipboard.writeText(resumeCmd).then(() => setNote("Resume command copied."))}>Copy resume command</button>
@@ -198,12 +207,16 @@ function BlockView({ b, open, full }: { b: Block; open: boolean; full: (off: num
 function StepView({ s, full }: { s: Step; full: (off: number) => void }) {
   const u = s.use, r = s.result ?? (u.kind === "tool_result" ? u : undefined);
   const inp = u.kind === "tool_use" ? u.input ?? {} : null;
-  const head = inp ? inp.command ?? inp.cmd ?? inp.file_path ?? inp.notebook_path ?? inp.pattern ?? inp.path ?? null : null;
+  const { head, rest } = stepHead(inp);
+  const { old_string, new_string, ...other } = rest && typeof rest === "object" ? rest : ({} as any);
+  let extra = typeof rest === "object" && rest ? (old_string != null ? other : rest) : rest;
+  // A lone text field (Codex scripts) reads better as plain text than as escaped JSON.
+  if (extra && typeof extra === "object") { const v = Object.values(extra); if (v.length === 1 && typeof v[0] === "string") extra = v[0]; }
   return (
     <div className="chat-step">
-      <div className="mono small"><b>{u.kind === "tool_use" ? u.name : "result"}</b>{head != null && <span className="dim"> · {typeof head === "string" ? head : JSON.stringify(head)}</span>}</div>
-      {inp && inp.old_string != null && <><div className="label">−</div><pre className="chat-pre del">{inp.old_string}</pre><div className="label">+</div><pre className="chat-pre add">{inp.new_string}</pre></>}
-      {inp && inp.old_string == null && (head == null || Object.keys(inp).length > 1) && <pre className="chat-pre">{JSON.stringify(inp, null, 2)}</pre>}
+      <div className="mono small"><b>{u.kind === "tool_use" ? u.name : "result"}</b>{head != null && <span className="dim"> · {head}</span>}</div>
+      {old_string != null && <><div className="label">−</div><pre className="chat-pre del">{old_string}</pre><div className="label">+</div><pre className="chat-pre add">{new_string}</pre></>}
+      {inp && extra != null && (typeof extra !== "object" || Object.keys(extra).length > 0) && <pre className="chat-pre dim">{typeof extra === "string" ? extra : JSON.stringify(extra, null, 2)}</pre>}
       <More e={u} full={full} />
       {r && (r.text || r.images.length) ? <><pre className={`chat-pre ${r.is_error ? "err" : ""}`}>{r.text}</pre><Imgs e={r} full={full} /><More e={r} full={full} /></> : null}
     </div>

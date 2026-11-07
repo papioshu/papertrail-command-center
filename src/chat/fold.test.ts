@@ -46,3 +46,13 @@ describe("foldEntries", () => {
     expect((b[0] as any).steps[0].result.off).toBe(3);
   });
 });
+
+import { stepHead } from "./fold";
+describe("stepHead", () => {
+  it("lifts the main field out and keeps the rest", () => {
+    expect(stepHead({ command: "ls", description: "list", timeout: 5 })).toEqual({ head: "ls", rest: { description: "list", timeout: 5 } });
+    expect(stepHead({ file_path: "a.ts", old_string: "x", new_string: "y" })).toEqual({ head: "a.ts", rest: { old_string: "x", new_string: "y" } });
+    expect(stepHead({ query: "q" })).toEqual({ head: null, rest: { query: "q" } });
+    expect(stepHead("raw")).toEqual({ head: null, rest: "raw" });
+  });
+});
