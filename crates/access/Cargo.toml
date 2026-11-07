@@ -1,0 +1,8 @@
+[package]
+name = "ptcc-access"
+version = "0.1.0"
+edition = "2021"
+description = "Workspace access policy for the Command Center hub (D030). Pure logic, no I/O, no dependencies."
+publish = false
+
+[dependencies]
