@@ -356,6 +356,11 @@ pre.doc { margin: 0; white-space: pre-wrap; word-break: break-word; font-family:
 .login .avatar { border-radius: 50%; }
 
 /* CHAT */
+.chat-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+.chat-card { display: flex; flex-direction: column; gap: 6px; min-width: 0; text-align: left; font: inherit; color: inherit; cursor: pointer; padding: 14px 16px; background: rgba(22, 16, 43, 0.8); border: 1px solid var(--line); border-left: 3px solid var(--glow); border-radius: 0.9rem; }
+.chat-card:hover:not(:disabled) { border-color: var(--glow); box-shadow: 0 8px 30px -12px var(--glow); }
+.chat-card.live { box-shadow: 0 0 0 1px var(--violet) inset; }
+.chat-card:disabled { cursor: default; opacity: 0.65; }
 .chat-list { gap: 6px; }
 .chat-row { text-align: left; background: rgba(13, 9, 26, 0.72); border: 1px solid var(--line); border-radius: 0.6rem; padding: 10px 14px; color: inherit; cursor: pointer; font: inherit; }
 .chat-row:hover { border-color: var(--line-2); }

@@ -392,10 +392,108 @@ pub fn transcript(c: &rusqlite::Connection, id: &str) -> Result<(std::path::Path
     Ok((path, str_of(&row["agent"]).to_string(), row))
 }
 
+/// Parent repo path when `repo` is a git worktree (its `.git` is a file pointing into the parent's .git/worktrees).
+fn worktree_parent(repo: &str) -> Option<String> {
+    let dotgit = std::fs::read_to_string(std::path::Path::new(repo).join(".git")).ok()?;
+    let gitdir = dotgit.trim().strip_prefix("gitdir:")?.trim().replace('\\', "/");
+    Some(gitdir.split_once("/.git/worktrees/")?.0.to_string())
+}
+
+/// JSON map {temp copy project id: parent project id}, worked out at read time: nothing is stored or moved.
+/// shortcut: a removed worktree stops matching and its chats lose the link, upgrade by recording the parent at index time.
+pub fn temp_copies(c: &rusqlite::Connection) -> Result<String, String> {
+    let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_lowercase();
+    let projects = crate::util::rows(c, "SELECT id, repo_path FROM projects WHERE repo_path IS NOT NULL", []).map_err(|e| e.to_string())?;
+    let mut map = serde_json::Map::new();
+    for p in &projects {
+        let Some(parent) = worktree_parent(str_of(&p["repo_path"])) else { continue };
+        if let Some(owner) = projects.iter().find(|o| norm(str_of(&o["repo_path"])) == norm(&parent)) {
+            map.insert(str_of(&p["id"]).to_string(), owner["id"].clone());
+        }
+    }
+    Ok(Value::Object(map).to_string())
+}
+
+/// Sessions with `p` = the project whose card they sit on and `tp` = the temp copy they ran in. ?1 = temp_copies().
+pub const CARD_JOIN: &str = "FROM sessions s LEFT JOIN json_each(?1) tc ON tc.key=s.project_id LEFT JOIN projects tp ON tp.id=tc.key
+         LEFT JOIN projects p ON p.id=coalesce(tc.value,s.project_id)";
+
+/// One row per project with chats; chats with no known project share the id ''.
+/// `last_title` comes from the newest chat: SQLite takes bare columns from the max() row.
+pub fn project_cards(c: &rusqlite::Connection) -> Result<Vec<Value>, String> {
+    crate::util::rows(
+        c,
+        &format!(
+            "SELECT coalesce(p.id,'') id, p.name, coalesce(p.workspace_override,p.workspace) workspace, count(*) chats,
+                sum(s.agent='claude') claude, sum(s.agent='codex') codex, max(s.updated) updated, s.title last_title,
+                group_concat(s.title, char(10)) titles, sum(tc.key IS NOT NULL) temp_chats, group_concat(DISTINCT tc.key) temp_ids
+             {CARD_JOIN} GROUP BY coalesce(p.id,'') ORDER BY max(s.updated) DESC"
+        ),
+        [temp_copies(c)?],
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Adds the card the chat sits on (`card_id`, `card_name`) and its temp copy, if any, to a transcript() row.
+pub fn add_card(c: &rusqlite::Connection, id: &str, session: &mut Value) -> Result<(), String> {
+    let sql = format!("SELECT p.id card_id, p.name card_name, tp.name temp_copy {CARD_JOIN} WHERE s.id=?2");
+    let rows = crate::util::rows(c, &sql, [temp_copies(c)?, id.to_string()]).map_err(|e| e.to_string())?;
+    if let Some(r) = rows.first() {
+        for k in ["card_id", "card_name", "temp_copy"] {
+            session[k] = r[k].clone();
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn one_card_per_project_and_unknown_projects_share_one() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE projects(id TEXT, name TEXT, workspace TEXT, workspace_override TEXT, repo_path TEXT);
+             CREATE TABLE sessions(id TEXT, agent TEXT, title TEXT, updated TEXT, project_id TEXT);
+             INSERT INTO projects VALUES('a','Alpha','W',NULL,NULL);
+             INSERT INTO sessions VALUES('1','claude','old','2026-01-01','a'),('2','codex','new','2026-03-01','a'),
+               ('3','claude','loose','2026-02-01',NULL),('4','claude','gone','2026-01-15','deleted');",
+        )
+        .unwrap();
+        let r = project_cards(&c).unwrap();
+        assert_eq!(r.len(), 2);
+        assert_eq!((r[0]["id"].as_str(), r[0]["chats"].as_i64(), r[0]["claude"].as_i64(), r[0]["codex"].as_i64()), (Some("a"), Some(2), Some(1), Some(1)));
+        assert_eq!(r[0]["last_title"], "new");
+        assert_eq!((r[1]["id"].as_str(), r[1]["chats"].as_i64(), r[1]["last_title"].as_str()), (Some(""), Some(2), Some("loose")));
+    }
+
+    #[test]
+    fn worktree_chats_join_the_parent_card_marked_as_temp_copy() {
+        let dir = std::env::temp_dir().join(format!("ptcc-temp-copy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".git"), "gitdir: C:/Work/Parent/.git/worktrees/wt\n").unwrap();
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE projects(id TEXT, name TEXT, workspace TEXT, workspace_override TEXT, repo_path TEXT);
+             CREATE TABLE sessions(id TEXT, agent TEXT, title TEXT, updated TEXT, project_id TEXT);
+             INSERT INTO projects VALUES('parent','Parent','W',NULL,'C:\\Work\\parent\\');
+             INSERT INTO sessions VALUES('1','claude','main','2026-01-01','parent'),('2','claude','in copy','2026-02-01','wt');",
+        )
+        .unwrap();
+        c.execute("INSERT INTO projects VALUES('wt','wt','U',NULL,?1)", [dir.to_str().unwrap()]).unwrap();
+        let r = project_cards(&c).unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!((r[0]["id"].as_str(), r[0]["chats"].as_i64(), r[0]["temp_chats"].as_i64(), r[0]["temp_ids"].as_str()), (Some("parent"), Some(2), Some(1), Some("wt")));
+        let mut s = serde_json::json!({});
+        add_card(&c, "2", &mut s).unwrap();
+        assert_eq!((s["card_id"].as_str(), s["card_name"].as_str(), s["temp_copy"].as_str()), (Some("parent"), Some("Parent"), Some("wt")));
+        // A plain repo folder and a submodule pointer are not temp copies.
+        std::fs::write(dir.join(".git"), "gitdir: ../.git/modules/wt\n").unwrap();
+        assert_eq!(temp_copies(&c).unwrap(), "{}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn kinds(v: &[ChatEntry]) -> Vec<&str> {
         v.iter().map(|e| e.kind.as_str()).collect()

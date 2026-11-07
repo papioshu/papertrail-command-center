@@ -175,6 +175,7 @@ pub fn run() {
             commands::chat_tail,
             commands::chat_entry,
             commands::chat_list,
+            commands::chat_projects,
             commands::get_session_files,
             commands::get_graph,
             commands::search,

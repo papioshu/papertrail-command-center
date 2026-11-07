@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import FolderMap from "./FolderMap";
 import { ActionBoard } from "./Actions";
+import { ChatCard } from "./Chat";
 import { api, type Row } from "../api";
 import {
   ago, AgentChip, Barcode, brand, Card, StatusBar, DataTable, DayChart, Empty, ErrBox, Modal, ProjectActions, RangePicker, rangeFor, sessionState, short, useAsync, useNav, type Col, type Range,
@@ -107,6 +108,7 @@ function Detail({ id }: { id: string }) {
   const act30 = useAsync(() => api.activity(id, r30.from, r30.to), [id], ["projects-updated"]);
   const commits = useAsync(() => api.timeline({ project: id, kind: "commit", limit: 2000 }), [id], ["projects-updated"]);
   const docs = useAsync(() => api.timeline({ project: id, limit: 2000 }), [id], ["projects-updated"]);
+  const chats = useAsync(() => api.chatProjects(), [], ["projects-updated"]);
   const [tab, setTab] = useState("overview");
   const [pick, setPick] = useState<{ day?: string; ws?: string } | null>(null);
   const [session, setSession] = useState<Row | null>(null);
@@ -180,6 +182,7 @@ function Detail({ id }: { id: string }) {
       </div>
       {tab === "overview" && (
         <div className="col" style={{ gap: 22 }}>
+        <ChatCard c={chats.data?.find((c) => c.id === id || String(c.temp_ids ?? "").split(",").includes(id)) ?? { id, name: p.name, workspace: p.workspace }} />
         <div className="split">
           <div className="pass" style={{ gridTemplateColumns: "1fr 96px" }}>
             <div className="main-part">

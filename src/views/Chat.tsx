@@ -1,38 +1,82 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, type Row } from "../api";
-import { AgentChip, ago, Empty, ErrBox, sessionState, useAsync, useNav } from "../ui";
+import { AgentChip, ago, brand, Empty, ErrBox, sessionState, useAsync, useNav } from "../ui";
 import { foldEntries, stepHead, toolSummary, type Block, type ChatEntry, type Step } from "../chat/fold";
 import { inline, mdBlocks } from "../chat/md";
 
-/** CHAT: every Claude Code / Codex chat, and any one of them as its complete conversation. */
+const UNMAPPED = "Not linked to a project";
+
+/** CHAT: one card per project, then that project's chats, then any one chat as its complete conversation. */
 export default function Chat() {
   const { params } = useNav();
-  return params.id ? <Conversation id={String(params.id)} /> : <ChatList />;
+  if (params.id) return <Conversation id={String(params.id)} />;
+  return params.project != null ? <ProjectChats project={String(params.project)} /> : <ProjectCards />;
 }
 
-function ChatList() {
+/** A project's chats as one card. `c` is a chatProjects row; id '' collects chats with no known project. */
+export function ChatCard({ c }: { c: Row }) {
   const { nav } = useNav();
-  const [agent, setAgent] = useState("");
-  const [project, setProject] = useState("");
+  const st = sessionState(c.updated);
+  const workspace = String(c.workspace ?? "");
+  const n = c.chats ?? 0;
+  return (
+    <button className={`chat-card ${st.cls}`} style={{ ["--glow" as string]: brand(workspace).glow }} disabled={!n}
+      onClick={() => nav("chat", { project: c.id, name: c.name ?? UNMAPPED })}>
+      <div className="row" style={{ gap: 8 }}>
+        <span className="label ellipsis" style={{ color: "var(--glow)" }}>{workspace || "No project"}</span>
+        {st.cls === "live" ? <span className="chip live" style={{ marginLeft: "auto" }}>writing now</span> : n > 0 && <span className="label" style={{ marginLeft: "auto", whiteSpace: "nowrap" }}>Chats →</span>}
+      </div>
+      <b className="ellipsis" style={{ fontSize: 15 }}>{c.name ?? UNMAPPED}</b>
+      <div className="mono small">{n ? `${n} ${n === 1 ? "chat" : "chats"}` : "No chats yet"}{c.claude ? ` · ${c.claude} Claude` : ""}{c.codex ? ` · ${c.codex} Codex` : ""}{c.temp_chats ? ` · ${c.temp_chats} in a temp copy` : ""}</div>
+      {n > 0 && <div className="muted small ellipsis">{ago(c.updated)} · {c.last_title || "(untitled)"}</div>}
+    </button>
+  );
+}
+
+const TempCopy = ({ name }: { name?: string | null }) =>
+  name ? <span className="chip warn" style={{ whiteSpace: "nowrap" }} title={`This chat ran in the temporary working copy ${name}`}>TEMP COPY · {name}</span> : null;
+
+function ProjectCards() {
   const [q, setQ] = useState("");
-  const list = useAsync(() => api.chatList(agent || undefined), [agent], ["projects-updated"]);
-  const all = list.data ?? [];
-  const projects = useMemo(() => [...new Set(all.map((r) => r.project).filter(Boolean))].sort() as string[], [all]);
+  const list = useAsync(() => api.chatProjects(), [], ["projects-updated"]);
   const needle = q.trim().toLowerCase();
-  const shown = all
-    .filter((r) => !project || r.project === project)
-    .filter((r) => !needle || [r.title, r.project, r.last_reply].some((s) => String(s ?? "").toLowerCase().includes(needle)))
+  const shown = (list.data ?? [])
+    .filter((c) => !needle || [c.name ?? UNMAPPED, c.workspace, c.titles].some((s) => String(s ?? "").toLowerCase().includes(needle)))
     .sort((a, b) => Number(sessionState(b.updated).cls === "live") - Number(sessionState(a.updated).cls === "live"));
   return (
     <div className="col" style={{ gap: 14 }}>
       <div className="page-head">
-        <div><h1>Chat</h1><div className="sub">Every Claude Code and Codex chat · open one to read it in full</div></div>
+        <div><h1>Chat</h1><div className="sub">One card per project · open a card to see its Claude Code and Codex chats</div></div>
+        <div className="right">
+          <input className="input" placeholder="Filter chats…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Filter by project or chat title" />
+        </div>
+      </div>
+      {list.error && <ErrBox error={list.error} />}
+      {list.data && !shown.length && <Empty>No chats match.</Empty>}
+      <div className="chat-cards">{shown.map((c) => <ChatCard key={c.id} c={c} />)}</div>
+    </div>
+  );
+}
+
+function ProjectChats({ project }: { project: string }) {
+  const { nav, params } = useNav();
+  const [agent, setAgent] = useState("");
+  const [q, setQ] = useState("");
+  const list = useAsync(() => api.chatList(project, agent || undefined), [project, agent], ["projects-updated"]);
+  const needle = q.trim().toLowerCase();
+  const shown = (list.data ?? [])
+    .filter((r) => !needle || [r.title, r.last_reply].some((s) => String(s ?? "").toLowerCase().includes(needle)))
+    .sort((a, b) => Number(sessionState(b.updated).cls === "live") - Number(sessionState(a.updated).cls === "live"));
+  return (
+    <div className="col" style={{ gap: 14 }}>
+      <div className="row" style={{ gap: 8 }}>
+        <button className="btn ghost sm" onClick={() => nav("chat")}>← All projects</button>
+        {project && <button className="btn ghost sm" onClick={() => nav("projects", { id: project })}>Project page</button>}
+      </div>
+      <div className="page-head">
+        <div><h1>{params.name ?? UNMAPPED}</h1><div className="sub">{list.data ? `${list.data.length} ${list.data.length === 1 ? "chat" : "chats"}` : "Loading…"} · open one to read it in full</div></div>
         <div className="right">
           <input className="input" placeholder="Filter chats…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Filter chats" />
-          <select className="input" value={project} onChange={(e) => setProject(e.target.value)} aria-label="Project">
-            <option value="">All projects</option>
-            {projects.map((p) => <option key={p} value={p}>{p}</option>)}
-          </select>
           <div className="seg">
             {["", "claude", "codex"].map((a) => <button key={a} className={agent === a ? "on" : ""} onClick={() => setAgent(a)}>{a ? a.toUpperCase() : "ALL"}</button>)}
           </div>
@@ -47,7 +91,7 @@ function ChatList() {
             <button key={r.id} className={`chat-row ${st.cls}`} onClick={() => nav("chat", { id: r.id })}>
               <div className="row" style={{ gap: 8 }}>
                 <AgentChip agent={r.agent} />
-                <span className="chip">{r.project ?? "unmapped"}</span>
+                <TempCopy name={r.temp_copy} />
                 <b className="ellipsis">{r.title || "(untitled)"}</b>
                 <span className="dim small mono" style={{ marginLeft: "auto", whiteSpace: "nowrap" }}>
                   {st.cls === "live" ? "writing now · " : ""}{ago(r.updated)} · {r.prompts ?? 0} prompts · {r.edits ?? 0} edits
@@ -159,10 +203,11 @@ function Conversation({ id }: { id: string }) {
   return (
     <div className="col" style={{ gap: 10, height: "calc(100vh - 190px)" }}>
       <div className="row wrap" style={{ gap: 10, alignItems: "center" }}>
-        <button className="btn ghost sm" onClick={() => nav("chat")}>← Chats</button>
+        <button className="btn ghost sm" onClick={() => session ? nav("chat", { project: session.card_id ?? "", name: session.card_name ?? UNMAPPED }) : nav("chat")}>← Chats</button>
         {session && <AgentChip agent={session.agent} />}
+        <TempCopy name={session?.temp_copy} />
         <b className="ellipsis" style={{ maxWidth: 520 }}>{session?.title || id}</b>
-        {session && <span className="dim small mono ellipsis">{session.project ?? "unmapped"} · {session.cwd ?? "—"} · {session.branch ?? "—"}</span>}
+        {session && <span className="dim small mono ellipsis">{session.project ?? UNMAPPED} · {session.cwd ?? "—"} · {session.branch ?? "—"}</span>}
         <div className="row" style={{ gap: 6, marginLeft: "auto" }}>
           <label className="small"><input type="checkbox" checked={expandAll} onChange={(e) => toggle(setExpandAll, e.target.checked)} /> Expand all tool steps</label>
           <label className="small"><input type="checkbox" checked={showSystem} onChange={(e) => toggle(setShowSystem, e.target.checked)} /> Show system entries</label>

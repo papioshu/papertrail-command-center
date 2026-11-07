@@ -821,7 +821,8 @@ pub fn action_op(st: State<AppState>, project_id: String, op: crate::team::Op) -
 
 #[tauri::command(async)]
 pub fn chat_page(st: State<AppState>, id: String, before: Option<u64>, limit: Option<usize>) -> R<Value> {
-    let (path, agent, session) = with(&st, |c| crate::chat::transcript(c, &id))?;
+    let (path, agent, mut session) = with(&st, |c| crate::chat::transcript(c, &id))?;
+    with(&st, |c| Ok(crate::chat::add_card(c, &id, &mut session)?))?;
     let page = crate::chat::read_page(&path, &agent, before, limit.unwrap_or(120).clamp(1, 400))?;
     Ok(json!({"session": session, "page": page}))
 }
@@ -839,13 +840,20 @@ pub fn chat_entry(st: State<AppState>, id: String, off: u64) -> R<Vec<crate::cha
 }
 
 #[tauri::command(async)]
-pub fn chat_list(st: State<AppState>, agent: Option<String>) -> R<Vec<Value>> {
+pub fn chat_projects(st: State<AppState>) -> R<Vec<Value>> {
+    with(&st, |c| Ok(crate::chat::project_cards(c)?))
+}
+
+#[tauri::command(async)]
+pub fn chat_list(st: State<AppState>, agent: Option<String>, project: String) -> R<Vec<Value>> {
     let mut list = with(&st, |c| {
         rows(
             c,
-            "SELECT s.*, p.name project FROM sessions s LEFT JOIN projects p ON p.id=s.project_id
-             WHERE (?1='' OR s.agent=?1) ORDER BY s.updated DESC LIMIT 1000",
-            [agent.unwrap_or_default()],
+            &format!(
+                "SELECT s.*, p.name project, tp.name temp_copy {} WHERE (?2='' OR s.agent=?2) AND coalesce(p.id,'')=?3 ORDER BY s.updated DESC LIMIT 1000",
+                crate::chat::CARD_JOIN
+            ),
+            [crate::chat::temp_copies(c)?, agent.unwrap_or_default(), project],
         )
     })?;
     // Snippets only for the newest 60: each costs one small read at the end of a transcript.
