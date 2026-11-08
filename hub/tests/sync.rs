@@ -220,7 +220,7 @@ fn revocation_mid_queue_rejects_ops_keeps_own_work_and_purges_cache() {
     a.create("task", &fx.p1, json!({ "title": "offline task" }));
     // Removed while their edits are still queued.
     let uid = fx.user("contributor").to_string();
-    assert_eq!(fx.call("DELETE", &format!("/v1/workspaces/{}/members/{uid}", fx.ws), Some("admin"), json!({})).code, 200);
+    assert_eq!(fx.call("DELETE", &format!("/v1/workspaces/{}/members/{uid}", fx.ws), Some("owner"), json!({})).code, 200);
     a.online = true;
     a.sync();
     assert!(a.revoked);
@@ -423,7 +423,7 @@ fn migrating_a_v1_hub_backs_it_up_first() {
     {
         let c = store::open(Some(&data)).unwrap();
         ptcc_hub::api::new_workspace(&c, "Old").unwrap();
-        c.execute_batch("DROP TABLE records; DROP TABLE applied_ops; DROP TABLE blobs; PRAGMA user_version = 1;").unwrap();
+        c.execute_batch("DROP TABLE records; DROP TABLE applied_ops; DROP TABLE blobs; DROP TABLE roles; ALTER TABLE memberships DROP COLUMN title; ALTER TABLE invitations DROP COLUMN title; PRAGMA user_version = 1;").unwrap();
     }
     let c = store::open(Some(&data)).unwrap();
     assert_eq!(c.query_row("SELECT COUNT(*) FROM records", [], |r| r.get::<_, i64>(0)).unwrap(), 0);

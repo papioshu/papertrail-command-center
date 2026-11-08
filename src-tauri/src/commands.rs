@@ -440,7 +440,7 @@ pub fn open_url(url: String) -> R<()> {
 }
 
 #[cfg(windows)]
-fn shell_open(target: &str) -> R<()> {
+pub(crate) fn shell_open(target: &str) -> R<()> {
     #[link(name = "shell32")]
     extern "system" {
         fn ShellExecuteW(hwnd: *mut core::ffi::c_void, op: *const u16, file: *const u16, params: *const u16, dir: *const u16, show: i32) -> isize;
@@ -453,7 +453,7 @@ fn shell_open(target: &str) -> R<()> {
 }
 
 #[cfg(not(windows))]
-fn shell_open(_target: &str) -> R<()> {
+pub(crate) fn shell_open(_target: &str) -> R<()> {
     Err("unsupported platform".into())
 }
 

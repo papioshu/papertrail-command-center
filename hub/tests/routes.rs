@@ -25,12 +25,12 @@ fn every_route_by_every_role_and_scope() {
         ("change a viewer's role", "PATCH", "/v1/workspaces/{ws}/members/{viewer}", json!({ "role": "contributor" }), [200, 200, 403, 403, 403, 403, 404]),
         ("promote a viewer to admin", "PATCH", "/v1/workspaces/{ws}/members/{viewer}", json!({ "role": "admin" }), [200, 403, 403, 403, 403, 403, 404]),
         ("demote an admin", "PATCH", "/v1/workspaces/{ws}/members/{admin}", json!({ "role": "viewer" }), [200, 403, 403, 403, 403, 403, 404]),
-        ("remove a contributor", "DELETE", "/v1/workspaces/{ws}/members/{contributor}", json!({}), [200, 200, 403, 403, 403, 403, 404]),
-        ("invite an editor", "POST", "/v1/workspaces/{ws}/invitations", json!({ "role": "editor" }), [200, 200, 403, 403, 403, 403, 404]),
+        ("remove a contributor", "DELETE", "/v1/workspaces/{ws}/members/{contributor}", json!({}), [200, 403, 403, 403, 403, 403, 404]),
+        ("invite an editor", "POST", "/v1/workspaces/{ws}/invitations", json!({ "role": "editor" }), [200, 403, 403, 403, 403, 403, 404]),
         ("invite an admin", "POST", "/v1/workspaces/{ws}/invitations", json!({ "role": "admin" }), [200, 403, 403, 403, 403, 403, 404]),
         ("invite an owner", "POST", "/v1/workspaces/{ws}/invitations", json!({ "role": "owner" }), [403, 403, 403, 403, 403, 403, 404]),
-        ("list invitations", "GET", "/v1/workspaces/{ws}/invitations", json!({}), [200, 200, 403, 403, 403, 403, 404]),
-        ("revoke an invitation", "DELETE", "/v1/workspaces/{ws}/invitations/{inv}", json!({}), [200, 200, 403, 403, 403, 403, 404]),
+        ("list invitations", "GET", "/v1/workspaces/{ws}/invitations", json!({}), [200, 403, 403, 403, 403, 403, 404]),
+        ("revoke an invitation", "DELETE", "/v1/workspaces/{ws}/invitations/{inv}", json!({}), [200, 403, 403, 403, 403, 403, 404]),
         ("read audit", "GET", "/v1/workspaces/{ws}/audit", json!({}), [200, 200, 403, 403, 403, 403, 404]),
         ("transfer ownership", "POST", "/v1/workspaces/{ws}/transfer", json!({ "user_id": "{admin}" }), [200, 403, 403, 403, 403, 403, 404]),
         ("other workspace", "GET", "/v1/workspaces/{other}", json!({}), [404, 404, 404, 404, 404, 404, 200]),
@@ -44,6 +44,13 @@ fn every_route_by_every_role_and_scope() {
         ("upload blob to p1", "PUT", "/v1/workspaces/{ws}/projects/{p1}/blobs/44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a", json!({}), [200, 200, 200, 200, 403, 200, 404]),
         ("upload blob to p2", "PUT", "/v1/workspaces/{ws}/projects/{p2}/blobs/44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a", json!({}), [200, 200, 200, 200, 403, 404, 404]),
         ("download unknown media", "GET", "/v1/workspaces/{ws}/media/00000000-0000-4000-8000-000000000000", json!({}), [404; 7]),
+        ("list roles", "GET", "/v1/workspaces/{ws}/roles", json!({}), [200, 200, 200, 200, 200, 200, 404]),
+        ("create a contributor-level role", "POST", "/v1/workspaces/{ws}/roles", json!({ "name": "Mod", "base": "contributor" }), [200, 200, 403, 403, 403, 403, 404]),
+        ("create an admin-level role", "POST", "/v1/workspaces/{ws}/roles", json!({ "name": "Co-lead", "base": "admin" }), [200, 403, 403, 403, 403, 403, 404]),
+        ("delete an unused role", "DELETE", "/v1/workspaces/{ws}/roles", json!({ "name": "Artist" }), [200, 200, 403, 403, 403, 403, 404]),
+        ("give the viewer the Artist role", "PATCH", "/v1/workspaces/{ws}/members/{viewer}", json!({ "title": "Artist" }), [200, 200, 403, 403, 403, 403, 404]),
+        ("invite as Ops", "POST", "/v1/workspaces/{ws}/invitations", json!({ "title": "Ops" }), [200, 403, 403, 403, 403, 403, 404]),
+        ("people across my workspaces", "GET", "/v1/people", json!({}), [200; 7]),
         ("me", "GET", "/v1/me", json!({}), [200; 7]),
         ("own devices", "GET", "/v1/devices", json!({}), [200; 7]),
     ];
@@ -105,7 +112,7 @@ fn revoked_devices_users_and_members_lose_access() {
     assert_eq!(fx.call("GET", "/v1/me", Some("viewer"), json!({})).code, 401);
     assert_eq!(fx.hub.handle("GET", "/v1/me", Some(&format!("Bearer {extra_token}")), b"").code, 401);
     // A removed member sees the workspace as missing, then can rejoin only by a new invitation.
-    assert_eq!(fx.call("DELETE", &format!("/v1/workspaces/{}/members/{}", fx.ws, fx.user("contributor")), Some("admin"), json!({})).code, 200);
+    assert_eq!(fx.call("DELETE", &format!("/v1/workspaces/{}/members/{}", fx.ws, fx.user("contributor")), Some("owner"), json!({})).code, 200);
     assert_eq!(fx.call("GET", &format!("/v1/workspaces/{}", fx.ws), Some("contributor"), json!({})).code, 404);
     // Garbage and forged bearers.
     for bad in ["Bearer", "Bearer x", "Bearer d_x.y", &format!("Bearer {dev}.00"), "Basic abc"] {
@@ -301,4 +308,88 @@ fn real_http_round_trip() {
     let r = get("/v1/me", "Authorization: Bearer d_x.y\r\n");
     assert!(r.starts_with("HTTP/1.1 401") && r.contains("application/json") && r.contains("no-store"), "{r}");
     server.unblock();
+}
+
+#[test]
+fn named_roles_start_with_ops_and_artist_and_carry_their_permissions() {
+    let fx = fixture();
+    let ws = &fx.ws;
+    let roles = fx.call("GET", &format!("/v1/workspaces/{ws}/roles"), Some("viewer"), json!({}));
+    let names: Vec<&str> = roles.body["roles"].as_array().unwrap().iter().map(|r| r["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["Ops", "Artist"], "every workspace starts with Ops and Artist");
+    // Profit joins as Ops through an invite carrying the role; Ops can share projects (project.link) though its base is editor.
+    let inv = fx.call("POST", &format!("/v1/workspaces/{ws}/invitations"), Some("owner"), json!({ "title": "Ops" }));
+    assert_eq!(inv.body["role"], "editor");
+    let r = fx.hub.handle("POST", "/v1/redeem", None, json!({ "token": inv.body["token"], "name": "Profit" }).to_string().as_bytes());
+    assert_eq!((r.code, r.body["title"].as_str()), (200, Some("Ops")));
+    let profit = format!("Bearer {}", r.body["device"]["token"].as_str().unwrap());
+    let call = |auth: &str, m: &str, path: String, b: Value| fx.hub.handle(m, &path, Some(auth), b.to_string().as_bytes());
+    assert_eq!(call(&profit, "POST", format!("/v1/workspaces/{ws}/projects"), json!({ "name": "ops board" })).code, 200, "Ops has project.link");
+    assert_eq!(fx.call("POST", &format!("/v1/workspaces/{ws}/projects"), Some("editor"), json!({ "name": "x" })).code, 403, "a plain editor doesn't");
+    let me = call(&profit, "GET", "/v1/me".into(), json!({}));
+    assert_eq!(me.body["workspaces"][0]["title"], "Ops");
+    // Rich becomes the Artist: contributor-level, so he can claim and add but not assign others.
+    let viewer = fx.user("viewer").to_string();
+    assert_eq!(fx.call("PATCH", &format!("/v1/workspaces/{ws}/members/{viewer}"), Some("owner"), json!({ "title": "Artist" })).code, 200);
+    let members = fx.call("GET", &format!("/v1/workspaces/{ws}/members"), Some("viewer"), json!({}));
+    let rich = members.body["members"].as_array().unwrap().iter().find(|m| m["user_id"] == viewer.as_str()).unwrap().clone();
+    assert_eq!((rich["role"].as_str(), rich["title"].as_str()), (Some("contributor"), Some("Artist")));
+    // Paper edits Artist: removing media.upload takes effect for every Artist at once.
+    assert_eq!(fx.call("POST", &format!("/v1/workspaces/{ws}/roles"), Some("owner"), json!({ "name": "Artist", "base": "contributor", "deny": ["media.upload"] })).code, 200);
+    let auth = format!("Bearer {}", fx.token("viewer"));
+    let png = b"img".to_vec();
+    let up = fx.hub.handle("PUT", &format!("/v1/workspaces/{ws}/projects/{}/blobs/{}", fx.p1, ptcc_hub::store::hash_bytes(&png)), Some(&auth), &png);
+    assert_eq!(up.code, 403);
+    // Raising Artist's base moves its holders; admins can't touch roles at or above their own level.
+    assert_eq!(fx.call("POST", &format!("/v1/workspaces/{ws}/roles"), Some("owner"), json!({ "name": "Artist", "base": "editor" })).code, 200);
+    assert_eq!(fx.call("GET", &format!("/v1/workspaces/{ws}"), Some("viewer"), json!({})).body["role"], "editor");
+    assert_eq!(fx.call("POST", &format!("/v1/workspaces/{ws}/roles"), Some("admin"), json!({ "name": "Artist", "base": "admin" })).code, 403);
+    // In-use roles can't be deleted; names can't shadow built-ins or carry odd characters; grants stay limited.
+    assert_eq!(fx.call("DELETE", &format!("/v1/workspaces/{ws}/roles"), Some("owner"), json!({ "name": "Artist" })).code, 409);
+    for bad in [json!({ "name": "Admin", "base": "viewer" }), json!({ "name": "<b>x</b>", "base": "viewer" }), json!({ "name": "", "base": "viewer" }), json!({ "name": "Boss", "base": "owner" }),
+                json!({ "name": "Gate", "base": "viewer", "grant": ["members.invite"] })] {
+        assert_eq!(fx.call("POST", &format!("/v1/workspaces/{ws}/roles"), Some("owner"), bad.clone()).code, 400, "{bad}");
+    }
+    assert_eq!(fx.call("PATCH", &format!("/v1/workspaces/{ws}/members/{viewer}"), Some("owner"), json!({ "title": "Nope" })).code, 400);
+    // Back to a built-in role clears the name.
+    fx.call("PATCH", &format!("/v1/workspaces/{ws}/members/{viewer}"), Some("owner"), json!({ "role": "viewer" }));
+    let members = fx.call("GET", &format!("/v1/workspaces/{ws}/members"), Some("owner"), json!({}));
+    assert!(members.body["members"].as_array().unwrap().iter().any(|m| m["user_id"] == viewer.as_str() && m["title"].is_null()));
+    let audit = fx.call("GET", &format!("/v1/workspaces/{ws}/audit"), Some("owner"), json!({})).body.to_string();
+    assert!(audit.contains("role.updated"));
+}
+
+#[test]
+fn only_the_owner_puts_people_in_or_takes_them_out() {
+    let fx = fixture();
+    let ws = &fx.ws;
+    let viewer = fx.user("viewer").to_string();
+    // A second workspace Paper owns, with nobody else in it yet.
+    let (ws2, inv) = ptcc_hub::api::new_workspace(&fx.hub.db.lock().unwrap(), "BOMBSQUAD").unwrap();
+    assert_eq!(fx.call("POST", "/v1/redeem", Some("owner"), json!({ "token": inv })).code, 200);
+    let people = fx.call("GET", "/v1/people", Some("owner"), json!({}));
+    assert_eq!(people.body["workspaces"].as_array().unwrap().len(), 2);
+    let v = people.body["people"].as_array().unwrap().iter().find(|p| p["user_id"] == viewer.as_str()).unwrap().clone();
+    assert_eq!(v["workspaces"][ws]["role"], "viewer");
+    assert!(v["workspaces"].get(&ws2).is_none());
+    assert!(!people.body.to_string().contains(fx.user("outsider")), "only people in the owner's workspaces");
+    assert_eq!(fx.call("GET", "/v1/people", Some("admin"), json!({})).body["people"], json!([]), "non-owners see nobody");
+    // Paper adds the viewer to BOMBSQUAD as Artist; nobody else can.
+    let add = |actor: &str, body: Value| fx.call("POST", &format!("/v1/workspaces/{ws2}/members"), Some(actor), body).code;
+    assert_eq!(add("admin", json!({ "user_id": viewer, "title": "Artist" })), 404, "the admin isn't in BOMBSQUAD at all");
+    assert_eq!(add("owner", json!({ "user_id": viewer, "title": "Artist" })), 200);
+    assert_eq!(add("owner", json!({ "user_id": viewer, "role": "viewer" })), 409);
+    assert_eq!(add("owner", json!({ "user_id": fx.user("outsider"), "role": "viewer" })), 404, "strangers join only by invitation");
+    assert_eq!(add("owner", json!({ "user_id": "u_nope", "role": "viewer" })), 404);
+    assert_eq!(fx.call("GET", &format!("/v1/workspaces/{ws2}"), Some("viewer"), json!({})).body["role"], "contributor");
+    // In FLY WING the admin can still change roles below them but can't add or remove anyone.
+    assert_eq!(fx.call("POST", &format!("/v1/workspaces/{ws}/members"), Some("admin"), json!({ "user_id": fx.user("outsider"), "role": "viewer" })).code, 403);
+    assert_eq!(fx.call("DELETE", &format!("/v1/workspaces/{ws}/members/{viewer}"), Some("admin"), json!({})).code, 403);
+    assert_eq!(fx.call("PATCH", &format!("/v1/workspaces/{ws}/members/{viewer}"), Some("admin"), json!({ "role": "contributor" })).code, 200);
+    // Paper takes the viewer out of BOMBSQUAD; FLY WING is untouched.
+    assert_eq!(fx.call("DELETE", &format!("/v1/workspaces/{ws2}/members/{viewer}"), Some("owner"), json!({})).code, 200);
+    assert_eq!(fx.call("GET", &format!("/v1/workspaces/{ws2}"), Some("viewer"), json!({})).code, 404);
+    assert_eq!(fx.call("GET", &format!("/v1/workspaces/{ws}"), Some("viewer"), json!({})).code, 200);
+    // And can add them back later.
+    assert_eq!(add("owner", json!({ "user_id": viewer, "role": "viewer" })), 200);
 }

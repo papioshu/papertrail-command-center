@@ -52,6 +52,15 @@ CREATE INDEX applied_ops_at ON applied_ops(at);
 -- that was uploaded into its own workspace and project, so knowing a hash never grants its content.
 CREATE TABLE blobs(sha256 TEXT NOT NULL, workspace_id TEXT NOT NULL, project_id TEXT NOT NULL, size INTEGER NOT NULL,
   uploaded_by TEXT NOT NULL, uploaded_at TEXT NOT NULL, PRIMARY KEY(sha256, workspace_id, project_id));
+"#, r#"
+-- Named roles per workspace (D036): a base level plus extra/removed permissions. Members and invitations carry the
+-- role name in `title`; their `role` column always holds the base level, so access checks stay on the policy core.
+CREATE TABLE roles(workspace_id TEXT NOT NULL REFERENCES workspaces(id), name TEXT NOT NULL, base TEXT NOT NULL,
+  grants TEXT NOT NULL DEFAULT '[]', denies TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, PRIMARY KEY(workspace_id, name));
+ALTER TABLE memberships ADD COLUMN title TEXT;
+ALTER TABLE invitations ADD COLUMN title TEXT;
+INSERT OR IGNORE INTO roles(workspace_id, name, base, grants, created_at) SELECT id, 'Ops', 'editor', '["project.link"]', strftime('%Y-%m-%dT%H:%M:%SZ','now') FROM workspaces;
+INSERT OR IGNORE INTO roles(workspace_id, name, base, grants, created_at) SELECT id, 'Artist', 'contributor', '[]', strftime('%Y-%m-%dT%H:%M:%SZ','now') FROM workspaces;
 "#];
 
 pub fn now() -> String {

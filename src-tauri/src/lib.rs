@@ -233,6 +233,7 @@ pub fn run() {
             hub_client::hub_resolve,
             hub_client::hub_invite,
             hub_client::hub_new_project,
+            hub_client::hub_admin,
             hub_client::hub_link_preview,
             hub_client::hub_link,
             hub_client::hub_upload,
@@ -240,6 +241,7 @@ pub fn run() {
             hub_client::hub_snapshot_preview,
             hub_client::hub_snapshot_publish,
             hub_client::hub_host_status,
+            hub_client::hub_open_share_folder,
             hub_client::hub_host_create_workspace,
         ])
         .run(tauri::generate_context!())

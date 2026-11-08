@@ -28,32 +28,135 @@ function Start({ host, onDone }: { host: Row | undefined; onDone: () => void }) 
   const [link, setLink] = useState("");
   const [name, setName] = useState("");
   const [wsName, setWsName] = useState("");
+  const [hosting, setHosting] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const go = async (f: () => Promise<unknown>) => { setBusy(true); setErr(null); try { await f(); onDone(); } catch (e) { setErr(String(e)); } finally { setBusy(false); } };
   return (
     <div className="col" style={{ gap: 14 }}>
-      {host?.installed && (
-        <Card title="Start your team on this PC">
-          <div className="col" style={{ gap: 10, maxWidth: 620 }}>
-            <div className="small muted">The hub runs on this PC. Create your first workspace (for example BOMBSQUAD or FLY WING); you'll be its owner and can invite your team from inside it.</div>
-            <input className="input" placeholder="Workspace name" value={wsName} onChange={(e) => setWsName(e.target.value)} aria-label="Workspace name" />
-            <input className="input" placeholder="Your name, as your team will see it" value={name} onChange={(e) => setName(e.target.value)} aria-label="Your name" />
-            <div className="row"><button className="btn primary" disabled={busy || !wsName.trim() || !name.trim()} onClick={() => go(() => api.hubHostCreate(wsName.trim(), name.trim()))}>{busy ? "Creating…" : "Create workspace"}</button></div>
-          </div>
-        </Card>
-      )}
-      <Card title="Join a team with an invite link">
+      <Card title="Join your team">
         <div className="col" style={{ gap: 10, maxWidth: 620 }}>
-          <div className="small muted">Paste the link a teammate sent you (it looks like <span className="mono">http://100.x.y.z:8770#…</span>). It works once and expires.</div>
+          <div className="small muted">Paste the invite link you were sent (it looks like <span className="mono">http://100.x.y.z:8770#…</span>). It works once and expires. Tailscale must be on.</div>
           <input className="input" placeholder="Invite link" value={link} onChange={(e) => setLink(e.target.value)} aria-label="Invite link" />
           <input className="input" placeholder="Your name, as your team will see it" value={name} onChange={(e) => setName(e.target.value)} aria-label="Your name" />
           <div className="row"><button className="btn primary" disabled={busy || !link.trim() || !name.trim()} onClick={() => go(() => api.hubJoin(link.trim(), name.trim()))}>{busy ? "Joining…" : "Join"}</button></div>
         </div>
       </Card>
       {err && <ErrBox error={err} />}
+      {host?.installed && (hosting ? (
+        <Card title="Host a workspace on this PC">
+          <div className="col" style={{ gap: 10, maxWidth: 620 }}>
+            <div className="small muted">The team hub runs on this PC. Name a workspace (e.g. BOMBSQUAD); you'll own it and decide who's in it.</div>
+            <input className="input" placeholder="Workspace name" value={wsName} onChange={(e) => setWsName(e.target.value)} aria-label="Workspace name" />
+            <input className="input" placeholder="Your name, as your team will see it" value={name} onChange={(e) => setName(e.target.value)} aria-label="Owner name" />
+            <div className="row" style={{ gap: 6 }}>
+              <button className="btn primary" disabled={busy || !wsName.trim() || !name.trim()} onClick={() => go(() => api.hubHostCreate(wsName.trim(), name.trim()))}>{busy ? "Creating…" : "Create workspace"}</button>
+              <button className="btn ghost" onClick={() => setHosting(false)}>Cancel</button>
+            </div>
+          </div>
+        </Card>
+      ) : <div><button className="btn sm ghost" onClick={() => setHosting(true)}>Host a workspace on this PC instead</button></div>)}
       <div className="dim small">Only what you put in a team workspace is shared: tasks, media, and the file list + map of projects you choose to share. Your chats, notes and files stay on this PC.</div>
     </div>
+  );
+}
+
+/* ---------- connecting teammates (owner) ---------- */
+
+function ConnectGuide({ host, people, open, setOpen }: { host: Row | undefined; people: number; open: boolean; setOpen: (o: boolean) => void }) {
+  const ok = (b: boolean) => <span style={{ color: b ? "var(--lime)" : "var(--gold)", fontWeight: 700, width: 18, display: "inline-block" }}>{b ? "✓" : "•"}</span>;
+  const ts = !!host?.tailscale;
+  return (
+    <Card title="Connect your team" right={<button className="btn sm ghost" onClick={() => setOpen(!open)}>{open ? "Hide" : "Show steps"}</button>}>
+      {!open ? <div className="small dim">{ts ? `Hub reachable on Tailscale at ${host?.tailscale}:8770` : "Tailscale is off on this PC: teammates can't reach the hub yet."} · {people} teammate{people === 1 ? "" : "s"} connected</div> : (
+        <div className="col" style={{ gap: 10 }}>
+          <div className="small">{ok(!!host?.running)}<b>Hub running on this PC</b> {host?.running ? "· starts with Windows" : "· not answering: restart the PC or run ptcc-hub serve"}</div>
+          <div className="small">{ok(ts)}<b>This PC on Tailscale</b> {ts ? `· ${host?.tailscale}` : "· open Tailscale from the taskbar tray and sign in. The hub picks the address up within a minute."}</div>
+          <div className="small">{ok(false)}<b>Add Profit and Rich to your Tailscale network</b> · in Tailscale's admin page choose Users › Invite users and send each an invite. They install Tailscale on their PC and sign in with it.
+            <button className="btn sm ghost" style={{ marginLeft: 8 }} onClick={() => api.openUrl("https://login.tailscale.com/admin/users")}>Open Tailscale users</button></div>
+          <div className="small">{ok(!!host?.installer)}<b>Send them the Command Center installer</b> · {host?.installer ? "it's in the share folder." : "the share folder is empty for now."}
+            <button className="btn sm ghost" style={{ marginLeft: 8 }} onClick={() => api.hubOpenShareFolder()}>Open share folder</button></div>
+          <div className="small">{ok(people > 0)}<b>Give each person their own invite link</b> · open a workspace › ADMIN › Invite, pick their role (Profit: Ops, Rich: Artist), Make invite link, and send it privately. Links work once, for 72 hours.</div>
+          <div className="small">{ok(people > 0)}<b>They join</b> · on their PC: TEAM › paste the link › their name › Join. After that, use PEOPLE below to put them into more of your workspaces or take them out.</div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+/** Already on the hub: another invite link adds that workspace to the same account. */
+function JoinMore({ me, onDone, onErr }: { me: string; onDone: () => void; onErr: (e: string) => void }) {
+  const [link, setLink] = useState("");
+  return (
+    <div className="row wrap" style={{ gap: 8, alignItems: "center" }}>
+      <input className="input" style={{ flex: 1, minWidth: 280 }} placeholder="Got an invite to another workspace? Paste the link here" value={link} onChange={(e) => setLink(e.target.value)} aria-label="Another invite link" />
+      <button className="btn sm" disabled={!link.trim()} onClick={() => api.hubJoin(link.trim(), me || "Me").then(() => { setLink(""); onDone(); }, (e) => onErr(String(e)))}>Join</button>
+    </div>
+  );
+}
+
+/* ---------- people × workspaces (owner only, D037) ---------- */
+
+function People({ onErr }: { onErr: (e: string) => void }) {
+  const data = useAsync(() => api.hubAdmin("", "people"), [], ["hub-changed"]);
+  const owned: Row[] = data.data?.workspaces ?? [];
+  const roles = useAsync(() => Promise.all(owned.map((w) => api.hubAdmin(w.id, "roles"))), [owned.map((w) => w.id).join()]);
+  const [confirm, setConfirm] = useState<string | null>(null);
+  const [addAs, setAddAs] = useState<Record<string, string>>({});
+  if (!owned.length) return null;
+  const people: Row[] = data.data?.people ?? [];
+  const choices = (i: number) => [...((roles.data?.[i]?.roles ?? []) as Row[]).map((r) => ({ v: `t:${r.name}`, label: r.name })), ...["admin", "editor", "contributor", "viewer"].map((r) => ({ v: `r:${r}`, label: r }))];
+  const body = (v: string, uid: string) => (v.startsWith("t:") ? { user_id: uid, title: v.slice(2) } : { user_id: uid, role: v.slice(2) });
+  const run = (ws: string, action: string, b: Row) => api.hubAdmin(ws, action, b).then(() => { setConfirm(null); data.reload(); }, (e) => onErr(String(e)));
+  return (
+    <Card title="People">
+      {!people.length ? <Empty>Nobody else has joined yet. Use "Connect your team" above to invite people; once they've joined one workspace you can put them in the others here.</Empty> : (
+        <div style={{ overflowX: "auto" }}>
+          <table className="table" style={{ width: "100%" }}>
+            <thead><tr><th style={{ textAlign: "left" }}>Person</th>{owned.map((w) => <th key={w.id} style={{ textAlign: "left" }}>{w.name}</th>)}</tr></thead>
+            <tbody>
+              {people.map((p) => (
+                <tr key={p.user_id}>
+                  <td><b>{p.name}</b></td>
+                  {owned.map((w, i) => {
+                    const m = p.workspaces?.[w.id];
+                    const key = `${p.user_id}|${w.id}`;
+                    if (m) {
+                      const cur = m.title ? `t:${m.title}` : `r:${m.role}`;
+                      return (
+                        <td key={w.id}>
+                          <div className="row" style={{ gap: 6 }}>
+                            <select className="input" value={cur} onChange={(e) => run(w.id, "member_set", body(e.target.value, p.user_id))} aria-label={`${p.name} in ${w.name}`}>
+                              {!choices(i).some((c) => c.v === cur) && <option value={cur}>{m.title ?? m.role}</option>}
+                              {choices(i).map((c) => <option key={c.v} value={c.v}>{c.label}</option>)}
+                            </select>
+                            {confirm === key
+                              ? <button className="btn sm danger" onClick={() => run(w.id, "member_remove", { user_id: p.user_id })}>Confirm remove</button>
+                              : <button className="btn sm ghost" onClick={() => setConfirm(key)} aria-label={`Remove ${p.name} from ${w.name}`}>Remove</button>}
+                          </div>
+                        </td>
+                      );
+                    }
+                    const as = addAs[key] ?? choices(i)[0]?.v ?? "r:viewer";
+                    return (
+                      <td key={w.id}>
+                        <div className="row" style={{ gap: 6 }}>
+                          <select className="input" value={as} onChange={(e) => setAddAs({ ...addAs, [key]: e.target.value })} aria-label={`Role for ${p.name} in ${w.name}`}>
+                            {choices(i).map((c) => <option key={c.v} value={c.v}>{c.label}</option>)}
+                          </select>
+                          <button className="btn sm" onClick={() => run(w.id, "member_add", body(as, p.user_id))} aria-label={`Add ${p.name} to ${w.name}`}>Add</button>
+                        </div>
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div className="dim small" style={{ marginTop: 8 }}>Only you, as owner, can put people into your workspaces or take them out. Admins can change roles but not who's in.</div>
+    </Card>
   );
 }
 
@@ -414,45 +517,153 @@ function ProjectTile({ p, b, local, glow, onOpen }: { p: Row; b: Row; local?: st
   );
 }
 
-/* ---------- admin ---------- */
+/* ---------- admin: members, invites, roles (D036), projects ---------- */
 
-function Admin({ ws, b, reload, onErr }: { ws: string; b: Row; reload: () => void; onErr: (e: string) => void }) {
-  const [role, setRole] = useState("editor");
+const PERM_LABEL: Record<string, string> = {
+  "workspace.read": "See the workspace", "project.read": "See projects", "task.read": "See tasks", "doc.read": "See file lists + maps", "media.read": "See media",
+  "task.create": "Add + claim tasks", "task.edit_own": "Edit own tasks", "media.upload": "Upload media", "task.edit_any": "Edit anyone's tasks",
+  "task.assign": "Assign people", "milestone.edit": "Edit milestones", "doc.publish": "Share file lists + maps", "project.link": "Share projects",
+  "members.invite": "Invite people", "audit.read": "Read the audit log", "members.manage": "Change roles + remove people", "workspace.manage": "Manage roles + workspace",
+  "workspace.delete": "Delete the workspace", "ownership.transfer": "Hand over ownership",
+};
+const roleLabel = (m: Row) => m.title ?? m.role;
+
+/** Create or edit a named role: a base level plus permissions added or taken away. */
+function RoleEditor({ ws, meta, myRole, init, onDone, onErr }: { ws: string; meta: Row; myRole: string; init: Row | null; onDone: () => void; onErr: (e: string) => void }) {
+  const bases = ["admin", "editor", "contributor", "viewer"].filter((r) => RANK[r] > RANK[myRole]);
+  const [name, setName] = useState(init?.name ?? "");
+  const [base, setBase] = useState<string>(init?.base ?? bases[bases.length - 2] ?? "viewer");
+  const [grant, setGrant] = useState<string[]>(init?.grant ?? []);
+  const [deny, setDeny] = useState<string[]>(init?.deny ?? []);
+  const has: string[] = meta.bases?.[base] ?? [];
+  const perms: Row[] = meta.permissions ?? [];
+  const toggle = (list: string[], set: (l: string[]) => void, p: string) => set(list.includes(p) ? list.filter((x) => x !== p) : [...list, p]);
+  const save = () => api.hubAdmin(ws, "role_save", { name: name.trim(), base, grant: grant.filter((p) => !has.includes(p)), deny: deny.filter((p) => has.includes(p)) }).then(onDone, (e) => onErr(String(e)));
+  return (
+    <div className="card col" style={{ padding: 12, gap: 8 }}>
+      <div className="row wrap" style={{ gap: 8, alignItems: "center" }}>
+        <input className="input" placeholder="Role name (e.g. Artist)" value={name} disabled={!!init} onChange={(e) => setName(e.target.value)} aria-label="Role name" />
+        <span className="small dim">built on</span>
+        <select className="input" value={base} onChange={(e) => setBase(e.target.value)} aria-label="Base level">{bases.map((b) => <option key={b} value={b}>{b}</option>)}</select>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 4 }}>
+        {perms.map((p) => {
+          const inBase = has.includes(p.name);
+          const on = inBase ? !deny.includes(p.name) : grant.includes(p.name);
+          const locked = !inBase && !p.grantable;
+          return (
+            <label key={p.name} className="row small" style={{ gap: 6, opacity: locked ? 0.4 : 1 }} title={locked ? "Comes only with a higher base level" : p.name}>
+              <input type="checkbox" checked={on} disabled={locked} onChange={() => (inBase ? toggle(deny, setDeny, p.name) : toggle(grant, setGrant, p.name))} />
+              {PERM_LABEL[p.name] ?? p.name}{!inBase && on ? " (added)" : inBase && !on ? " (removed)" : ""}
+            </label>
+          );
+        })}
+      </div>
+      <div className="row" style={{ gap: 6 }}>
+        <button className="btn sm primary" disabled={!name.trim()} onClick={save}>{init ? "Save role" : "Create role"}</button>
+        <button className="btn sm ghost" onClick={onDone}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+function Admin({ ws, b, me, reload, onErr }: { ws: string; b: Row; me: string; reload: () => void; onErr: (e: string) => void }) {
+  const meta = useAsync(() => api.hubAdmin(ws, "roles"), [ws], ["hub-changed"]);
+  const [inviteAs, setInviteAs] = useState("");
   const [link, setLink] = useState<string | null>(null);
   const [pname, setPname] = useState("");
   const [local, setLocal] = useState("");
   const [preview, setPreview] = useState<Row | null>(null);
   const [doImport, setDoImport] = useState(true);
+  const [editing, setEditing] = useState<Row | "new" | null>(null);
+  const [removing, setRemoving] = useState<string | null>(null);
   const projects = useAsync(() => api.projects(), []);
   const linked = new Set(Object.values(b.links ?? {}) as string[]);
-  const roles = ["admin", "editor", "contributor", "viewer"].filter((r) => RANK[r] > RANK[b.role]);
+  const myRole: string = b.role;
+  const below = (r: string) => RANK[r] > RANK[myRole];
+  const named: Row[] = (meta.data?.roles ?? []).filter((r: Row) => below(r.base));
+  const builtins = ["admin", "editor", "contributor", "viewer"].filter(below);
+  const choices = [...named.map((r) => ({ v: `t:${r.name}`, label: `${r.name} (${r.base})` })), ...builtins.map((r) => ({ v: `r:${r}`, label: r }))];
+  const as = inviteAs || choices[0]?.v || "";
+  const refresh = () => { meta.reload(); reload(); };
+  const setMember = (uid: string, v: string) =>
+    api.hubAdmin(ws, "member_set", v.startsWith("t:") ? { user_id: uid, title: v.slice(2) } : { user_id: uid, role: v.slice(2) }).then(refresh, (e) => onErr(String(e)));
   return (
-    <div className="col" style={{ gap: 12 }}>
-      <div className="row wrap" style={{ gap: 8, alignItems: "center" }}>
-        <span className="label">Invite</span>
-        <select className="input" value={role} onChange={(e) => setRole(e.target.value)} aria-label="Role">{roles.map((r) => <option key={r} value={r}>{r}</option>)}</select>
-        <button className="btn sm" onClick={() => api.hubInvite(ws, role).then(setLink, (e) => onErr(String(e)))}>Make invite link</button>
-        {link && <><input className="input mono" style={{ flex: 1, minWidth: 260 }} readOnly value={link} onFocus={(e) => e.target.select()} aria-label="Invite link" />
-          <button className="btn sm" onClick={() => navigator.clipboard.writeText(link)}>Copy</button></>}
-      </div>
-      {link && <div className="dim small">Works once, for 72 hours. Send it privately: whoever opens it first joins as {role}.{link.includes("://127.0.0.1") ? " Tailscale is off on this PC, so this link only works here; sign into Tailscale first." : ""}</div>}
-      <div className="row wrap" style={{ gap: 8, alignItems: "center" }}>
+    <div className="col" style={{ gap: 16 }}>
+      <section className="col" style={{ gap: 8 }}>
         <span className="label">Members</span>
-        {(b.members ?? []).map((m: Row) => <span key={m.user_id} className="chip">{m.name} · {m.role}</span>)}
-      </div>
-      <div className="row wrap" style={{ gap: 8, alignItems: "center" }}>
-        <span className="label">New shared project</span>
-        <input className="input" placeholder="Name" value={pname} onChange={(e) => setPname(e.target.value)} aria-label="Project name" />
-        <button className="btn sm" disabled={!pname.trim()} onClick={() => api.hubNewProject(ws, pname.trim()).then(() => { setPname(""); reload(); }, (e) => onErr(String(e)))}>Create</button>
-      </div>
-      <div className="row wrap" style={{ gap: 8, alignItems: "center" }}>
-        <span className="label">Share a project from this PC</span>
-        <select className="input" value={local} onChange={(e) => setLocal(e.target.value)} aria-label="Local project">
-          <option value="">Pick a project…</option>
-          {(projects.data ?? []).filter((p) => !linked.has(p.id)).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
-        <button className="btn sm" disabled={!local} onClick={() => api.hubLinkPreview(local).then(setPreview, (e) => onErr(String(e)))}>Preview what's shared</button>
-      </div>
+        {(b.members ?? []).map((m: Row) => {
+          const manageable = m.user_id !== me && below(m.role) && can(myRole, "admin");
+          const owner = myRole === "owner";
+          const cur = m.title ? `t:${m.title}` : `r:${m.role}`;
+          return (
+            <div key={m.user_id} className="li">
+              <b>{m.name}</b>{m.user_id === me && <span className="dim small">you</span>}
+              <span className="chip" style={{ flex: "0 0 auto" }}>{roleLabel(m)}</span>
+              {manageable && (
+                <span className="row" style={{ marginLeft: "auto", gap: 6 }}>
+                  <select className="input" value={cur} onChange={(e) => setMember(m.user_id, e.target.value)} aria-label={`Role for ${m.name}`}>
+                    {!choices.some((c) => c.v === cur) && <option value={cur}>{roleLabel(m)}</option>}
+                    {choices.map((c) => <option key={c.v} value={c.v}>{c.label}</option>)}
+                  </select>
+                  {owner && (removing === m.user_id
+                    ? <button className="btn sm danger" onClick={() => api.hubAdmin(ws, "member_remove", { user_id: m.user_id }).then(() => { setRemoving(null); refresh(); }, (e) => onErr(String(e)))}>Confirm remove</button>
+                    : <button className="btn sm ghost" onClick={() => setRemoving(m.user_id)}>Remove</button>)}
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </section>
+      {myRole === "owner" && <section className="col" style={{ gap: 8 }}>
+        <div className="row wrap" style={{ gap: 8, alignItems: "center" }}>
+          <span className="label">Invite</span>
+          <select className="input" value={as} onChange={(e) => setInviteAs(e.target.value)} aria-label="Invite as">{choices.map((c) => <option key={c.v} value={c.v}>{c.label}</option>)}</select>
+          <button className="btn sm" disabled={!as} onClick={() => api.hubInvite(ws, as.slice(2)).then(setLink, (e) => onErr(String(e)))}>Make invite link</button>
+          {link && <><input className="input mono" style={{ flex: 1, minWidth: 260 }} readOnly value={link} onFocus={(e) => e.target.select()} aria-label="Invite link" />
+            <button className="btn sm" onClick={() => navigator.clipboard.writeText(link)}>Copy</button></>}
+        </div>
+        {link && <div className="dim small">Works once, for 72 hours. Send it privately: whoever opens it first joins as {as.slice(2)}.{link.includes("://127.0.0.1") ? " Tailscale is off on this PC, so this link only works here; sign into Tailscale first." : ""}</div>}
+      </section>}
+      <section className="col" style={{ gap: 8 }}>
+        <div className="row" style={{ gap: 8, alignItems: "center" }}>
+          <span className="label">Roles</span>
+          {can(myRole, "admin") && !editing && <button className="btn sm" style={{ marginLeft: "auto" }} onClick={() => setEditing("new")}>New role</button>}
+        </div>
+        {meta.error && <ErrBox error={meta.error} />}
+        {editing && meta.data && <RoleEditor key={editing === "new" ? "new" : editing.name} ws={ws} meta={meta.data} myRole={myRole} init={editing === "new" ? null : editing} onErr={onErr} onDone={() => { setEditing(null); refresh(); }} />}
+        {(meta.data?.roles ?? []).map((r: Row) => (
+          <div key={r.name} className="li" style={{ alignItems: "flex-start" }}>
+            <div style={{ flex: 1 }}>
+              <b>{r.name}</b> <span className="dim small">· built on {r.base} · {r.members} member{r.members === 1 ? "" : "s"}</span>
+              <div className="dim small">
+                {(r.grant as string[]).length > 0 && <>adds: {(r.grant as string[]).map((p) => PERM_LABEL[p] ?? p).join(", ")}. </>}
+                {(r.deny as string[]).length > 0 && <>removes: {(r.deny as string[]).map((p) => PERM_LABEL[p] ?? p).join(", ")}.</>}
+              </div>
+            </div>
+            {can(myRole, "admin") && below(r.base) && <span className="row" style={{ gap: 6, marginLeft: "auto" }}>
+              <button className="btn sm ghost" onClick={() => setEditing(r)}>Edit</button>
+              <button className="btn sm ghost" onClick={() => api.hubAdmin(ws, "role_delete", { name: r.name }).then(refresh, (e) => onErr(String(e)))}>Delete</button>
+            </span>}
+          </div>
+        ))}
+        <div className="dim small">Built-in levels: owner · admin · editor · contributor · viewer. A role's people move with it when you change it.</div>
+      </section>
+      <section className="col" style={{ gap: 8 }}>
+        <div className="row wrap" style={{ gap: 8, alignItems: "center" }}>
+          <span className="label">New shared project</span>
+          <input className="input" placeholder="Name" value={pname} onChange={(e) => setPname(e.target.value)} aria-label="Project name" />
+          <button className="btn sm" disabled={!pname.trim()} onClick={() => api.hubNewProject(ws, pname.trim()).then(() => { setPname(""); reload(); }, (e) => onErr(String(e)))}>Create</button>
+        </div>
+        <div className="row wrap" style={{ gap: 8, alignItems: "center" }}>
+          <span className="label">Share a project from this PC</span>
+          <select className="input" value={local} onChange={(e) => setLocal(e.target.value)} aria-label="Local project">
+            <option value="">Pick a project…</option>
+            {(projects.data ?? []).filter((p) => !linked.has(p.id)).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+          <button className="btn sm" disabled={!local} onClick={() => api.hubLinkPreview(local).then(setPreview, (e) => onErr(String(e)))}>Preview what's shared</button>
+        </div>
+      </section>
       {preview && (
         <Modal title={`Share "${preview.project_name}" with the team`} onClose={() => setPreview(null)}
           foot={<><button className="btn ghost" onClick={() => setPreview(null)}>Cancel</button>
@@ -528,7 +739,7 @@ function WorkspacePage({ w, me, onBack, onErr }: { w: Row; me: string; onBack: (
             <button className="btn sm ghost" onClick={onBack}>← All workspaces</button>
             <h1 style={{ margin: 0 }}>{w.name}</h1><span className="chip">{b.role}</span>
           </div>
-          <div className="row wrap" style={{ gap: 6 }}>{(b.members ?? []).map((m: Row) => <span key={m.user_id} className="chip" style={m.user_id === me ? { borderColor: "var(--lime)" } : undefined}>{m.name}</span>)}</div>
+          <div className="row wrap" style={{ gap: 6 }}>{(b.members ?? []).map((m: Row) => <span key={m.user_id} className="chip" style={m.user_id === me ? { borderColor: "var(--lime)" } : undefined} title={m.title ? `${m.title} (${m.role})` : m.role}>{m.name} · {m.title ?? m.role}</span>)}</div>
           <div className="dim small">{b.pending ? `${b.pending} change${b.pending === 1 ? "" : "s"} waiting to sync · ` : ""}{b.last_sync ? `synced ${ago(b.last_sync)}` : "not synced yet"}</div>
         </div>
       </div>
@@ -552,7 +763,7 @@ function WorkspacePage({ w, me, onBack, onErr }: { w: Row; me: string; onBack: (
         {tab === "media" && <Media ws={w.id} b={b} project={project} onErr={onErr} reload={board.reload} />}
         {(tab === "map" || tab === "files") && <Structure key={project + tab} ws={w.id} b={b} project={project} glow={br.glow} mode={tab} local={local} onErr={onErr} reload={board.reload} />}
         {tab === "chats" && (project ? <LocalChats local={local} /> : <Empty>Pick a project above to see its chats from this PC.</Empty>)}
-        {tab === "admin" && <Admin ws={w.id} b={b} reload={board.reload} onErr={onErr} />}
+        {tab === "admin" && <Admin ws={w.id} b={b} me={me} reload={board.reload} onErr={onErr} />}
       </div></section>
     </div>
   );
@@ -566,8 +777,12 @@ export default function Team() {
   const [open, setOpen] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [leaving, setLeaving] = useState(false);
+  const [guide, setGuide] = useState<boolean | null>(null);
   const s = status.data;
   const list: Row[] = s?.workspaces ?? [];
+  const owns = list.some((w) => w.role === "owner");
+  const people = useAsync(() => (owns ? api.hubAdmin("", "people") : Promise.resolve({ people: [] })), [owns], ["hub-changed"]);
+  const others = (people.data?.people ?? []).length;
   const current = list.find((w) => w.id === open);
   useEffect(() => { if (open && !current && s) setOpen(null); }, [open, current, s]);
   return (
@@ -591,6 +806,7 @@ export default function Team() {
       {status.error && <ErrBox error={status.error} />}
       {s && !s.joined && <Start host={host.data} onDone={() => { status.reload(); host.reload(); }} />}
       {s?.revoked && <ErrBox error="This PC was signed out of the hub. Your unsent edits were saved in the app's hub\unsent folder. Leave, then join again with a new invite." />}
+      {s?.joined && !s.revoked && !current && owns && <ConnectGuide host={host.data} people={others} open={guide ?? (!host.data?.tailscale || others === 0)} setOpen={setGuide} />}
       {s?.joined && !s.revoked && !current && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 14 }}>
           {list.map((w) => <WsCard key={w.id} w={w} onOpen={() => setOpen(w.id)} />)}
@@ -598,6 +814,8 @@ export default function Team() {
           {!list.length && !host.data?.installed && <Empty>You're not in any workspace on this hub right now.</Empty>}
         </div>
       )}
+      {s?.joined && !s.revoked && !current && owns && <People onErr={setErr} />}
+      {s?.joined && !s.revoked && !current && <JoinMore me={s.name ?? ""} onDone={status.reload} onErr={setErr} />}
       {current && s && <WorkspacePage key={current.id} w={current} me={s.user_id ?? ""} onBack={() => setOpen(null)} onErr={setErr} />}
     </div>
   );

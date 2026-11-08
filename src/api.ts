@@ -147,6 +147,8 @@ export const api = {
   hubResolve: (workspace: string, conflict: number, keepMine: boolean) => call<void>("hub_resolve", { workspace, conflict, keepMine }),
   hubInvite: (workspace: string, role: string, projects?: string[]) => call<string>("hub_invite", { workspace, role, projects }),
   hubNewProject: (workspace: string, name: string) => call<Row>("hub_new_project", { workspace, name }),
+  /** Roles + members (D036): "roles" | "role_save" | "role_delete" | "member_set" | "member_remove". */
+  hubAdmin: (workspace: string, action: string, body?: Row) => call<Row>("hub_admin", { workspace, action, body }),
   hubLinkPreview: (project: string) => call<Row>("hub_link_preview", { project }),
   hubLink: (project: string, workspace: string, doImport: boolean) => call<Row>("hub_link", { project, workspace, import: doImport }),
   hubUpload: (workspace: string, projectId: string, name: string, caption: string, data: string) => call<string>("hub_upload", { workspace, projectId, name, caption, data }),
@@ -155,6 +157,7 @@ export const api = {
   hubSnapshotPreview: (project: string) => call<Row>("hub_snapshot_preview", { project }),
   hubSnapshotPublish: (project: string) => call<string>("hub_snapshot_publish", { project }),
   hubHostStatus: () => call<Row>("hub_host_status"),
+  hubOpenShareFolder: () => call<void>("hub_open_share_folder"),
   hubHostCreate: (name: string, me: string) => call<Row>("hub_host_create_workspace", { name, me }),
 };
 

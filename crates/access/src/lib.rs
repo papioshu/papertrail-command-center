@@ -46,8 +46,9 @@ impl Perm {
         WorkspaceDelete, OwnershipTransfer,
     ];
     /// Only an owner holds these; a custom grant can't hand them out.
+    /// MembersInvite = deciding who is in the workspace at all (invite, add, remove): the owner's call alone (D037).
     pub fn owner_only(self) -> bool {
-        matches!(self, WorkspaceDelete | OwnershipTransfer)
+        matches!(self, WorkspaceDelete | OwnershipTransfer | MembersInvite)
     }
     /// Can come only from the role, never from a custom grant: they control who gets access.
     pub fn grantable(self) -> bool {
@@ -290,14 +291,14 @@ mod tests {
     fn role_matrix_matches_the_architecture_table() {
         let row = |r: Role| Perm::ALL.iter().filter(|&&p| r.allows(p)).count();
         assert_eq!(row(Role::Owner), 19);
-        assert_eq!(row(Role::Admin), 17);
+        assert_eq!(row(Role::Admin), 16);
         assert_eq!(row(Role::Editor), 12);
         assert_eq!(row(Role::Contributor), 8);
         assert_eq!(row(Role::Viewer), 5);
         assert!(Role::Viewer.allows(TaskRead) && !Role::Viewer.allows(TaskCreate));
         assert!(Role::Contributor.allows(TaskEditOwn) && !Role::Contributor.allows(TaskEditAny));
         assert!(Role::Editor.allows(TaskAssign) && !Role::Editor.allows(MembersInvite));
-        assert!(Role::Admin.allows(MembersManage) && !Role::Admin.allows(WorkspaceDelete));
+        assert!(Role::Admin.allows(MembersManage) && !Role::Admin.allows(WorkspaceDelete) && !Role::Admin.allows(MembersInvite));
     }
 
     #[test]
@@ -375,7 +376,8 @@ mod tests {
         assert_eq!(decide(Some(&a), MembersManage, change(Role::Viewer, Role::Admin)), Forbidden, "admin can't promote to admin");
         assert_eq!(decide(Some(&a), MembersManage, change(Role::Viewer, Role::Owner)), Forbidden);
         assert_eq!(decide(Some(&a), MembersInvite, Target::Member { workspace: "w", role: Role::Admin, new_role: None }), Forbidden);
-        assert_eq!(decide(Some(&a), MembersInvite, Target::Member { workspace: "w", role: Role::Editor, new_role: None }), Allow);
+        assert_eq!(decide(Some(&a), MembersInvite, Target::Member { workspace: "w", role: Role::Editor, new_role: None }), Forbidden, "only the owner decides who is in");
+        assert_eq!(decide(Some(&Membership::new("o", "w", Role::Owner)), MembersInvite, Target::Member { workspace: "w", role: Role::Admin, new_role: None }), Allow);
         assert_eq!(decide(Some(&a), MembersManage, Target::Workspace("w")), Forbidden, "only with a member target");
         let o = Membership::new("u", "w", Role::Owner);
         assert_eq!(decide(Some(&o), MembersManage, change(Role::Editor, Role::Admin)), Allow);

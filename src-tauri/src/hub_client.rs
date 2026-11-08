@@ -605,10 +605,54 @@ impl Client {
         Ok(())
     }
 
+    /// `role` is a built-in level (viewer…admin) or the name of one of the workspace's roles (e.g. "Artist").
     pub fn invite(&self, ws: &str, role: &str, projects: Option<Vec<String>>) -> R<String> {
-        let v = self.need("POST", &format!("/v1/workspaces/{ws}/invitations"), Some(&json!({ "role": role, "projects": projects })))?;
+        let builtin = ["admin", "editor", "contributor", "viewer"].contains(&role);
+        let body = if builtin { json!({ "role": role, "projects": projects }) } else { json!({ "title": role, "projects": projects }) };
+        let v = self.need("POST", &format!("/v1/workspaces/{ws}/invitations"), Some(&body))?;
         let url = self.config().and_then(|c| c["url"].as_str().map(String::from)).unwrap_or_default();
         Ok(format!("{}#{}", shareable(&url, crate::phone::tailscale_ip().as_deref()), v["token"].as_str().unwrap_or("")))
+    }
+
+    /// Role and member administration (D036). Only these fixed calls; the hub checks every one.
+    pub fn admin(&self, ws: &str, action: &str, body: &Value) -> R<Value> {
+        if action != "people" {
+            self.ws_path(ws)?;
+        }
+        let user = || -> R<String> {
+            let u = body["user_id"].as_str().unwrap_or("");
+            if u.is_empty() || !u.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+                return Err("bad member id".into());
+            }
+            Ok(u.to_string())
+        };
+        let (method, path, send) = match action {
+            "roles" => ("GET", format!("/v1/workspaces/{ws}/roles"), None),
+            "people" => ("GET", "/v1/people".to_string(), None),
+            "member_add" => {
+                let b = if body["title"].is_string() { json!({ "user_id": user()?, "title": body["title"] }) } else { json!({ "user_id": user()?, "role": body["role"] }) };
+                ("POST", format!("/v1/workspaces/{ws}/members"), Some(b))
+            }
+            "role_save" => ("POST", format!("/v1/workspaces/{ws}/roles"), Some(json!({ "name": body["name"], "base": body["base"], "grant": body["grant"], "deny": body["deny"] }))),
+            "role_delete" => ("DELETE", format!("/v1/workspaces/{ws}/roles"), Some(json!({ "name": body["name"] }))),
+            "member_set" => {
+                let b = if body["title"].is_string() { json!({ "title": body["title"] }) } else { json!({ "role": body["role"] }) };
+                ("PATCH", format!("/v1/workspaces/{ws}/members/{}", user()?), Some(b))
+            }
+            "member_remove" => ("DELETE", format!("/v1/workspaces/{ws}/members/{}", user()?), None),
+            _ => return Err("unknown admin action".into()),
+        };
+        let r = match self.call(method, &path, send.as_ref()) {
+            Net::Reply(200, v) => v,
+            Net::Reply(409, v) if v["error"] == "role_in_use" => return Err("Someone still has that role. Give them another role first.".into()),
+            Net::Reply(409, v) if v["error"] == "already_member" => return Err("They're already in that workspace.".into()),
+            Net::Reply(code, v) => return Err(format!("The hub refused ({code}: {})", v["error"].as_str().unwrap_or("error"))),
+            Net::Down(d) => return Err(format!("Can't reach the hub ({d}).")),
+        };
+        if method != "GET" {
+            let _ = self.sync_ws(ws); // members/roles show the change at once
+        }
+        Ok(r)
     }
 
     pub fn new_project(&self, ws: &str, name: &str) -> R<Value> {
@@ -998,6 +1042,11 @@ pub fn hub_invite(h: State<HubState>, workspace: String, role: String, projects:
 }
 
 #[tauri::command(async)]
+pub fn hub_admin(h: State<HubState>, workspace: String, action: String, body: Option<Value>) -> R<Value> {
+    h.client.admin(&workspace, &action, &body.unwrap_or(Value::Null))
+}
+
+#[tauri::command(async)]
 pub fn hub_new_project(h: State<HubState>, workspace: String, name: String) -> R<Value> {
     h.client.new_project(&workspace, &name)
 }
@@ -1085,10 +1134,25 @@ pub fn hub_snapshot_publish(st: State<AppState>, h: State<HubState>, project: St
     Ok(id)
 }
 
-/// The hub installed on this PC, if any.
+/// `%LOCALAPPDATA%\ptcc-hub\share`: the Command Center installer to send teammates.
+fn share_dir() -> Option<PathBuf> {
+    Some(PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("ptcc-hub").join("share"))
+}
+
+/// The hub installed on this PC, if any; whether it answers; this PC's Tailscale address; the teammate installer.
 #[tauri::command(async)]
 pub fn hub_host_status() -> Value {
-    json!({ "installed": local_hub_exe().is_some(), "tailscale": crate::phone::tailscale_ip() })
+    let up = ureq::AgentBuilder::new().timeout(Duration::from_secs(2)).build().get("http://127.0.0.1:8770/v1/health").call().is_ok();
+    let installer = share_dir().and_then(|d| std::fs::read_dir(d).ok()).into_iter().flatten().filter_map(|e| e.ok()).any(|e| e.file_name().to_string_lossy().ends_with(".exe"));
+    json!({ "installed": local_hub_exe().is_some(), "running": up, "tailscale": crate::phone::tailscale_ip(), "installer": installer })
+}
+
+/// Opens the folder holding the teammate installer (fixed path; nothing else can be opened this way).
+#[tauri::command(async)]
+pub fn hub_open_share_folder() -> R<()> {
+    let d = share_dir().ok_or("no app data folder")?;
+    std::fs::create_dir_all(&d).map_err(e)?;
+    crate::commands::shell_open(&d.to_string_lossy())
 }
 
 /// Creates a workspace on the hub installed on this PC and joins it as its owner.
@@ -1478,6 +1542,45 @@ mod tests {
         a.need("PATCH", &format!("/v1/workspaces/{ws}/members/{sam}"), Some(&json!({ "projects": null }))).unwrap();
         b.sync_all().unwrap();
         assert!(b.board(&ws).unwrap()["records"].to_string().contains("contracts task"));
+        for d in [ad, bd] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn paper_sets_roles_and_profit_joins_as_ops() {
+        let h = hub();
+        let (ws, link) = owner_invite(&h);
+        let (ad, bd) = (tmp("a"), tmp("b"));
+        let a = Client::new(&ad);
+        a.join(&link, "Paper", "PC").unwrap();
+        let roles = a.admin(&ws, "roles", &Value::Null).unwrap();
+        assert_eq!(roles["roles"].as_array().unwrap().len(), 2);
+        assert!(roles["bases"]["editor"].as_array().unwrap().iter().any(|p| p == "task.assign"));
+        a.admin(&ws, "role_save", &json!({ "name": "Mod", "base": "contributor", "grant": ["milestone.edit"], "deny": [] })).unwrap();
+        let b = Client::new(&bd);
+        b.join(&a.invite(&ws, "Ops", None).unwrap(), "Profit", "Laptop").unwrap();
+        a.sync_all().unwrap();
+        let members = a.board(&ws).unwrap()["members"].clone();
+        let profit = members.as_array().unwrap().iter().find(|m| m["name"] == "Profit").unwrap().clone();
+        assert_eq!((profit["title"].as_str(), profit["role"].as_str()), (Some("Ops"), Some("editor")));
+        let uid = profit["user_id"].as_str().unwrap().to_string();
+        a.admin(&ws, "member_set", &json!({ "user_id": uid, "title": "Mod" })).unwrap();
+        assert!(a.board(&ws).unwrap()["members"].to_string().contains("\"Mod\""), "shows at once");
+        assert!(a.admin(&ws, "role_delete", &json!({ "name": "Mod" })).unwrap_err().contains("still has that role"));
+        assert!(a.admin(&ws, "member_set", &json!({ "user_id": "../x", "role": "viewer" })).is_err());
+        assert!(a.admin(&ws, "drop_table", &Value::Null).is_err());
+        // Paper puts Profit into a second workspace from the People view, then takes them out of the first.
+        let (ws2, inv2) = ptcc_hub::api::new_workspace(&h.hub.db.lock().unwrap(), "BOMBSQUAD").unwrap();
+        a.join(&format!("{}#{inv2}", h.url), "Paper", "PC").unwrap();
+        let people = a.admin("", "people", &Value::Null).unwrap();
+        assert_eq!(people["workspaces"].as_array().unwrap().len(), 2);
+        a.admin(&ws2, "member_add", &json!({ "user_id": uid, "title": "Artist" })).unwrap();
+        b.sync_all().unwrap();
+        assert_eq!(b.workspaces().len(), 2);
+        a.admin(&ws, "member_remove", &json!({ "user_id": uid })).unwrap();
+        b.sync_all().unwrap();
+        assert_eq!(b.workspaces(), std::slice::from_ref(&ws2), "out of the first, still in the second");
         for d in [ad, bd] {
             let _ = std::fs::remove_dir_all(d);
         }
