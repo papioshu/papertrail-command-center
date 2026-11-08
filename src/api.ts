@@ -122,7 +122,7 @@ export const api = {
   diagnostics: () => call<Row>("get_diagnostics"),
   backup: () => call<string>("backup_db"),
   sparks: (days: number) => call<Row[]>("get_sparks", { days }),
-  toggleChat: () => call<boolean>("toggle_chat"),
+  toggleChat: (qr = false) => call<boolean>("toggle_chat", { qr }),
   folders: (id: string) => call<Row[]>("get_folders", { id }),
   taskTogglePreview: (id: number) => call<Row>("task_toggle_preview", { id }),
   taskToggle: (id: number, before: string) => call<void>("task_toggle", { id, before }),

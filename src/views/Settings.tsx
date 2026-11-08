@@ -146,6 +146,10 @@ export default function Settings() {
             <div className="grid g2">{field("claude_dir", "Claude data dir")}{field("codex_dir", "Codex data dir")}</div>
             {field("chat_url", "Chat slide-out URL (https)")}
             <div className="dim small">For a specific channel: in the chat panel, right-click the channel › Copy Link, paste it here, Save.</div>
+            <div className="row wrap">
+              <button className="btn" onClick={() => api.toggleChat(true).catch((e) => setMsg({ err: String(e) }))}>Sign in to Discord with QR</button>
+              <span className="dim small">Opens Discord's login with a QR code: scan it with the Discord app on your phone (Scan QR Code). Close the window when it shows your servers; the Chat panel stays signed in.</span>
+            </div>
             <div className="grid g2">{field("refresh_minutes", "Re-index every (minutes)", "number")}{field("discovery_refresh_hours", "Discovery every (hours)", "number")}</div>
             <div className="dim small">Excluded from scans: node_modules, .git internals, dist, build, .next, .cache, .venv, target, backups. .env files and credentials are never read.</div>
           </div>
