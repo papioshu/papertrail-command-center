@@ -61,6 +61,28 @@ function Search({ go }: { go: (v: View, p: Row) => void }) {
 // Phone (D027): read views only. Anything else stays on the PC.
 const PHONE_VIEWS: View[] = ["overview", "workspace", "projects", "chat", "agents", "timeline"];
 
+/** Top-bar update button (D042): checks the team hub at launch and every 30 min, lights up when a build is waiting. */
+function UpdateButton() {
+  const [ready, setReady] = useState(false);
+  const [label, setLabel] = useState("Update");
+  const check = (quiet: boolean) => api.updateCheck().then(
+    (r) => { setReady(!!r.available); if (!quiet) setLabel(r.available ? "Update" : r.published ? "Up to date" : "No build yet"); },
+    (e) => { if (!quiet) alertless(String(e)); });
+  useEffect(() => { check(true); const t = setInterval(() => check(true), 30 * 60_000); return () => clearInterval(t); }, []);
+  useEffect(() => { if (label === "Update" || label === "Updating…") return; const t = setTimeout(() => setLabel("Update"), 4000); return () => clearTimeout(t); }, [label]);
+  const click = () => {
+    if (!ready) return void check(false);
+    setLabel("Updating…");
+    api.updateInstall().catch((e) => { setLabel("Update"); alertless(String(e)); });
+  };
+  return (
+    <button className={`btn sm desk-only${ready ? " primary" : ""}`} onClick={click} disabled={label === "Updating…"}
+      title={ready ? "A new build is ready: installs it and reopens the app" : "Check your team's hub for a new build"}>
+      {ready && label === "Update" ? "UPDATE READY" : label}
+    </button>
+  );
+}
+
 function Unpaired() {
   return (
     <div className="login"><div className="login-panel" style={{ textAlign: "center" }}>
@@ -169,6 +191,7 @@ export default function App() {
               <button className="btn sm ghost" onClick={() => api.logout().then(() => { setMe(null); setGate(true); })}>Lock</button>
             </span>
           ) : <button className="btn sm" onClick={() => setGate(true)}>Sign in</button>}
+          {PHONE ? null : <UpdateButton />}
           <button className="btn sm desk-only" onClick={() => api.toggleChat().catch((e) => alertless(String(e)))} title="Slide-out chat (Discord by default; set the URL in Settings)">Chat</button>
           <button className="btn sm desk-only" onClick={() => api.refresh()} disabled={busy} title="Re-index projects, git and sessions">Refresh</button>
           <div className="sysstat">
