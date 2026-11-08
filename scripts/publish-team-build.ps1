@@ -20,5 +20,6 @@ $latest = [ordered]@{
   built_at         = $setup.LastWriteTimeUtc.ToString("yyyy-MM-ddTHH:mm:ssZ")
   size             = $setup.Length
 }
-$latest | ConvertTo-Json | Set-Content (Join-Path $share "latest.json") -Encoding utf8
+# No BOM: Windows PowerShell's utf8 adds one and the hub's JSON reader then sees no build at all.
+[IO.File]::WriteAllText((Join-Path $share "latest.json"), ($latest | ConvertTo-Json), (New-Object Text.UTF8Encoding $false))
 "Published build $($latest.commit) ($([math]::Round($setup.Length / 1MB, 1)) MB) to $share"
