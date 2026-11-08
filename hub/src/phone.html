@@ -16,6 +16,9 @@
   header b { letter-spacing:.18em; font-size:12px; }
   select, input, button { font:inherit; color:var(--fg); background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 12px; }
   button { background:#241837; font-weight:600; }
+  /* iOS: 16px stops Safari zooming into a field on tap; drop Safari's native gray select (arrow drawn with gradients, CSP allows no data: images). */
+  select, input, textarea { font-size:16px; }
+  select { -webkit-appearance:none; appearance:none; padding-right:34px; background-image:linear-gradient(45deg, transparent 50%, var(--dim) 50%), linear-gradient(135deg, var(--dim) 50%, transparent 50%); background-position:calc(100% - 18px) 55%, calc(100% - 13px) 55%; background-size:5px 5px; background-repeat:no-repeat; }
   button.primary { background:var(--violet); border-color:var(--violet); }
   button.small { padding:6px 10px; font-size:13px; }
   .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
