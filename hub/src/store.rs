@@ -65,6 +65,10 @@ INSERT OR IGNORE INTO roles(workspace_id, name, base, grants, created_at) SELECT
 -- One-time links that sign another device into the SAME account (D041). Hashed, 15 minutes, single use.
 CREATE TABLE device_links(id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, user_id TEXT NOT NULL REFERENCES users(id),
   expires_at TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
+"#, r#"
+-- A device link dies with the device that made it (revoked device → its unused links stop working).
+ALTER TABLE device_links ADD COLUMN created_by_device TEXT;
+UPDATE device_links SET used = 1 WHERE created_by_device IS NULL;
 "#];
 
 pub fn now() -> String {

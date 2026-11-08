@@ -411,6 +411,8 @@ fn a_device_link_signs_in_another_device_as_the_same_person_once() {
     assert_eq!(link.code, 200);
     let token = link.body["token"].as_str().unwrap().to_string();
     let claim = |t: &str| fx.hub.handle("POST", "/v1/devices/claim", None, json!({ "token": t, "device_name": "iPad" }).to_string().as_bytes());
+    let peek = fx.hub.handle("POST", "/v1/devices/claim", None, json!({ "token": token, "preview": true }).to_string().as_bytes());
+    assert_eq!(peek.body["name"], "editor", "preview names the account and uses nothing up");
     let r = claim(&token);
     assert_eq!((r.code, r.body["user_id"].as_str()), (200, Some(fx.user("editor"))), "same account");
     let ipad = format!("Bearer {}", r.body["device"]["token"].as_str().unwrap());
@@ -423,7 +425,32 @@ fn a_device_link_signs_in_another_device_as_the_same_person_once() {
     fx.hub.db.lock().unwrap().execute("UPDATE device_links SET expires_at = '2000-01-01T00:00:00Z'", []).unwrap();
     assert_eq!(claim(l2.body["token"].as_str().unwrap()).code, 400);
     assert_eq!(fx.hub.handle("POST", "/v1/devices/link", None, b"").code, 401);
+    // A link dies with the device that made it.
+    let l3 = fx.call("POST", "/v1/devices/link", Some("editor"), json!({}));
+    let maker = fx.call("GET", "/v1/me", Some("editor"), json!({})).body["device_id"].as_str().unwrap().to_string();
+    assert_eq!(fx.call("DELETE", &format!("/v1/devices/{maker}"), Some("editor"), json!({})).code, 200);
+    assert_eq!(claim(l3.body["token"].as_str().unwrap()).code, 400);
     // Revoking the person revokes every device, the new one included.
     ptcc_hub::api::revoke_user(&fx.hub.db.lock().unwrap(), fx.user("editor")).unwrap();
     assert_eq!(fx.hub.handle("GET", "/v1/me", Some(&ipad), b"").code, 401);
+}
+
+#[test]
+fn app_updates_come_from_the_share_folder_to_signed_in_devices_only() {
+    let base = std::env::temp_dir().join(format!("ptcc-hub-test-share-{}", store::random_hex(4).unwrap()));
+    let hub = Hub::new(store::open(None).unwrap(), Some(base.join("media")));
+    let (_, inv) = new_workspace(&hub.db.lock().unwrap(), "W").unwrap();
+    let r = hub.handle("POST", "/v1/redeem", None, json!({ "token": inv, "name": "Rich" }).to_string().as_bytes());
+    let auth = format!("Bearer {}", r.body["device"]["token"].as_str().unwrap());
+    assert_eq!(hub.handle("GET", "/v1/app/latest", Some(&auth), b"").code, 404, "nothing published yet");
+    std::fs::create_dir_all(base.join("share")).unwrap();
+    std::fs::write(base.join("share").join(ptcc_hub::api::INSTALLER), b"MZ installer").unwrap();
+    std::fs::write(base.join("share/latest.json"), json!({ "exe_sha256": "ab", "installer_sha256": store::hash_bytes(b"MZ installer"), "commit": "8f24663", "secret": "no" }).to_string()).unwrap();
+    let latest = hub.handle("GET", "/v1/app/latest", Some(&auth), b"");
+    assert_eq!((latest.code, latest.body["commit"].as_str()), (200, Some("8f24663")));
+    assert!(latest.body.get("secret").is_none(), "only the known fields");
+    assert_eq!(hub.handle("GET", "/v1/app/installer", Some(&auth), b"").raw.as_deref(), Some(&b"MZ installer"[..]));
+    assert_eq!(hub.handle("GET", "/v1/app/installer", None, b"").code, 401);
+    assert_eq!(hub.handle("GET", "/v1/app/latest", Some("Bearer d_x.y"), b"").code, 401);
+    let _ = std::fs::remove_dir_all(base);
 }

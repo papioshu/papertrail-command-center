@@ -267,6 +267,9 @@ impl Client {
     pub fn join(&self, link: &str, name: &str, device_name: &str) -> R<Value> {
         let (url, token) = parse_invite(link)?;
         let existing = self.config();
+        if existing.is_some() && token.starts_with("dev-") {
+            return Err("This PC is already signed in to the hub. A device link is only for a device that isn't signed in yet.".into());
+        }
         if let Some(cfg) = &existing {
             if cfg["url"].as_str() != Some(url.as_str()) {
                 return Err(format!("This PC is already joined to the hub at {}. Leave it first.", cfg["url"].as_str().unwrap_or("?")));
@@ -1003,6 +1006,81 @@ impl Client {
         }
         Ok(copied)
     }
+}
+
+/* ---------- app updates from the hub (D042) ---------- */
+
+/// This build's identity: the fingerprint of the running exe (every build says 0.1.0).
+fn own_exe_sha() -> R<String> {
+    Ok(sha256_hex(&std::fs::read(std::env::current_exe().map_err(e)?).map_err(e)?))
+}
+
+impl Client {
+    /// What the hub offers, and whether it differs from this build.
+    pub fn update_check(&self, current: &str) -> R<Value> {
+        let v = match self.call("GET", "/v1/app/latest", None) {
+            Net::Reply(200, v) => v,
+            Net::Reply(404, _) => return Ok(json!({ "available": false, "published": false })),
+            Net::Reply(code, _) => return Err(format!("The hub refused ({code}).")),
+            Net::Down(d) => return Err(format!("Can't reach the hub ({d}).")),
+        };
+        let available = v["exe_sha256"].as_str().is_some_and(|s| s != current);
+        Ok(json!({ "available": available, "published": true, "commit": v["commit"], "built_at": v["built_at"], "installer_sha256": v["installer_sha256"] }))
+    }
+
+    /// Downloads the published installer into `dir` and checks it against the fingerprint the hub announced.
+    pub fn download_update(&self, dir: &Path) -> R<PathBuf> {
+        let want = self.update_check("")?["installer_sha256"].as_str().map(String::from).ok_or("No update is published.")?;
+        let res = self.request("GET", "/v1/app/installer").map_err(|_| "Can't reach the hub.".to_string())?.call().map_err(|x| format!("Download failed ({x})."))?;
+        let mut b = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::Read::take(res.into_reader(), 200 * 1024 * 1024), &mut b).map_err(e)?;
+        if sha256_hex(&b) != want {
+            return Err("The downloaded update didn't match its fingerprint, so it wasn't installed.".into());
+        }
+        std::fs::create_dir_all(dir).map_err(e)?;
+        let path = dir.join("setup.exe");
+        write_atomic(&path, &b)?;
+        Ok(path)
+    }
+}
+
+#[tauri::command(async)]
+pub fn app_update_check(h: State<HubState>) -> R<Value> {
+    if h.client.config().is_none() {
+        return Err("Updates come from your team's hub. Join it in TEAM first.".into());
+    }
+    let mut v = h.client.update_check(&own_exe_sha()?)?;
+    v["current"] = json!(own_exe_sha()?.chars().take(12).collect::<String>());
+    Ok(v)
+}
+
+/// Downloads and verifies the update, then a small script waits for this app to close, runs the installer silently
+/// and opens the app again.
+#[tauri::command(async)]
+pub fn app_update_install(app: AppHandle, h: State<HubState>) -> R<()> {
+    let dir = std::env::temp_dir().join("ptcc-update");
+    let setup = h.client.download_update(&dir)?;
+    let exe = std::env::current_exe().map_err(e)?;
+    let script = dir.join("update.cmd");
+    let body = format!(
+        "@echo off\r\ntimeout /t 2 /nobreak >nul\r\ntaskkill /IM papertrail-command-center.exe /F >nul 2>&1\r\n\"{}\" /S\r\nstart \"\" \"{}\"\r\n",
+        setup.display(),
+        exe.display()
+    );
+    std::fs::write(&script, body).map_err(e)?;
+    let mut cmd = std::process::Command::new("cmd");
+    cmd.args(["/c", &script.to_string_lossy()]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000 | 0x0000_0008); // no window, detached from this app
+    }
+    cmd.spawn().map_err(|x| format!("Couldn't start the update ({x})."))?;
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(600));
+        app.exit(0);
+    });
+    Ok(())
 }
 
 /// The hub installed on this PC (D035): `%LOCALAPPDATA%\ptcc-hub\ptcc-hub.exe`, its data in the same folder.
@@ -1811,10 +1889,37 @@ mod tests {
         assert_eq!(b.config().unwrap()["user_id"], a.config().unwrap()["user_id"]);
         assert_eq!(b.workspaces(), std::slice::from_ref(&ws));
         assert!(Client::new(&tmp("third")).join(d["link"].as_str().unwrap(), "", "x").unwrap_err().contains("already used"));
+        // A PC that's already signed in never switches accounts through a device link.
+        let d2 = a.device_link().unwrap();
+        assert!(b.join(d2["link"].as_str().unwrap(), "", "x").unwrap_err().contains("already signed in"));
         assert!(parse_invite(&format!("http://127.0.0.1:1#dev-{}", "a".repeat(63))).is_err());
         for dir in [pc, laptop] {
             let _ = std::fs::remove_dir_all(dir);
         }
+    }
+
+    #[test]
+    fn updates_are_offered_by_fingerprint_and_verified() {
+        let h = hub();
+        let (_, link) = owner_invite(&h);
+        let d = tmp("upd");
+        let a = Client::new(&d);
+        a.join(&link, "Rich", "PC").unwrap();
+        assert_eq!(a.update_check("x").unwrap()["published"], false);
+        let share = h.data.join("share");
+        std::fs::create_dir_all(&share).unwrap();
+        std::fs::write(share.join(ptcc_hub::api::INSTALLER), b"MZ new build").unwrap();
+        let latest = |inst: &str| json!({ "exe_sha256": "new-exe", "installer_sha256": inst, "commit": "abc1234" }).to_string();
+        std::fs::write(share.join("latest.json"), latest(&sha256_hex(b"MZ new build"))).unwrap();
+        assert_eq!(a.update_check("old-exe").unwrap()["available"], true);
+        assert_eq!(a.update_check("new-exe").unwrap()["available"], false, "already on it");
+        let got = a.download_update(&d.join("dl")).unwrap();
+        assert_eq!(std::fs::read(got).unwrap(), b"MZ new build");
+        // A swapped installer (fingerprint mismatch) is refused.
+        std::fs::write(share.join("latest.json"), latest(&sha256_hex(b"something else"))).unwrap();
+        assert!(a.download_update(&d.join("dl2")).unwrap_err().contains("didn't match"));
+        assert!(!d.join("dl2/setup.exe").exists());
+        let _ = std::fs::remove_dir_all(d);
     }
 
     #[test]

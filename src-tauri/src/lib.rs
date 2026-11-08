@@ -228,6 +228,8 @@ pub fn run() {
             hub_client::hub_join,
             hub_client::hub_leave,
             hub_client::hub_device_link,
+            hub_client::app_update_check,
+            hub_client::app_update_install,
             hub_client::hub_sync_now,
             hub_client::hub_set_vault_media,
             hub_client::hub_board,

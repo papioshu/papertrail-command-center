@@ -42,6 +42,30 @@ function PhoneAccess() {
   );
 }
 
+/** App updates from the team hub (D042): the owner publishes a build; one press installs it. */
+function Updates() {
+  const [st, setSt] = useState<Row | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const check = () => { setErr(null); setBusy(true); api.updateCheck().then(setSt, (e) => setErr(String(e))).finally(() => setBusy(false)); };
+  const install = () => { setErr(null); setBusy(true); api.updateInstall().catch((e) => { setErr(String(e)); setBusy(false); }); };
+  return (
+    <Card title="Updates">
+      <div className="col">
+        <div className="row wrap">
+          <button className="btn primary" disabled={busy} onClick={check}>{busy && !st?.available ? "Checking…" : "Check for updates"}</button>
+          {st?.available && <button className="btn" disabled={busy} onClick={install}>{busy ? "Updating… the app will reopen" : "Update now"}</button>}
+        </div>
+        {st && !st.published && <div className="small">No build has been published on your team's hub yet.</div>}
+        {st?.published && !st.available && <div className="small">You're up to date{st.commit ? ` (build ${st.commit})` : ""}.</div>}
+        {st?.available && <div className="small">A new build is ready{st.commit ? ` (${st.commit}` : ""}{st.built_at ? `, ${ago(st.built_at)})` : st.commit ? ")" : ""}. Update now closes the app, installs it and opens it again.</div>}
+        {err && <ErrBox error={err} />}
+        <div className="dim small">Updates come from your team's hub (Paper's PC) over Tailscale. The download is checked for damage, not signed: only update from a hub you trust.</div>
+      </div>
+    </Card>
+  );
+}
+
 export default function Settings() {
   const s = useAsync(() => api.settings(), []);
   const diag = useAsync(() => api.diagnostics(), [], ["projects-updated"]);
@@ -110,6 +134,7 @@ export default function Settings() {
             <div className="dim small">Agents you launch run in their own terminal windows and keep running if this app exits.</div>
           </div>
         </Card>
+        <Updates />
         <PhoneAccess />
         <Card title="Sources">
           <div className="col">

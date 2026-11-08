@@ -56,6 +56,7 @@ impl Hub {
 }
 
 const MAX_NAME: usize = 80;
+pub const INSTALLER: &str = "Papertrail Command Center setup.exe";
 
 fn name_arg(b: &Value, k: &str) -> Result<String, Reply> {
     let s = b[k].as_str().map(str::trim).unwrap_or("");
@@ -311,6 +312,8 @@ impl Hub {
         let Some(who) = authenticate(&c, auth) else { return fail(401, "unauthorized") };
         let r = match (method, seg) {
             ("GET", ["me"]) => self.me(&c, &who),
+            ("GET", ["app", "latest"]) => self.app_latest(),
+            ("GET", ["app", "installer"]) => self.app_installer(),
             ("GET", ["devices"]) => self.devices(&c, &who),
             ("POST", ["devices"]) => self.add_device(&c, &who, &b),
             ("POST", ["devices", "link"]) => self.device_link(&c, &who),
@@ -389,6 +392,23 @@ impl Hub {
         Ok(ok(json!({ "user_id": user, "workspace_id": ws, "role": role, "title": title, "device": device.map(|(id, token)| json!({ "id": id, "token": token })) })))
     }
 
+    /// `<data>/share`, next to the media folder: where the owner publishes the Command Center installer.
+    fn share_dir(&self) -> Option<std::path::PathBuf> {
+        Some(self.media.as_ref()?.parent()?.join("share"))
+    }
+
+    /// The published build (latest.json, written by scripts/publish-team-build.ps1). Signed-in devices only.
+    fn app_latest(&self) -> Res {
+        let s = std::fs::read(self.share_dir().ok_or_else(not_found)?.join("latest.json")).map_err(|_| not_found())?;
+        let v: Value = serde_json::from_slice(&s).map_err(|_| not_found())?;
+        Ok(ok(json!({ "exe_sha256": v["exe_sha256"], "installer_sha256": v["installer_sha256"], "commit": v["commit"], "built_at": v["built_at"], "size": v["size"] })))
+    }
+
+    fn app_installer(&self) -> Res {
+        let b = std::fs::read(self.share_dir().ok_or_else(not_found)?.join(INSTALLER)).map_err(|_| not_found())?;
+        Ok(Reply { code: 200, body: json!({}), raw: Some(b) })
+    }
+
     fn me(&self, c: &Connection, who: &Caller) -> Res {
         let name: String = db(c.query_row("SELECT name FROM users WHERE id = ?1", [&who.user], |r| r.get(0)))?;
         let mut st = db(c.prepare(
@@ -418,24 +438,33 @@ impl Hub {
         let id = new_id("l").map_err(internal)?;
         let token = random_hex(32).map_err(internal)?;
         let expires = (chrono::Utc::now() + chrono::Duration::minutes(15)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
-        db(c.execute("INSERT INTO device_links(id, token_hash, user_id, expires_at, created_at) VALUES(?1,?2,?3,?4,?5)", params![id, hash(&token), who.user, expires, now()]))?;
+        db(c.execute(
+            "INSERT INTO device_links(id, token_hash, user_id, expires_at, created_at, created_by_device) VALUES(?1,?2,?3,?4,?5,?6)",
+            params![id, hash(&token), who.user, expires, now(), who.device],
+        ))?;
         log(c, None, who, "device.link_created", Some(&id), json!({}))?;
         Ok(ok(json!({ "token": token, "expires_at": expires })))
     }
 
-    /// Redeems a device link: atomic and single use; expired, used and unknown links all fail the same way.
+    /// Redeems a device link: atomic and single use; expired, used and unknown links, and links whose making device
+    /// was revoked, all fail the same way. `"preview": true` only tells whose account it signs into (nothing is used up),
+    /// so a device can ask "sign in as Rich?" before switching anyone's account.
     fn claim_device(&self, c: &mut Connection, b: &Value) -> Res {
         let invalid = || bad("invalid_device_link");
         let tx = db(c.transaction())?;
-        let row: Option<(String, String)> = db(tx
+        let row: Option<(String, String, String)> = db(tx
             .query_row(
-                "SELECT l.id, l.user_id FROM device_links l JOIN users u ON u.id = l.user_id AND u.revoked = 0
+                "SELECT l.id, l.user_id, u.name FROM device_links l JOIN users u ON u.id = l.user_id AND u.revoked = 0
+                 JOIN devices d ON d.id = l.created_by_device AND d.revoked = 0
                  WHERE l.token_hash = ?1 AND l.used = 0 AND l.expires_at > ?2",
                 params![hash(b["token"].as_str().unwrap_or("")), now()],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional())?;
-        let (link, user) = row.ok_or_else(invalid)?;
+        let (link, user, name) = row.ok_or_else(invalid)?;
+        if b["preview"] == true {
+            return Ok(ok(json!({ "name": name })));
+        }
         if db(tx.execute("UPDATE device_links SET used = 1 WHERE id = ?1 AND used = 0", [&link]))? != 1 {
             return Err(invalid());
         }

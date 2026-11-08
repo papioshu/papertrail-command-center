@@ -153,10 +153,23 @@ function render() {
     ...(project ? (tab === "tasks" ? tasks() : media()) : [el("p", { className: "dim" }, "Nothing shared in this workspace yet.")]));
 }
 
-async function claimDevice(code) {
-  const r = await api("POST", "/v1/devices/claim", { token: code, device_name: /iPad/.test(navigator.userAgent) ? "iPad" : "iPhone" });
-  token = r.device.token; localStorage.setItem(KEY, token);
-  history.replaceState(null, "", "/");
+// Never switch accounts silently: show whose account the link is for, and refuse if this phone is already signed in.
+async function deviceScreen(code) {
+  const clear = () => history.replaceState(null, "", "/");
+  if (token) {
+    clear();
+    show(el("h1", {}, "ALREADY SIGNED IN"), el("p", { className: "dim" }, "This phone is already signed in. That device link wasn't used."), el("button", { on: { click: run(start) } }, "OK"));
+    return;
+  }
+  const who = await api("POST", "/v1/devices/claim", { token: code, preview: true });
+  show(el("h1", {}, "SIGN IN THIS DEVICE"), el("p", {}, `Sign this device in as ${who.name}?`),
+    el("p", { className: "dim" }, "Only continue if you made this link yourself on your other device."),
+    el("div", { className: "row" },
+      el("button", { className: "primary", on: { click: run(async () => {
+        const r = await api("POST", "/v1/devices/claim", { token: code, device_name: /iPad/.test(navigator.userAgent) ? "iPad" : "iPhone" });
+        token = r.device.token; localStorage.setItem(KEY, token); clear(); await start();
+      }) } }, `Yes, I'm ${who.name}`),
+      el("button", { on: { click: () => { clear(); start(); } } }, "Cancel")));
 }
 
 function addDevice() {
@@ -172,7 +185,7 @@ function addDevice() {
 
 async function start() {
   const dev = (location.hash.match(/^#dev-([0-9a-f]{64})$/) || [])[1];
-  if (dev) await claimDevice(dev);
+  if (dev) return deviceScreen(dev);
   const code = (location.hash.match(/^#([0-9a-f]{64})$/) || [])[1];
   if (code) return joinScreen(code);
   if (!token) return show(el("h1", {}, "PAPERTRAIL // TEAM"), el("p", { className: "dim" }, "Open the invite link Paper sent you on this phone (with Tailscale on) to join."));
