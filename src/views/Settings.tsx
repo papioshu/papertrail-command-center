@@ -2,6 +2,46 @@ import { useEffect, useState } from "react";
 import { api, type Row } from "../api";
 import { ago, Card, DataTable, ErrBox, useAsync } from "../ui";
 
+/** Phone access (D027): read-only, over Tailscale, one QR-paired key per phone. */
+function PhoneAccess() {
+  const st = useAsync(() => api.phoneStatus(), []);
+  const [name, setName] = useState("Galaxy Z Fold");
+  const [pair, setPair] = useState<{ url: string; qr_svg: string } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => { const t = setInterval(st.reload, 5000); return () => clearInterval(t); }, [st.reload]);
+  const d = st.data;
+  const run = (f: Promise<unknown>) => { setErr(null); f.then(() => setTimeout(st.reload, 400), (e) => setErr(String(e))); };
+  return (
+    <Card title="Phone access · read-only">
+      <div className="col">
+        <label className="row"><input type="checkbox" checked={!!d?.enabled} onChange={(e) => { if (!e.target.checked) setPair(null); run(api.phoneSetEnabled(e.target.checked)); }} /> Let paired phones open this dashboard over Tailscale</label>
+        {d?.enabled && !d.tailscale_ip && <div className="notice">Tailscale isn't signed in on this PC. Open Tailscale from the system tray and sign in. Install the Tailscale app on the phone and sign in with the same account.</div>}
+        {d?.enabled && d.tailscale_ip && <div className="small">Phone address: <span className="mono">{d.url}</span>{d.listening?.some((a: string) => a.startsWith(d.tailscale_ip)) ? <span className="chip ok" style={{ marginLeft: 8 }}>listening</span> : <span className="chip warn" style={{ marginLeft: 8 }}>starting</span>}</div>}
+        {d?.error && <ErrBox error={d.error} />}
+        <div className="row wrap">
+          <input className="input" value={name} onChange={(e) => setName(e.target.value)} aria-label="Phone name" />
+          <button className="btn primary" disabled={!d?.enabled || !d?.tailscale_ip} onClick={() => { setErr(null); api.phonePair(name).then((r) => { setPair(r); st.reload(); }, (e) => setErr(String(e))); }}>Pair a phone</button>
+        </div>
+        {pair && (
+          <div className="col" style={{ alignItems: "flex-start" }}>
+            <img src={`data:image/svg+xml;utf8,${encodeURIComponent(pair.qr_svg)}`} alt="Pairing QR code" style={{ width: 220, height: 220, borderRadius: 8 }} />
+            <div className="small">Scan with the phone's camera and open the link. The key is shown only now, so close this when done.</div>
+            <button className="btn sm" onClick={() => setPair(null)}>Done</button>
+          </div>
+        )}
+        {err && <ErrBox error={err} />}
+        {(d?.devices ?? []).map((x: Row) => (
+          <div key={x.id} className="row small">
+            <b>{x.name}</b><span className="dim">paired {ago(x.paired)} · {x.last_seen ? `last used ${ago(x.last_seen)}` : "not used since this app started"}</span>
+            <button className="btn sm danger" style={{ marginLeft: "auto" }} onClick={() => run(api.phoneRevoke(x.id))}>Revoke</button>
+          </div>
+        ))}
+        <div className="dim small">The phone can read everything here but can't change anything, launch agents or open files. Revoking cuts a phone off at once.</div>
+      </div>
+    </Card>
+  );
+}
+
 export default function Settings() {
   const s = useAsync(() => api.settings(), []);
   const diag = useAsync(() => api.diagnostics(), [], ["projects-updated"]);
@@ -70,6 +110,7 @@ export default function Settings() {
             <div className="dim small">Agents you launch run in their own terminal windows and keep running if this app exits.</div>
           </div>
         </Card>
+        <PhoneAccess />
         <Card title="Sources">
           <div className="col">
             {field("vault_path", "Book of Secrets vault")}

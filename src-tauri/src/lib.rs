@@ -1,13 +1,17 @@
 mod agents;
 mod alerts;
+mod chat;
 mod commands;
 mod continuity;
 mod db;
 mod discovery;
 mod gitscan;
+mod hub_client;
 mod indexer;
 mod launcher;
+mod phone;
 mod registry;
+pub mod standby;
 mod team;
 mod util;
 
@@ -99,6 +103,10 @@ pub fn run() {
             db::set_setting(&conn, "task_snapshot", &Value::Object(now_snap))?;
             db::set_setting(&conn, "last_seen", &json!(util::now_iso()))?;
             let close_to_tray = registry::Config::load(&conn).close_to_tray;
+            standby::hold_app_lock(&data_dir);
+            if db::setting(&conn, "phone_enabled").and_then(|v| v.as_bool()) == Some(true) {
+                standby::register(true); // so a paired phone can start the dashboard once it's closed (D029)
+            }
             let worker = indexer::spawn(app.handle().clone(), db_path.clone());
             worker.send(indexer::Job::Refresh); // cached data shows first; this refreshes behind it
             indexer::spawn_watcher(db_path.clone(), worker.clone());
@@ -111,6 +119,10 @@ pub fn run() {
                 close_to_tray: Mutex::new(close_to_tray),
                 user: Mutex::new(None),
             });
+            app.manage(phone::spawn(app.handle().clone()));
+            // Workspace hub (M3): just a struct until the user joins; the sync thread starts only if joined.
+            app.manage(hub_client::HubState::new(&app.path().app_data_dir()?));
+            hub_client::start(app.handle());
 
             let open = MenuItem::with_id(app, "open", "Open Command Center", true, None::<&str>)?;
             let refresh = MenuItem::with_id(app, "refresh", "Refresh index", true, None::<&str>)?;
@@ -170,6 +182,11 @@ pub fn run() {
             commands::get_activity,
             commands::get_timeline,
             commands::get_sessions,
+            commands::chat_page,
+            commands::chat_tail,
+            commands::chat_entry,
+            commands::chat_list,
+            commands::chat_projects,
             commands::get_session_files,
             commands::get_graph,
             commands::search,
@@ -203,6 +220,29 @@ pub fn run() {
             commands::team_logout,
             commands::actions_list,
             commands::action_op,
+            phone::phone_status,
+            phone::phone_set_enabled,
+            phone::phone_pair,
+            phone::phone_revoke,
+            hub_client::hub_status,
+            hub_client::hub_join,
+            hub_client::hub_leave,
+            hub_client::hub_sync_now,
+            hub_client::hub_board,
+            hub_client::hub_edit,
+            hub_client::hub_resolve,
+            hub_client::hub_invite,
+            hub_client::hub_new_project,
+            hub_client::hub_admin,
+            hub_client::hub_link_preview,
+            hub_client::hub_link,
+            hub_client::hub_upload,
+            hub_client::hub_file,
+            hub_client::hub_snapshot_preview,
+            hub_client::hub_snapshot_publish,
+            hub_client::hub_host_status,
+            hub_client::hub_open_share_folder,
+            hub_client::hub_host_create_workspace,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

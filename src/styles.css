@@ -354,3 +354,129 @@ pre.doc { margin: 0; white-space: pre-wrap; word-break: break-word; font-family:
   .login-panel::before, .login-in, .login-tile, .shake { animation: none !important; }
 }
 .login .avatar { border-radius: 50%; }
+
+/* CHAT */
+.chat-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+.chat-card { display: flex; flex-direction: column; gap: 6px; min-width: 0; text-align: left; font: inherit; color: inherit; cursor: pointer; padding: 14px 16px; background: rgba(22, 16, 43, 0.8); border: 1px solid var(--line); border-left: 3px solid var(--glow); border-radius: 0.9rem; }
+.chat-card:hover:not(:disabled) { border-color: var(--glow); box-shadow: 0 8px 30px -12px var(--glow); }
+.chat-card.live { box-shadow: 0 0 0 1px var(--violet) inset; }
+.chat-card:disabled { cursor: default; opacity: 0.65; }
+.chat-list { gap: 6px; }
+.chat-row { text-align: left; background: rgba(13, 9, 26, 0.72); border: 1px solid var(--line); border-radius: 0.6rem; padding: 10px 14px; color: inherit; cursor: pointer; font: inherit; }
+.chat-row:hover { border-color: var(--line-2); }
+.chat-row.live { border-color: var(--violet); box-shadow: 0 0 0 1px var(--violet) inset; }
+.chat-log { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 10px; padding: 6px 4px 20px; }
+.chat-block { max-width: 920px; line-height: 1.5; }
+.chat-you { align-self: flex-end; white-space: pre-wrap; background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 0.8rem 0.8rem 0.2rem 0.8rem; padding: 10px 14px; max-width: 760px; overflow-wrap: anywhere; }
+.chat-agent { align-self: flex-start; padding: 2px 4px; overflow-wrap: anywhere; }
+.chat-p { margin: 0 0 8px; white-space: pre-wrap; }
+.chat-h { font-weight: 600; margin: 10px 0 6px; } .chat-h.h1 { font-size: 17px; } .chat-h.h2 { font-size: 15px; }
+.chat-li { padding-left: 10px; white-space: pre-wrap; }
+.chat-agent code, .chat-li code, .chat-p code { font-family: var(--font-mono); font-size: 12px; background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+.chat-tools, .chat-reason { align-self: stretch; border: 1px solid var(--line); border-radius: 0.6rem; padding: 6px 12px; background: rgba(13, 9, 26, 0.5); }
+.chat-tools > summary, .chat-reason > summary { cursor: pointer; color: var(--muted); }
+.chat-step { border-top: 1px solid var(--line); padding: 8px 0; display: flex; flex-direction: column; gap: 4px; }
+.chat-pre { font-family: var(--font-mono); font-size: 11.5px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; padding: 8px 10px; background: rgba(0, 0, 0, 0.35); border-radius: 6px; max-height: 420px; overflow: auto; }
+.chat-pre.err { border-left: 3px solid #ff4d6d; } .chat-pre.del { border-left: 3px solid #ff4d6d; } .chat-pre.add { border-left: 3px solid var(--lime); }
+.chat-system { align-self: stretch; white-space: pre-wrap; color: var(--dim); font-size: 11.5px; font-family: var(--font-mono); max-height: 240px; overflow: auto; }
+.chat-img { max-width: 100%; border-radius: 6px; border: 1px solid var(--line); }
+
+/* ---------- phone (D027) ----------
+   Galaxy Z Fold: cover screen ~412 px wide (tall, one column) and inner screen ~840 x 750 px (near square,
+   small-tablet layout; ~750 px wide when rotated). Shared rules first, then one block per screen. */
+.chat-view { height: calc(100vh - 190px); }
+body.phone .desk-only { display: none !important; }
+@media (max-width: 900px) {
+  .shell { height: 100dvh; grid-template-rows: auto 1fr auto; grid-template-columns: minmax(0, 1fr); }
+  .wordmark .tag, .ptbadge, .topbar .spacer { display: none; }
+  .sysstat { min-width: 0; margin-left: auto; padding-left: 10px; }
+  .sysstat .v { font-size: 10px; letter-spacing: 0.1em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .topbar .search .card { width: auto !important; left: 0; right: 0; }
+  .bottombar { padding: 0 0 env(safe-area-inset-bottom); gap: 0; }
+  .bottombar > :not(.bnav) { display: none; }
+  .bnav { margin: 0; width: 100%; overflow-x: auto; scrollbar-width: none; }
+  .bnav .br { display: none; }
+  .bnav button { padding: 15px 12px; flex: 0 0 auto; }
+  .hero h1, .page-head h1 { overflow-wrap: anywhere; }
+  .board { overflow-x: auto; }
+  .sect { margin: 26px 0 12px; }
+  .grid, .split { gap: 16px; }
+  .deck { gap: 14px; padding: 10px 2px 16px; }
+  .tickets { grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); }
+  .tabs { margin-bottom: 14px; scrollbar-width: none; }
+  .tabs button { padding: 13px 12px; }
+  .table-wrap table.t { min-width: 640px; }
+  .modal { width: 96vw; max-height: 92dvh; }
+  .chat-cards { grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr)); }
+  .chat-block { max-width: 100%; }
+  /* Long paths and ids break instead of running off the screen. */
+  .mono { overflow-wrap: anywhere; }
+  .card-head { flex-wrap: wrap; }
+  .card-head .right { flex-wrap: wrap; }
+  /* Task board: swipe between status columns instead of squeezing all five. */
+  .taskcols { grid-template-columns: none !important; grid-auto-flow: column; grid-auto-columns: minmax(250px, 1fr); overflow-x: auto; scroll-snap-type: x mandatory; padding-bottom: 6px; }
+  .taskcols > * { scroll-snap-align: start; }
+}
+
+/* Cover screen: one column, compact. */
+@media (max-width: 600px) {
+  .topbar { flex-wrap: wrap; gap: 8px 12px; padding: 8px 12px; }
+  .wordmark .name { font-size: 12px; letter-spacing: 0.2em; }
+  .topbar .search { order: 9; flex: 1 0 100%; }
+  .topbar .search .input { width: 100% !important; }
+  .main { padding: 14px 12px 32px; }
+  .home { grid-template-columns: minmax(0, 1fr) !important; height: auto; min-height: 0; gap: 16px; }
+  .home .board { display: grid; grid-template-columns: 1fr 1fr; }
+  .home .board > div { border-right: 0 !important; }
+  .home .board > div:nth-child(odd) { border-right: 1px solid var(--line) !important; }
+  .sphere { height: 340px; min-height: 0; }
+  .hero { grid-template-columns: 1fr; gap: 14px; }
+  .hero h1 { font-size: 22px; letter-spacing: 0.12em; }
+  .board > div { min-width: 92px; padding: 10px 14px; }
+  .board .v { font-size: 24px; }
+  .page-head { margin-bottom: 14px; }
+  .page-head h1 { font-size: 21px; letter-spacing: 0.14em; }
+  .page-head .right { margin-left: 0; width: 100%; }
+  .page-head .right .input { flex: 1; }
+  .g2, .g3, .g4 { grid-template-columns: 1fr; }
+  .span2, .span3 { grid-column: auto; }
+  .acard { flex-basis: 150px; }
+  .pass { grid-template-columns: 1fr !important; }
+  .pass .stub { display: none; }
+  .pass .line { grid-template-columns: 78px 1fr; gap: 10px; }
+  .pass .ptitle { font-size: 18px; }
+  .ticket { grid-template-columns: 1fr 48px; }
+  .card-head, .card-body { padding-left: 14px; padding-right: 14px; }
+  .hbar { grid-template-columns: 96px 1fr 40px; }
+  .frow { grid-template-columns: 16px minmax(90px, 1.2fr) minmax(50px, 1fr) 44px; }
+  .frow > :nth-child(n + 5) { display: none; }
+  .wshero { flex-direction: column; gap: 16px; padding: 14px; }
+  .wshero .acard { height: 220px; width: 160px; flex: none; }
+  .wsname { font-size: 22px; letter-spacing: 0.14em; }
+  .chat-row .row { flex-wrap: wrap; }
+  .chat-row .row > .mono { margin-left: 0 !important; }
+  .chat-view { height: calc(100dvh - 210px); }
+  .chat-you { max-width: 92%; }
+  .taskcols { grid-auto-columns: 82vw; }
+}
+
+/* Inner screen: small tablet. One-row header, two columns where it helps. */
+@media (min-width: 601px) and (max-width: 900px) {
+  .topbar { gap: 14px; padding: 10px 18px; }
+  .wordmark .name { font-size: 13px; letter-spacing: 0.26em; }
+  .topbar .search { flex: 1; min-width: 0; }
+  .topbar .search .input { width: 100% !important; }
+  .main { padding: 18px 20px 36px; }
+  .home { grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr) !important; height: auto; min-height: 0; gap: 18px; }
+  .home > :last-child { grid-column: 1 / -1; }
+  .sphere { min-height: 400px; }
+  .hero h1 { font-size: 28px; letter-spacing: 0.16em; }
+  .board > div { min-width: 100px; padding: 10px 16px; }
+  .page-head h1 { font-size: 26px; letter-spacing: 0.2em; }
+  .g3, .g4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pass .stub { padding: 12px 8px; }
+  .wshero .acard { height: 240px; }
+  .chat-view { height: calc(100dvh - 175px); }
+  .chat-you { max-width: 80%; }
+}
+.reconnect { position: fixed; left: 50%; top: calc(8px + env(safe-area-inset-top)); transform: translateX(-50%); z-index: 90; max-width: calc(100vw - 24px); padding: 8px 14px; border-radius: 999px; background: rgba(13, 9, 26, 0.94); border: 1px solid var(--gold); color: var(--fg); font-size: 12px; box-shadow: 0 8px 30px -10px rgba(0, 0, 0, 0.8); }

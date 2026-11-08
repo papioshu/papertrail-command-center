@@ -1,0 +1,23 @@
+[package]
+name = "ptcc-hub"
+version = "0.1.0"
+edition = "2021"
+description = "Optional self-hosted workspace hub for the Command Center (D030, docs/workspaces/ARCHITECTURE.md). Never bundled into the desktop installer."
+publish = false
+
+[lib]
+name = "ptcc_hub"
+
+[[bin]]
+name = "ptcc-hub"
+path = "src/main.rs"
+
+# Same crates and versions the desktop app already builds (no new dependencies).
+[dependencies]
+ptcc-access = { path = "../crates/access" }
+rusqlite = { version = "0.37", features = ["bundled"] }
+tiny_http = "0.12"
+sha2 = "0.10"
+getrandom = "0.2"
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
