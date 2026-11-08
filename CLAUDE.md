@@ -9,3 +9,4 @@ Startup: read `AGENTS.md` (ownership), then the vault continuity set in
 - After Rust changes: `cd src-tauri; cargo test --lib`. Real-data check: `cargo test --lib real_index -- --ignored --nocapture`.
 - After UI changes: `npx tsc --noEmit && npx vite build`. Release: `npm run tauri build`.
 - Machine RAM is often near full; builds and tests can be slow. Rerun before assuming a code fault.
+- Branches: `main` = last verified build (what's installed); `testing` = where work happens (worktree C:\Projectwork\ptcc-chat). Verify on `testing`, then merge into `main` and push both to origin (github.com/papioshu/papertrail-command-center, private).
