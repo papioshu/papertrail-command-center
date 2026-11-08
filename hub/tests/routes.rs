@@ -390,6 +390,10 @@ fn only_the_owner_puts_people_in_or_takes_them_out() {
     assert_eq!(fx.call("DELETE", &format!("/v1/workspaces/{ws2}/members/{viewer}"), Some("owner"), json!({})).code, 200);
     assert_eq!(fx.call("GET", &format!("/v1/workspaces/{ws2}"), Some("viewer"), json!({})).code, 404);
     assert_eq!(fx.call("GET", &format!("/v1/workspaces/{ws}"), Some("viewer"), json!({})).code, 200);
+    // Denying workspace.read (to a member or through a role) would lock someone out without removing them: refused.
+    assert_eq!(fx.call("PATCH", &format!("/v1/workspaces/{ws}/members/{viewer}"), Some("admin"), json!({ "deny": ["workspace.read"] })).code, 400);
+    assert_eq!(fx.call("POST", &format!("/v1/workspaces/{ws}/roles"), Some("admin"), json!({ "name": "Ghost", "base": "viewer", "deny": ["workspace.read"] })).code, 400);
+    assert_eq!(fx.call("GET", &format!("/v1/workspaces/{ws}"), Some("viewer"), json!({})).code, 200);
     // And can add them back later.
     assert_eq!(add("owner", json!({ "user_id": viewer, "role": "viewer" })), 200);
 }

@@ -198,6 +198,10 @@ fn perms_arg(v: &Value, grant: bool) -> Result<String, Reply> {
         if grant && !p.grantable() {
             return Err(bad("that permission comes only from the role and can't be granted"));
         }
+        // Denying workspace.read is removal in disguise; removal is the owner's call alone (D037).
+        if !grant && p == Perm::WorkspaceRead {
+            return Err(bad("to take someone out of the workspace, the owner removes them"));
+        }
         set.insert(p.name());
     }
     Ok(json!(set).to_string())
