@@ -333,7 +333,7 @@ function Thumb({ ws, r }: { ws: string; r: Row }) {
           : <a className="btn sm" href={src.data} download={name}>Download</a>}
       </div>
       <div className="small" style={{ marginTop: 6, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={name}>{name}</div>
-      <div className="dim small">{r.fields?.caption ? `${r.fields.caption} · ` : ""}{fmtBytes(Number(r.fields?.size ?? 0))} · {ago(r.updated_at)}</div>
+      <div className="dim small">{r.fields?.folder ? `${r.fields.folder} · ` : ""}{r.fields?.caption ? `${r.fields.caption} · ` : ""}{fmtBytes(Number(r.fields?.size ?? 0))} · {ago(r.updated_at)}</div>
     </div>
   );
 }
@@ -342,13 +342,15 @@ function Media({ ws, b, project, onErr, reload }: { ws: string; b: Row; project:
   const items: Row[] = (b.records ?? []).filter((r: Row) => r.kind === "media" && (!project || r.project_id === project));
   const [busy, setBusy] = useState(false);
   const [caption, setCaption] = useState("");
+  const [folder, setFolder] = useState("");
   const target = project || b.projects?.[0]?.id || "";
+  const folders = [...new Set(items.map((r) => r.fields?.folder).filter(Boolean))] as string[];
   const upload = (file: File | undefined) => {
     if (!file || !target) return;
     if (file.size > 25 * 1024 * 1024) return onErr("Files can be at most 25 MB.");
     setBusy(true);
     const rd = new FileReader();
-    rd.onload = () => api.hubUpload(ws, target, file.name, caption, String(rd.result)).then(() => { setCaption(""); reload(); }, (e) => onErr(String(e))).finally(() => setBusy(false));
+    rd.onload = () => api.hubUpload(ws, target, file.name, caption, folder, String(rd.result)).then(() => { setCaption(""); reload(); }, (e) => onErr(String(e))).finally(() => setBusy(false));
     rd.onerror = () => { setBusy(false); onErr("Couldn't read that file."); };
     rd.readAsDataURL(file);
   };
@@ -356,6 +358,8 @@ function Media({ ws, b, project, onErr, reload }: { ws: string; b: Row; project:
     <div className="col" style={{ gap: 12 }}>
       {can(b.role, "contributor") && target && (
         <div className="row wrap" style={{ gap: 8, alignItems: "center" }}>
+          <input className="input" list="media-folders" placeholder="Folder (e.g. Renders)" value={folder} onChange={(e) => setFolder(e.target.value)} aria-label="Folder" />
+          <datalist id="media-folders">{folders.map((f) => <option key={f} value={f} />)}</datalist>
           <input className="input" placeholder="Caption (optional)" value={caption} onChange={(e) => setCaption(e.target.value)} aria-label="Caption" />
           <label className="btn sm primary" style={{ cursor: busy ? "wait" : "pointer" }}>{busy ? "Uploading…" : `Upload to ${b.projects?.find((p: Row) => p.id === target)?.name ?? "project"}`}
             <input type="file" hidden disabled={busy} onChange={(e) => upload(e.target.files?.[0])} /></label>
@@ -778,6 +782,7 @@ export default function Team() {
   const [err, setErr] = useState<string | null>(null);
   const [leaving, setLeaving] = useState(false);
   const [guide, setGuide] = useState<boolean | null>(null);
+  const [device, setDevice] = useState<Row | null>(null);
   const s = status.data;
   const list: Row[] = s?.workspaces ?? [];
   const owns = list.some((w) => w.role === "owner");
@@ -795,6 +800,7 @@ export default function Team() {
               <span className="small"><span className={`dot ${s.online === false ? "busy" : ""}`} /> {s.online === false ? "Hub offline · showing last sync" : s.online ? "Hub online" : "Connecting…"}</span>
               {host.data && !host.data.tailscale && <span className="small" style={{ color: "var(--gold)" }} title="Teammates reach the hub over Tailscale">Tailscale off: only this PC can reach the hub</span>}
               <button className="btn sm" onClick={() => api.hubSyncNow()}>Sync now</button>
+              <button className="btn sm" onClick={() => api.hubDeviceLink().then(setDevice, (e) => setErr(String(e)))} title="Sign your phone, tablet or another PC in as you">Add another device</button>
               {leaving
                 ? <button className="btn sm danger" onClick={() => api.hubLeave().then(() => { setLeaving(false); status.reload(); }, (e) => setErr(String(e)))}>Confirm: leave the hub on this PC</button>
                 : <button className="btn sm ghost" onClick={() => setLeaving(true)}>Leave</button>}
@@ -815,7 +821,22 @@ export default function Team() {
         </div>
       )}
       {s?.joined && !s.revoked && !current && owns && <People onErr={setErr} />}
+      {s?.joined && !s.revoked && !current && (
+        <label className="row small" style={{ gap: 8 }} title="Copies into 66 MEDIA ARCHIVE/<project>/WORKING/<folder>; never overwrites or deletes; images, video, audio and PDFs only">
+          <input type="checkbox" checked={!!s.vault_media} onChange={(e) => api.hubSetVaultMedia(e.target.checked).then(status.reload, (er) => setErr(String(er)))} />
+          Save team media into my Book of Secrets (66 MEDIA ARCHIVE › project › WORKING › folder)
+        </label>
+      )}
       {s?.joined && !s.revoked && !current && <JoinMore me={s.name ?? ""} onDone={status.reload} onErr={setErr} />}
+      {device && (
+        <Modal title="Add another device" onClose={() => setDevice(null)} foot={<button className="btn primary" onClick={() => setDevice(null)}>Done</button>}>
+          <div className="col" style={{ gap: 10, alignItems: "center" }}>
+            <div className="small">Scan with your iPhone or iPad camera, or open the link on another PC (TEAM › paste it). Works once, for 15 minutes. Tailscale must be on there too.</div>
+            <img alt="QR code for the device link" style={{ width: 220, height: 220, background: "#fff", padding: 8, borderRadius: 8 }} src={`data:image/svg+xml;utf8,${encodeURIComponent(device.qr_svg)}`} />
+            <input className="input mono" readOnly value={device.link} onFocus={(e) => e.target.select()} style={{ width: "100%" }} aria-label="Device link" />
+          </div>
+        </Modal>
+      )}
       {current && s && <WorkspacePage key={current.id} w={current} me={s.user_id ?? ""} onBack={() => setOpen(null)} onErr={setErr} />}
     </div>
   );

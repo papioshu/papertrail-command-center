@@ -280,7 +280,7 @@ fn call(app: &AppHandle, cmd: &str, a: &Value) -> R<Value> {
     }
 }
 
-fn qr_svg(text: &str) -> R<String> {
+pub(crate) fn qr_svg(text: &str) -> R<String> {
     let q = qrcodegen::QrCode::encode_text(text, qrcodegen::QrCodeEcc::Medium).map_err(|e| format!("{e:?}"))?;
     let (n, border) = (q.size(), 4);
     let mut d = String::new();

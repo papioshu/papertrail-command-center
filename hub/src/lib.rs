@@ -34,7 +34,34 @@ fn respond(req: tiny_http::Request, r: api::Reply) {
     let _ = req.respond(resp);
 }
 
+/// The phone board (D040): two static files, same API and rules as the desktop app. No inline script (strict CSP).
+fn static_file(url: &str) -> Option<(&'static [u8], &'static str)> {
+    match url.split(['?', '#']).next().unwrap_or("") {
+        "/" | "/index.html" => Some((include_bytes!("phone.html"), "text/html; charset=utf-8")),
+        "/app.js" => Some((include_bytes!("phone.js"), "text/javascript; charset=utf-8")),
+        _ => None,
+    }
+}
+
 fn serve_one(hub: &api::Hub, mut req: tiny_http::Request) {
+    if *req.method() == tiny_http::Method::Get {
+        if let Some((body, kind)) = static_file(req.url()) {
+            let mut resp = tiny_http::Response::from_data(body.to_vec());
+            for (k, v) in [
+                ("Content-Type", kind),
+                ("Content-Security-Policy", "default-src 'self'; img-src 'self' blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"),
+                ("X-Content-Type-Options", "nosniff"),
+                ("Referrer-Policy", "no-referrer"),
+                ("Cache-Control", "no-cache"),
+            ] {
+                if let Ok(h) = tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()) {
+                    resp.add_header(h);
+                }
+            }
+            let _ = req.respond(resp);
+            return;
+        }
+    }
     let max = if *req.method() == tiny_http::Method::Put && req.url().contains("/blobs/") { sync::MAX_BLOB } else { MAX_BODY };
     let mut body = Vec::new();
     if req.as_reader().take(max as u64 + 1).read_to_end(&mut body).is_err() || body.len() > max {

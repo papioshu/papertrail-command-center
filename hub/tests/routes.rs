@@ -305,6 +305,12 @@ fn real_http_round_trip() {
         out
     };
     assert!(get("/v1/health", "").starts_with("HTTP/1.1 200"));
+    // The phone board is served with a strict CSP and no inline script.
+    let page = get("/", "");
+    assert!(page.starts_with("HTTP/1.1 200") && page.contains("text/html") && page.contains("Content-Security-Policy") && page.contains("<script src=\"/app.js\">"), "{page}");
+    assert!(!page.contains("<script>"), "no inline script");
+    assert!(get("/app.js?v=1", "").contains("text/javascript"));
+    assert!(get("/nope", "").starts_with("HTTP/1.1 404"));
     let r = get("/v1/me", "Authorization: Bearer d_x.y\r\n");
     assert!(r.starts_with("HTTP/1.1 401") && r.contains("application/json") && r.contains("no-store"), "{r}");
     server.unblock();
@@ -396,4 +402,28 @@ fn only_the_owner_puts_people_in_or_takes_them_out() {
     assert_eq!(fx.call("GET", &format!("/v1/workspaces/{ws}"), Some("viewer"), json!({})).code, 200);
     // And can add them back later.
     assert_eq!(add("owner", json!({ "user_id": viewer, "role": "viewer" })), 200);
+}
+
+#[test]
+fn a_device_link_signs_in_another_device_as_the_same_person_once() {
+    let fx = fixture();
+    let link = fx.call("POST", "/v1/devices/link", Some("editor"), json!({}));
+    assert_eq!(link.code, 200);
+    let token = link.body["token"].as_str().unwrap().to_string();
+    let claim = |t: &str| fx.hub.handle("POST", "/v1/devices/claim", None, json!({ "token": t, "device_name": "iPad" }).to_string().as_bytes());
+    let r = claim(&token);
+    assert_eq!((r.code, r.body["user_id"].as_str()), (200, Some(fx.user("editor"))), "same account");
+    let ipad = format!("Bearer {}", r.body["device"]["token"].as_str().unwrap());
+    let me = fx.hub.handle("GET", "/v1/me", Some(&ipad), b"");
+    assert_eq!(me.body["workspaces"][0]["role"], "editor", "same workspaces and role");
+    // Single use; unknown and expired links fail the same way; anonymous callers can't make links.
+    let again = claim(&token);
+    assert_eq!((again.code, &again.body), (400, &claim("00").body));
+    let l2 = fx.call("POST", "/v1/devices/link", Some("editor"), json!({}));
+    fx.hub.db.lock().unwrap().execute("UPDATE device_links SET expires_at = '2000-01-01T00:00:00Z'", []).unwrap();
+    assert_eq!(claim(l2.body["token"].as_str().unwrap()).code, 400);
+    assert_eq!(fx.hub.handle("POST", "/v1/devices/link", None, b"").code, 401);
+    // Revoking the person revokes every device, the new one included.
+    ptcc_hub::api::revoke_user(&fx.hub.db.lock().unwrap(), fx.user("editor")).unwrap();
+    assert_eq!(fx.hub.handle("GET", "/v1/me", Some(&ipad), b"").code, 401);
 }

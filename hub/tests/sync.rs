@@ -362,6 +362,12 @@ fn media_upload_record_and_download_are_checked() {
     };
     assert_eq!(put("contributor", &fx.p1, &store::hash_bytes(b"other"), &png), 400, "hash mismatch");
     assert_eq!(put("contributor", &fx.p1, "NOTAHASH", &png), 400);
+    // Phones upload with "auto" and get the fingerprint back.
+    let auth = format!("Bearer {}", fx.token("contributor"));
+    let auto = fx.hub.handle("PUT", &format!("/v1/workspaces/{}/projects/{}/blobs/auto", fx.ws, fx.p1), Some(&auth), b"from a phone");
+    assert_eq!((auto.code, auto.body["sha256"].as_str()), (200, Some(store::hash_bytes(b"from a phone").as_str())));
+    let auth_v = format!("Bearer {}", fx.token("viewer"));
+    assert_eq!(fx.hub.handle("PUT", &format!("/v1/workspaces/{}/projects/{}/blobs/auto", fx.ws, fx.p1), Some(&auth_v), b"x").code, 403);
     assert_eq!(put("viewer", &fx.p1, &sha, &png), 403);
     let mut c = Client::new(&fx, "contributor");
     let early = c.create("media", &fx.p1, json!({ "sha256": store::hash_bytes(b"never uploaded"), "name": "x.png" }));
@@ -423,7 +429,7 @@ fn migrating_a_v1_hub_backs_it_up_first() {
     {
         let c = store::open(Some(&data)).unwrap();
         ptcc_hub::api::new_workspace(&c, "Old").unwrap();
-        c.execute_batch("DROP TABLE records; DROP TABLE applied_ops; DROP TABLE blobs; DROP TABLE roles; ALTER TABLE memberships DROP COLUMN title; ALTER TABLE invitations DROP COLUMN title; PRAGMA user_version = 1;").unwrap();
+        c.execute_batch("DROP TABLE records; DROP TABLE applied_ops; DROP TABLE blobs; DROP TABLE roles; DROP TABLE device_links; ALTER TABLE memberships DROP COLUMN title; ALTER TABLE invitations DROP COLUMN title; PRAGMA user_version = 1;").unwrap();
     }
     let c = store::open(Some(&data)).unwrap();
     assert_eq!(c.query_row("SELECT COUNT(*) FROM records", [], |r| r.get::<_, i64>(0)).unwrap(), 0);

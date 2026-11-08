@@ -90,6 +90,7 @@ fn validate(c: &Connection, ws: &str, project: &str, kind: &str, f: &Map<String,
             ("media", "sha256") => create && v.as_str().is_some_and(sha_ok),
             ("media", "name") => text(v, 1, 200),
             ("media", "caption") => text(v, 0, 1000),
+            ("media", "folder") => text(v, 0, 80),
             // Snapshot (D035): the file list + map live in the uploaded JSON; the record carries only counts.
             ("snapshot", "sha256") => create && v.as_str().is_some_and(sha_ok),
             ("snapshot", "files" | "dirs") => v.as_i64().is_some_and(|n| (0..=1_000_000).contains(&n)),
@@ -333,6 +334,14 @@ impl Hub {
             return Err(not_found());
         }
         let dir = self.media.as_ref().ok_or_else(|| fail(503, "media_off"))?;
+        // "auto": the hub fingerprints the upload itself (phones on plain http have no crypto.subtle).
+        let computed;
+        let sha = if sha == "auto" {
+            computed = hash_bytes(body);
+            computed.as_str()
+        } else {
+            sha
+        };
         if !sha_ok(sha) {
             return Err(bad("blob name must be a lowercase sha256"));
         }

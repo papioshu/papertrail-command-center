@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Paper Team">
+<meta name="theme-color" content="#0b0714">
+<title>PAPERTRAIL // TEAM</title>
+<style>
+  :root { --bg:#0b0714; --card:#171026; --line:#2c2142; --fg:#ece7f7; --dim:#9a90b4; --violet:#8b5cf6; --soft:#b8a4e3; --gold:#d8b04a; --lime:#aef044; --red:#ff6b6b; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.45 -apple-system, system-ui, sans-serif; padding: env(safe-area-inset-top) 12px calc(env(safe-area-inset-bottom) + 16px); }
+  header { display:flex; align-items:center; gap:8px; padding:12px 0; border-bottom:1px solid var(--line); margin-bottom:10px; }
+  header b { letter-spacing:.18em; font-size:12px; }
+  select, input, button { font:inherit; color:var(--fg); background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 12px; }
+  button { background:#241837; font-weight:600; }
+  button.primary { background:var(--violet); border-color:var(--violet); }
+  button.small { padding:6px 10px; font-size:13px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .grow { flex:1; min-width:0; }
+  .tabs button.on { border-color:var(--soft); color:var(--soft); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:10px 12px; margin:8px 0; }
+  .sec { margin-top:14px; font-size:12px; letter-spacing:.14em; text-transform:uppercase; border-bottom:2px solid; padding-bottom:4px; display:flex; justify-content:space-between; }
+  .dim { color:var(--dim); font-size:13px; }
+  .err { background:#3a1220; border:1px solid var(--red); border-radius:10px; padding:10px; margin:8px 0; }
+  .grid { display:grid; grid-template-columns:repeat(2, 1fr); gap:8px; }
+  .grid img, .grid video { width:100%; height:140px; object-fit:cover; border-radius:8px; background:#000; display:block; }
+  h1 { font-size:18px; letter-spacing:.2em; font-weight:500; }
+</style>
+</head>
+<body>
+<header><b>PAPERTRAIL // TEAM</b><span class="grow"></span><span id="who" class="dim"></span></header>
+<div id="msg"></div>
+<main id="app"><p class="dim">Loading…</p></main>
+<script src="/app.js"></script>
+</body>
+</html>

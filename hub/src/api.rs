@@ -301,6 +301,7 @@ impl Hub {
         let seg = &seg[1..];
         match (method, seg) {
             ("GET", ["health"]) => return ok(json!({ "ok": true })),
+            ("POST", ["devices", "claim"]) => return self.claim_device(&mut c, &b).unwrap_or_else(|r| r),
             ("POST", ["redeem"]) => {
                 let who = authenticate(&c, auth);
                 return self.redeem(&mut c, who, &b).unwrap_or_else(|r| r);
@@ -312,6 +313,7 @@ impl Hub {
             ("GET", ["me"]) => self.me(&c, &who),
             ("GET", ["devices"]) => self.devices(&c, &who),
             ("POST", ["devices"]) => self.add_device(&c, &who, &b),
+            ("POST", ["devices", "link"]) => self.device_link(&c, &who),
             ("DELETE", ["devices", id]) => self.revoke_device(&c, &who, id),
             ("GET", ["workspaces", ws]) => self.workspace(&c, &who, ws),
             ("PATCH", ["workspaces", ws]) => self.rename_workspace(&c, &who, ws, &b),
@@ -409,6 +411,39 @@ impl Hub {
             })
             .and_then(Iterator::collect))?;
         Ok(ok(json!({ "devices": list })))
+    }
+
+    /// A one-time link (15 minutes) that signs another of the caller's devices into the same account.
+    fn device_link(&self, c: &Connection, who: &Caller) -> Res {
+        let id = new_id("l").map_err(internal)?;
+        let token = random_hex(32).map_err(internal)?;
+        let expires = (chrono::Utc::now() + chrono::Duration::minutes(15)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        db(c.execute("INSERT INTO device_links(id, token_hash, user_id, expires_at, created_at) VALUES(?1,?2,?3,?4,?5)", params![id, hash(&token), who.user, expires, now()]))?;
+        log(c, None, who, "device.link_created", Some(&id), json!({}))?;
+        Ok(ok(json!({ "token": token, "expires_at": expires })))
+    }
+
+    /// Redeems a device link: atomic and single use; expired, used and unknown links all fail the same way.
+    fn claim_device(&self, c: &mut Connection, b: &Value) -> Res {
+        let invalid = || bad("invalid_device_link");
+        let tx = db(c.transaction())?;
+        let row: Option<(String, String)> = db(tx
+            .query_row(
+                "SELECT l.id, l.user_id FROM device_links l JOIN users u ON u.id = l.user_id AND u.revoked = 0
+                 WHERE l.token_hash = ?1 AND l.used = 0 AND l.expires_at > ?2",
+                params![hash(b["token"].as_str().unwrap_or("")), now()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional())?;
+        let (link, user) = row.ok_or_else(invalid)?;
+        if db(tx.execute("UPDATE device_links SET used = 1 WHERE id = ?1 AND used = 0", [&link]))? != 1 {
+            return Err(invalid());
+        }
+        let dev_name: String = b["device_name"].as_str().map(str::trim).filter(|s| !s.is_empty()).unwrap_or("device").chars().take(MAX_NAME).collect();
+        let (id, token) = new_device(&tx, &user, &dev_name).map_err(internal)?;
+        audit(&tx, None, Some((&user, &id)), "device.created", Some(&id), json!({ "via": "device_link" })).map_err(internal)?;
+        db(tx.commit())?;
+        Ok(ok(json!({ "user_id": user, "device": { "id": id, "token": token } })))
     }
 
     fn add_device(&self, c: &Connection, who: &Caller, b: &Value) -> Res {

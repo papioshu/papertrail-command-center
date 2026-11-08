@@ -61,6 +61,10 @@ ALTER TABLE memberships ADD COLUMN title TEXT;
 ALTER TABLE invitations ADD COLUMN title TEXT;
 INSERT OR IGNORE INTO roles(workspace_id, name, base, grants, created_at) SELECT id, 'Ops', 'editor', '["project.link"]', strftime('%Y-%m-%dT%H:%M:%SZ','now') FROM workspaces;
 INSERT OR IGNORE INTO roles(workspace_id, name, base, grants, created_at) SELECT id, 'Artist', 'contributor', '[]', strftime('%Y-%m-%dT%H:%M:%SZ','now') FROM workspaces;
+"#, r#"
+-- One-time links that sign another device into the SAME account (D041). Hashed, 15 minutes, single use.
+CREATE TABLE device_links(id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, user_id TEXT NOT NULL REFERENCES users(id),
+  expires_at TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
 "#];
 
 pub fn now() -> String {

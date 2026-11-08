@@ -140,6 +140,7 @@ export const api = {
   hubStatus: () => call<Row>("hub_status"),
   hubJoin: (link: string, name: string) => call<Row>("hub_join", { link, name }),
   hubLeave: () => call<void>("hub_leave"),
+  hubDeviceLink: () => call<Row>("hub_device_link"),
   hubSyncNow: () => call<void>("hub_sync_now"),
   hubBoard: (workspace: string) => call<Row>("hub_board", { workspace }),
   hubEdit: (workspace: string, action: "create" | "update" | "delete", kind: "task" | "milestone", projectId: string, fields: Row | null, recordId?: string) =>
@@ -151,7 +152,8 @@ export const api = {
   hubAdmin: (workspace: string, action: string, body?: Row) => call<Row>("hub_admin", { workspace, action, body }),
   hubLinkPreview: (project: string) => call<Row>("hub_link_preview", { project }),
   hubLink: (project: string, workspace: string, doImport: boolean) => call<Row>("hub_link", { project, workspace, import: doImport }),
-  hubUpload: (workspace: string, projectId: string, name: string, caption: string, data: string) => call<string>("hub_upload", { workspace, projectId, name, caption, data }),
+  hubUpload: (workspace: string, projectId: string, name: string, caption: string, folder: string, data: string) => call<string>("hub_upload", { workspace, projectId, name, caption, folder, data }),
+  hubSetVaultMedia: (on: boolean) => call<void>("hub_set_vault_media", { on }),
   /** Media: pass the file name, get a data: URL. Snapshot: no name, get its JSON. */
   hubFile: (workspace: string, recordId: string, name?: string) => call<unknown>("hub_file", { workspace, recordId, name }),
   hubSnapshotPreview: (project: string) => call<Row>("hub_snapshot_preview", { project }),

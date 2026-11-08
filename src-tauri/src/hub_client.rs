@@ -134,8 +134,14 @@ pub fn check_url(url: &str) -> R<String> {
 }
 
 /// An invite link is `<hub url>#<token>` (the token stays in the fragment, out of logs).
+/// Also accepts a device link (`#dev-<token>`, D041); the token comes back with its `dev-` prefix.
 pub fn parse_invite(link: &str) -> R<(String, String)> {
     let (url, token) = link.trim().split_once('#').ok_or("That isn't an invite link (expected http://…#code).")?;
+    if let Some(t) = token.strip_prefix("dev-") {
+        if t.len() == 64 && t.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Ok((check_url(url)?, token.to_string()));
+        }
+    }
     if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("The invite code in that link is incomplete.".into());
     }
@@ -268,8 +274,11 @@ impl Client {
         } else {
             self.save_config(&json!({ "url": url, "workspaces": [], "links": {} }))?;
         }
-        let body = json!({ "token": token, "name": name.trim(), "device_name": device_name });
-        let r = match self.call("POST", "/v1/redeem", Some(&body)) {
+        let (path, body) = match token.strip_prefix("dev-") {
+            Some(t) => ("/v1/devices/claim", json!({ "token": t, "device_name": device_name })),
+            None => ("/v1/redeem", json!({ "token": token, "name": name.trim(), "device_name": device_name })),
+        };
+        let r = match self.call("POST", path, Some(&body)) {
             Net::Reply(200, v) => v,
             other => {
                 if existing.is_none() {
@@ -278,6 +287,7 @@ impl Client {
                 return Err(match other {
                     Net::Reply(409, _) => "You're already in that workspace.".into(),
                     Net::Reply(_, v) if v["error"] == "invalid_invitation" => "That invite has expired, was already used, or was cancelled. Ask for a new one.".into(),
+                    Net::Reply(_, v) if v["error"] == "invalid_device_link" => "That device link has expired or was already used. Make a new one on your other device.".into(),
                     Net::Reply(code, v) => format!("The hub refused ({code}: {})", v["error"].as_str().unwrap_or("error")),
                     Net::Down(d) => format!("Can't reach the hub ({d})."),
                 });
@@ -291,6 +301,22 @@ impl Client {
         self.save_config(&cfg)?;
         self.refresh_me()?;
         Ok(json!({ "workspace_id": r["workspace_id"], "role": r["role"] }))
+    }
+
+    /// The address to put in links for other devices: the Tailscale one, but only once the hub answers there
+    /// (it picks the address up within a minute of Tailscale signing in); otherwise the address we use.
+    fn share_url(&self, url: &str) -> String {
+        let ts = shareable(url, crate::phone::tailscale_ip().as_deref());
+        let up = ts != url && ureq::AgentBuilder::new().timeout(Duration::from_secs(2)).build().get(&format!("{ts}/v1/health")).call().is_ok();
+        if up { ts } else { url.to_string() }
+    }
+
+    /// A one-time link (and QR) that signs another of this person's devices in (D041).
+    pub fn device_link(&self) -> R<Value> {
+        let v = self.need("POST", "/v1/devices/link", None)?;
+        let url = self.config().and_then(|c| c["url"].as_str().map(String::from)).unwrap_or_default();
+        let link = format!("{}#dev-{}", self.share_url(&url), v["token"].as_str().unwrap_or(""));
+        Ok(json!({ "link": link, "qr_svg": crate::phone::qr_svg(&link)?, "expires_at": v["expires_at"] }))
     }
 
     /// Updates the workspace list from the hub; any workspace that vanished was revoked and is purged.
@@ -611,7 +637,7 @@ impl Client {
         let body = if builtin { json!({ "role": role, "projects": projects }) } else { json!({ "title": role, "projects": projects }) };
         let v = self.need("POST", &format!("/v1/workspaces/{ws}/invitations"), Some(&body))?;
         let url = self.config().and_then(|c| c["url"].as_str().map(String::from)).unwrap_or_default();
-        Ok(format!("{}#{}", shareable(&url, crate::phone::tailscale_ip().as_deref()), v["token"].as_str().unwrap_or("")))
+        Ok(format!("{}#{}", self.share_url(&url), v["token"].as_str().unwrap_or("")))
     }
 
     /// Role and member administration (D036). Only these fixed calls; the hub checks every one.
@@ -889,6 +915,96 @@ impl Client {
     }
 }
 
+/* ---------- team media → this PC's Book of Secrets (D039) ---------- */
+
+/// Media types copied into the vault. Anything else (programs, scripts, shortcuts) stays on the hub only.
+const VAULT_EXT: [&str; 17] = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "tif", "tiff", "mp4", "webm", "mov", "mp3", "wav", "ogg", "m4a", "pdf"];
+
+/// One safe path segment from a teammate-supplied name: no separators, reserved characters, dot tricks or
+/// Windows device names, so a name can never pick where a file lands.
+pub fn safe_segment(s: &str, fallback: &str) -> String {
+    let mut out: String = s.chars().map(|c| if c.is_control() || "<>:\"/\\|?*".contains(c) { '_' } else { c }).collect();
+    out = out.trim().trim_matches(|c| c == '.' || c == ' ').chars().take(80).collect::<String>().trim_end_matches(['.', ' ']).to_string();
+    if out.is_empty() || out.chars().all(|c| c == '_') {
+        return fallback.to_string();
+    }
+    let stem = out.split('.').next().unwrap_or("").to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL") || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.as_bytes()[3].is_ascii_digit());
+    if reserved { format!("_{out}") } else { out }
+}
+
+impl Client {
+    pub fn vault_media_on(&self) -> bool {
+        self.config().is_some_and(|c| c["vault_media"] == true)
+    }
+
+    pub fn set_vault_media(&self, on: bool) -> R<()> {
+        let mut cfg = self.config().ok_or("Join a hub first.")?;
+        cfg["vault_media"] = json!(on);
+        self.save_config(&cfg)
+    }
+
+    /// Copies new team media into `<vault>/66 MEDIA ARCHIVE/<project>/WORKING/<folder>/<file>`. Never overwrites
+    /// (a different file with the same name gets " (2)"), never deletes, skips non-media types. `names` maps a hub
+    /// project id to the local project's name when it is shared from this PC. Returns how many files were copied.
+    pub fn mirror_media(&self, vault: &Path, names: &std::collections::HashMap<String, String>) -> R<usize> {
+        let root = vault.join("66 MEDIA ARCHIVE");
+        if !vault.is_dir() {
+            return Err("The Book of Secrets folder isn't available.".into());
+        }
+        let mut copied = 0;
+        for ws in self.workspaces() {
+            let c = self.open_ws(&ws)?;
+            let mut done: std::collections::BTreeSet<String> = meta(&c, "vault_done").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+            let hub_names: std::collections::HashMap<String, String> = meta(&c, "projects")
+                .and_then(|v| serde_json::from_value::<Vec<Value>>(v).ok())
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|p| Some((p["id"].as_str()?.to_string(), p["name"].as_str()?.to_string())))
+                .collect();
+            let list: Vec<(String, String, String)> = {
+                let mut st = c.prepare("SELECT id, project_id, fields FROM records WHERE kind = 'media' AND deleted = 0 AND version > 0").map_err(e)?;
+                let v = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(e)?.filter_map(|r| r.ok()).collect();
+                v
+            };
+            for (id, project, fields) in list {
+                if done.contains(&id) {
+                    continue;
+                }
+                let f = obj(&fields);
+                let name = safe_segment(f.get("name").and_then(Value::as_str).unwrap_or(""), "file");
+                let ext = name.rsplit_once('.').map(|(_, x)| x.to_ascii_lowercase()).unwrap_or_default();
+                if !VAULT_EXT.contains(&ext.as_str()) {
+                    done.insert(id); // not a media type: stays on the hub only
+                    continue;
+                }
+                let pname = names.get(&project).or_else(|| hub_names.get(&project)).map_or("Team", String::as_str);
+                let folder = safe_segment(f.get("folder").and_then(Value::as_str).unwrap_or(""), "Team uploads");
+                let dir = root.join(safe_segment(pname, "Team")).join("WORKING").join(folder);
+                let Ok(bytes) = self.file(&ws, &id) else { continue }; // offline: try again next sync
+                std::fs::create_dir_all(&dir).map_err(e)?;
+                let (stem, dot) = name.rsplit_once('.').map_or((name.as_str(), String::new()), |(s, x)| (s, format!(".{x}")));
+                let mut n = 1;
+                loop {
+                    let target = if n == 1 { dir.join(&name) } else { dir.join(format!("{stem} ({n}){dot}")) };
+                    match std::fs::read(&target) {
+                        Ok(existing) if sha256_hex(&existing) == sha256_hex(&bytes) => break, // already there
+                        Ok(_) => n += 1,
+                        Err(_) => {
+                            write_atomic(&target, &bytes)?;
+                            copied += 1;
+                            break;
+                        }
+                    }
+                }
+                done.insert(id);
+            }
+            set_meta(&c, "vault_done", &json!(done))?;
+        }
+        Ok(copied)
+    }
+}
+
 /// The hub installed on this PC (D035): `%LOCALAPPDATA%\ptcc-hub\ptcc-hub.exe`, its data in the same folder.
 pub fn local_hub_exe() -> Option<PathBuf> {
     let p = PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("ptcc-hub").join("ptcc-hub.exe");
@@ -936,6 +1052,11 @@ pub fn start(app: &tauri::AppHandle) {
                 return;
             }
             let result = st.client.sync_all();
+            if result.is_ok() && st.client.vault_media_on() {
+                if let Err(err) = mirror_from_app(&app, &st.client) {
+                    crate::util::log("warn", format!("team media to vault: {err}"));
+                }
+            }
             {
                 let mut s = st.status.lock().unwrap_or_else(|p| p.into_inner());
                 match &result {
@@ -974,6 +1095,22 @@ pub fn start(app: &tauri::AppHandle) {
     });
 }
 
+/// Vault path and local project names come from the app's own settings and index.
+fn mirror_from_app(app: &tauri::AppHandle, client: &Client) -> R<usize> {
+    use tauri::Manager;
+    let (vault, local): (Option<PathBuf>, std::collections::HashMap<String, String>) = {
+        let st = app.state::<crate::AppState>();
+        let c = st.db.lock().map_err(|_| "database lock poisoned")?;
+        let vault = crate::db::setting(&c, "vault_path").and_then(|v| v.as_str().map(PathBuf::from));
+        let mut q = c.prepare("SELECT id, name FROM projects").map_err(e)?;
+        let local = q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(e)?.filter_map(|r| r.ok()).collect();
+        (vault, local)
+    };
+    let links = client.config().map(|c| c["links"].clone()).unwrap_or_default();
+    let names = links.as_object().into_iter().flatten().filter_map(|(lid, l)| Some((l["project"].as_str()?.to_string(), local.get(lid)?.clone()))).collect();
+    client.mirror_media(&vault.ok_or("No Book of Secrets folder is set in Settings.")?, &names)
+}
+
 fn getrandom_u8() -> u8 {
     let mut b = [0u8; 1];
     let _ = getrandom::getrandom(&mut b);
@@ -989,13 +1126,13 @@ use tauri::{AppHandle, State};
 pub fn hub_status(h: State<HubState>) -> R<Value> {
     let Some(cfg) = h.client.config() else { return Ok(json!({ "joined": false })) };
     let s = h.status.lock().unwrap_or_else(|p| p.into_inner());
-    Ok(json!({ "joined": true, "url": cfg["url"], "name": cfg["name"], "user_id": cfg["user_id"], "revoked": cfg["revoked"] == true, "workspaces": cfg["workspaces"],
+    Ok(json!({ "joined": true, "url": cfg["url"], "name": cfg["name"], "user_id": cfg["user_id"], "vault_media": cfg["vault_media"] == true, "revoked": cfg["revoked"] == true, "workspaces": cfg["workspaces"],
                "links": cfg["links"], "online": s.online, "last_sync": s.last_sync, "last_error": s.last_error }))
 }
 
 #[tauri::command(async)]
 pub fn hub_join(app: AppHandle, h: State<HubState>, link: String, name: String) -> R<Value> {
-    if name.trim().is_empty() {
+    if name.trim().is_empty() && !link.contains("#dev-") {
         return Err("Enter the name your team will see.".into());
     }
     let device = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "PC".into());
@@ -1006,10 +1143,23 @@ pub fn hub_join(app: AppHandle, h: State<HubState>, link: String, name: String) 
 }
 
 #[tauri::command(async)]
+pub fn hub_device_link(h: State<HubState>) -> R<Value> {
+    h.client.device_link()
+}
+
+#[tauri::command(async)]
 pub fn hub_leave(h: State<HubState>) -> R<()> {
     let r = h.client.leave();
     h.wake(); // the thread sees no config and exits
     r
+}
+
+/// D039: copy team media into this PC's Book of Secrets as it syncs (off until the user turns it on).
+#[tauri::command(async)]
+pub fn hub_set_vault_media(h: State<HubState>, on: bool) -> R<()> {
+    h.client.set_vault_media(on)?;
+    h.wake();
+    Ok(())
 }
 
 #[tauri::command(async)]
@@ -1088,9 +1238,12 @@ fn mime(name: &str) -> &'static str {
 }
 
 #[tauri::command(async)]
-pub fn hub_upload(h: State<HubState>, workspace: String, project_id: String, name: String, caption: Option<String>, data: String) -> R<String> {
+pub fn hub_upload(h: State<HubState>, workspace: String, project_id: String, name: String, caption: Option<String>, folder: Option<String>, data: String) -> R<String> {
     let bytes = b64_decode(&data)?;
     let mut f = json!({ "name": name.chars().take(200).collect::<String>() });
+    if let Some(d) = folder.map(|d| d.trim().to_string()).filter(|d| !d.is_empty()) {
+        f["folder"] = json!(d.chars().take(80).collect::<String>());
+    }
     if let Some(c) = caption.filter(|c| !c.trim().is_empty()) {
         f["caption"] = json!(c.chars().take(1000).collect::<String>());
     }
@@ -1583,6 +1736,84 @@ mod tests {
         assert_eq!(b.workspaces(), std::slice::from_ref(&ws2), "out of the first, still in the second");
         for d in [ad, bd] {
             let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn safe_segments_cant_pick_the_path() {
+        assert_eq!(safe_segment("../../evil.png", "x"), "_.._evil.png");
+        assert_eq!(safe_segment("..", "x"), "x");
+        assert_eq!(safe_segment(r"C:\Windows\a.png", "x"), "C__Windows_a.png");
+        assert_eq!(safe_segment("CON.png", "x"), "_CON.png");
+        assert_eq!(safe_segment("com1", "x"), "_com1");
+        assert_eq!(safe_segment("  cover art.png. ", "x"), "cover art.png");
+        assert_eq!(safe_segment("", "Team uploads"), "Team uploads");
+        assert!(safe_segment(&"a".repeat(300), "x").len() <= 80);
+    }
+
+    #[test]
+    fn team_media_lands_in_the_vault_archive_safely() {
+        let h = hub();
+        let (ws, link) = owner_invite(&h);
+        let (ad, bd, vault) = (tmp("a"), tmp("b"), tmp("vault"));
+        let a = Client::new(&ad);
+        a.join(&link, "Paper", "PC").unwrap();
+        let p = a.new_project(&ws, "site").unwrap()["id"].as_str().unwrap().to_string();
+        let p2 = a.new_project(&ws, "merch drop").unwrap()["id"].as_str().unwrap().to_string();
+        let b = Client::new(&bd);
+        b.join(&a.invite(&ws, "Artist", None).unwrap(), "Rich", "Laptop").unwrap();
+        // Rich uploads: a render into a folder, a sneaky path, a program, and a same-name different file.
+        b.publish_file(&ws, &p, "media", b"render-1", json!({ "name": "cover.png", "folder": "Renders" })).unwrap();
+        b.publish_file(&ws, &p, "media", b"render-2", json!({ "name": "cover.png", "folder": "Renders" })).unwrap();
+        b.publish_file(&ws, &p2, "media", b"tee", json!({ "name": "..\\..\\tee.png", "folder": "../../.." })).unwrap();
+        b.publish_file(&ws, &p, "media", b"MZ", json!({ "name": "setup.exe" })).unwrap();
+        b.sync_all().unwrap();
+        a.sync_all().unwrap();
+        // "site" is shared from this PC as the local project BOMBSQUAD.
+        let names = std::collections::HashMap::from([(p.clone(), "BOMBSQUAD".to_string())]);
+        assert_eq!(a.mirror_media(&vault, &names).unwrap(), 3);
+        let arch = vault.join("66 MEDIA ARCHIVE");
+        assert_eq!(std::fs::read(arch.join("BOMBSQUAD/WORKING/Renders/cover.png")).unwrap(), b"render-1");
+        assert_eq!(std::fs::read(arch.join("BOMBSQUAD/WORKING/Renders/cover (2).png")).unwrap(), b"render-2");
+        // "..\..\tee.png" in folder "../../.." stays inside the project's WORKING folder, cleaned.
+        assert_eq!(std::fs::read(arch.join("merch drop/WORKING/_.._/_.._tee.png")).unwrap(), b"tee");
+        assert!(walk(&vault).iter().all(|f| f.starts_with(&arch)), "nothing escapes the archive");
+        assert!(!walk(&vault).iter().any(|f| f.to_string_lossy().ends_with(".exe")), "programs stay on the hub");
+        // Nothing is copied twice or overwritten; a file removed on the hub stays in the vault.
+        std::fs::write(arch.join("BOMBSQUAD/WORKING/Renders/cover.png"), b"edited by Paper").unwrap();
+        assert_eq!(a.mirror_media(&vault, &names).unwrap(), 0);
+        assert_eq!(std::fs::read(arch.join("BOMBSQUAD/WORKING/Renders/cover.png")).unwrap(), b"edited by Paper");
+        for d in [ad, bd, vault] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    fn walk(d: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for e in std::fs::read_dir(d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() { out.extend(walk(&p)) } else { out.push(p) }
+        }
+        out
+    }
+
+    #[test]
+    fn a_second_device_joins_as_the_same_person() {
+        let h = hub();
+        let (ws, link) = owner_invite(&h);
+        let (pc, laptop) = (tmp("pc"), tmp("laptop"));
+        let a = Client::new(&pc);
+        a.join(&link, "Rich", "PC").unwrap();
+        let d = a.device_link().unwrap();
+        assert!(d["qr_svg"].as_str().unwrap().starts_with("<svg"));
+        let b = Client::new(&laptop);
+        b.join(d["link"].as_str().unwrap(), "", "Laptop").unwrap();
+        assert_eq!(b.config().unwrap()["user_id"], a.config().unwrap()["user_id"]);
+        assert_eq!(b.workspaces(), std::slice::from_ref(&ws));
+        assert!(Client::new(&tmp("third")).join(d["link"].as_str().unwrap(), "", "x").unwrap_err().contains("already used"));
+        assert!(parse_invite(&format!("http://127.0.0.1:1#dev-{}", "a".repeat(63))).is_err());
+        for dir in [pc, laptop] {
+            let _ = std::fs::remove_dir_all(dir);
         }
     }
 
