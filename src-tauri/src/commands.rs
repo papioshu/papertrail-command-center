@@ -617,10 +617,10 @@ pub fn create_chat(app: &tauri::AppHandle, url: &str, width: u32) -> R<tauri::We
 /// Injected into every Discord page: chat only (server + channel sidebar hidden; prefix matches survive Discord's
 /// class-hash changes), the dashboard's violet palette (styles.css :root), and on the DMs home just the DM list
 /// (no Friends page, no Nitro/Shop/Quests). The data attribute follows Discord's in-page navigation.
-const CHAT_CSS: &str = r#"(()=>{const f=()=>document.documentElement.toggleAttribute("data-ptcc-dms",location.pathname==="/channels/@me");
+const CHAT_CSS: &str = r#"(()=>{const f=()=>document.documentElement?.toggleAttribute("data-ptcc-dms",location.pathname==="/channels/@me");
 for(const k of["pushState","replaceState"]){const o=history[k];history[k]=function(...a){const r=o.apply(this,a);f();return r}}
 addEventListener("popstate",f);f();
-addEventListener("DOMContentLoaded",()=>{const s=document.createElement("style");s.textContent=`
+addEventListener("DOMContentLoaded",()=>{f();const s=document.createElement("style");s.textContent=`
 [class^="content_"]>[class^="sidebar_"]{display:none!important}
 .theme-dark,.theme-darker{--background-base-lowest:#07050f!important;--background-base-lower:#0b0814!important;--background-base-low:#110c20!important;--background-surface-high:#16102b!important;--background-surface-higher:#1d1638!important;--background-surface-highest:#2c2350!important;--chat-background:#16102b!important;--chat-background-default:#16102b!important;--background-secondary-alt:#110c20!important;--bg-surface-raised:#1d1638!important;--chat-border:#2c2350!important;--background-brand:#8b5cf6!important;--background-accent:#3a2f68!important}
 html[data-ptcc-dms] [class^="content_"]>[class^="sidebar_"]{display:flex!important;flex-direction:column!important;width:100%!important;max-width:none!important;flex:1 1 auto!important}
