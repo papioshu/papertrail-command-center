@@ -256,6 +256,9 @@ pub enum Publishable {
     Media,
     /// A linked project's file list + map, sent only after the owner approves a preview (D035). Never file contents.
     Snapshot,
+    /// A creative board in a workspace project and its canvas elements (D044).
+    Board,
+    BoardElement,
 }
 
 /// Unknown kinds are private. Sessions, transcripts, credentials, settings, paths, launches, discoveries,
@@ -271,6 +274,8 @@ pub fn publishable(kind: &str) -> Option<Publishable> {
         "approved_doc" => Publishable::ApprovedDoc,
         "media" => Publishable::Media,
         "snapshot" => Publishable::Snapshot,
+        "board" => Publishable::Board,
+        "board_el" => Publishable::BoardElement,
         _ => return None,
     })
 }

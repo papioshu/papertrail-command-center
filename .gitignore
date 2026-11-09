@@ -5,3 +5,5 @@ src-tauri/gen/
 *.log
 hub/target/
 crates/*/target/
+public/excalidraw-assets/
+target-hub/

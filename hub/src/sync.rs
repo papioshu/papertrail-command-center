@@ -10,7 +10,9 @@ use serde_json::{json, Map, Value};
 
 pub const MAX_BLOB: usize = 25 * 1024 * 1024;
 /// Must stay a subset of `ptcc_access::publishable` (checked in `op`).
-const KINDS: [&str; 4] = ["task", "milestone", "media", "snapshot"];
+const KINDS: [&str; 6] = ["task", "milestone", "media", "snapshot", "board", "board_el"];
+/// One canvas element (D044) is about this size at most: a long freehand stroke or a big text block.
+const BOARD_EL_MAX: usize = 256 * 1024;
 /// Kinds whose content is an uploaded file named by `sha256`.
 const FILE_KINDS: [&str; 2] = ["media", "snapshot"];
 const FEED_MAX: i64 = 500;
@@ -95,6 +97,14 @@ fn validate(c: &Connection, ws: &str, project: &str, kind: &str, f: &Map<String,
             ("snapshot", "sha256") => create && v.as_str().is_some_and(sha_ok),
             ("snapshot", "files" | "dirs") => v.as_i64().is_some_and(|n| (0..=1_000_000).contains(&n)),
             ("snapshot", "note") => text(v, 0, 500),
+            // Boards (D044): a board names its background; each canvas element is its own record holding the
+            // element's JSON, in a board of the same project.
+            ("board", "bg") => matches!(v.as_str(), Some("grid" | "blackboard")),
+            ("board_el", "board") => {
+                create
+                    && v.as_str().is_some_and(|b| load(c, b).ok().flatten().is_some_and(|r| r.kind == "board" && r.ws == ws && r.project == project && !r.deleted))
+            }
+            ("board_el", "data") => v.as_str().is_some_and(|d| d.len() <= BOARD_EL_MAX && serde_json::from_str::<Value>(d).is_ok_and(|j| j.is_object())),
             _ => return Err(bad(&format!("field {k} is not allowed on a {kind}"))),
         };
         if !good {
@@ -104,6 +114,7 @@ fn validate(c: &Connection, ws: &str, project: &str, kind: &str, f: &Map<String,
     let required: &[&str] = match (kind, create) {
         ("media", true) => &["sha256", "name"],
         ("snapshot", true) => &["sha256", "files", "dirs"],
+        ("board_el", true) => &["board", "data"],
         (_, true) => &["title"],
         _ => &[],
     };
@@ -129,10 +140,12 @@ impl Hub {
         match (kind, created_by) {
             ("milestone", _) => ck(Perm::MilestoneEdit, proj, "milestone.edit")?,
             ("snapshot", _) => ck(Perm::DocPublish, proj, "doc.publish")?,
+            // Anyone who may add media to the project draws on its boards, on anyone's elements: a shared canvas.
+            ("board_el", _) => ck(Perm::MediaUpload, proj, "board.draw")?,
             ("task", None) => ck(Perm::TaskCreate, proj, "task.create")?,
             (_, None) => ck(Perm::MediaUpload, proj, "media.upload")?,
             (_, Some(by)) => {
-                if kind == "media" {
+                if kind == "media" || kind == "board" {
                     ck(Perm::MediaUpload, proj, "media.upload")?;
                 }
                 self.allow(c, who, ws, can_edit_item(m, ws, project, by), "task.edit")?;
@@ -224,8 +237,10 @@ impl Hub {
                     validate(c, ws, &row.project, kind, f, false)?;
                     // A field clashes when another device changed it after the version this edit started from. Ops
                     // queued on one device are sent in order, so a device never conflicts with its own earlier edits.
+                    // Canvas elements are last-writer-wins: two people moving one shape is not worth a conflict screen.
                     let clash: Vec<&String> = f
                         .keys()
+                        .filter(|_| kind != "board_el")
                         .filter(|k| row.fv.get(*k).is_some_and(|e| e[0].as_i64().unwrap_or(0) > base && e[1].as_str() != Some(&who.device)))
                         .collect();
                     if !clash.is_empty() {
@@ -303,7 +318,7 @@ impl Hub {
             kinds.extend(["task", "milestone"]);
         }
         if m.has(Perm::ProjectRead) && m.has(Perm::MediaRead) {
-            kinds.push("media");
+            kinds.extend(["media", "board", "board_el"]);
         }
         if m.has(Perm::ProjectRead) && m.has(Perm::DocRead) {
             kinds.push("snapshot");

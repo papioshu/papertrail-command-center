@@ -5,12 +5,13 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "dev": "node scripts/excalidraw-fonts.mjs && vite",
+    "build": "node scripts/excalidraw-fonts.mjs && tsc --noEmit && vite build",
     "tauri": "tauri",
     "test": "vitest run"
   },
   "dependencies": {
+    "@excalidraw/excalidraw": "^0.18.1",
     "@tauri-apps/api": "^2",
     "react": "^19",
     "react-dom": "^19"

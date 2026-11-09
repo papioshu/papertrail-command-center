@@ -511,3 +511,38 @@ fn snapshots_need_doc_publish_and_are_read_with_doc_read() {
     let feed = fx.call("GET", &format!("/v1/workspaces/{}/changes", fx.ws), Some("viewer"), json!({}));
     assert!(!feed.body.to_string().contains(&id2));
 }
+
+#[test]
+fn boards_share_elements_last_writer_wins_and_only_contributors_draw() {
+    let fx = fixture();
+    let mut a = Client::new(&fx, "editor");
+    let mut b = Client::new(&fx, "contributor");
+    let mut v = Client::new(&fx, "viewer");
+    let board = a.create("board", &fx.p1, json!({ "title": "Moodboard", "bg": "grid" }));
+    a.sync();
+    let el = b.create("board_el", &fx.p1, json!({ "board": board, "data": "{\"id\":\"x\",\"version\":1}" }));
+    b.sync();
+    a.sync();
+    assert_eq!(a.field(&el, "board"), json!(board), "the editor sees the contributor's element");
+    // Both move the same shape: no conflict, the later write wins.
+    a.queue("update", "board_el", &el, &fx.p1, json!({ "data": "{\"id\":\"x\",\"version\":2}" }));
+    b.queue("update", "board_el", &el, &fx.p1, json!({ "data": "{\"id\":\"x\",\"version\":3}" }));
+    a.sync();
+    b.sync();
+    a.sync();
+    assert!(a.conflicts.is_empty() && b.conflicts.is_empty());
+    assert_eq!(a.field(&el, "data"), json!("{\"id\":\"x\",\"version\":3}"));
+    // A viewer reads the board but can't draw on it.
+    v.sync();
+    assert_eq!(v.field(&el, "board"), json!(board));
+    let n = v.rejected.len();
+    v.queue("update", "board_el", &el, &fx.p1, json!({ "data": "{}" }));
+    v.sync();
+    assert_eq!(v.rejected.len(), n + 1, "viewer edit refused");
+    // Elements must be JSON objects and belong to a board of the same project.
+    let n = a.rejected.len();
+    a.create("board_el", &fx.p1, json!({ "board": board, "data": "not json" }));
+    a.create("board_el", &fx.p2, json!({ "board": board, "data": "{}" }));
+    a.sync();
+    assert_eq!(a.rejected.len(), n + 2);
+}

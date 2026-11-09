@@ -34,7 +34,7 @@ pub struct AppState {
 }
 
 /// WebView2 memory target: Low while hidden in the tray, Normal when shown.
-fn memory_target(w: &tauri::WebviewWindow, low: bool) {
+fn memory_target(w: &tauri::Webview, low: bool) {
     #[cfg(windows)]
     let _ = w.with_webview(move |wv| unsafe {
         use webview2_com::Microsoft::Web::WebView2::Win32::*;
@@ -50,17 +50,20 @@ fn memory_target(w: &tauri::WebviewWindow, low: bool) {
 
 /// Tell WebView2 whether the page is on screen. Invisible = document hidden + rendering stopped
 /// (a minimized window otherwise still reports itself visible and focused).
-fn webview_visible(w: &tauri::WebviewWindow, visible: bool) {
+fn webview_visible(w: &tauri::Webview, visible: bool) {
     #[cfg(windows)]
     let _ = w.with_webview(move |wv| unsafe {
         let _ = wv.controller().SetIsVisible(visible);
     });
 }
 
+// The main window holds two webviews once the chat sidebar exists (D043), and Tauri then no longer treats it as a
+// "webview window": get_webview_window("main") returns None. So: window calls on the window, webview calls on the
+// "main" webview.
 fn show_main(app: &AppHandle) {
-    if let Some(w) = app.get_webview_window("main") {
-        memory_target(&w, false);
-        webview_visible(&w, true);
+    if let (Some(w), Some(wv)) = (app.get_window("main"), app.get_webview("main")) {
+        memory_target(&wv, false);
+        webview_visible(&wv, true);
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
@@ -161,10 +164,10 @@ pub fn run() {
                 match ev {
                     WindowEvent::Resized(_) => {
                         commands::layout_chat(w.app_handle());
-                        if let Some(ww) = w.app_handle().get_webview_window("main") {
-                            let minimized = ww.is_minimized().unwrap_or(false);
-                            webview_visible(&ww, !minimized);
-                            let _ = ww.emit("window-minimized", minimized);
+                        if let Some(wv) = w.app_handle().get_webview("main") {
+                            let minimized = w.is_minimized().unwrap_or(false);
+                            webview_visible(&wv, !minimized);
+                            let _ = w.app_handle().emit("window-minimized", minimized);
                         }
                     }
                     _ => {}
@@ -179,9 +182,9 @@ pub fn run() {
                 if to_tray {
                     api.prevent_close();
                     let _ = w.hide();
-                    if let Some(ww) = w.app_handle().get_webview_window("main") {
-                        memory_target(&ww, true);
-                        webview_visible(&ww, false);
+                    if let Some(wv) = w.app_handle().get_webview("main") {
+                        memory_target(&wv, true);
+                        webview_visible(&wv, false);
                     }
                 }
             }
@@ -247,6 +250,8 @@ pub fn run() {
             hub_client::hub_set_vault_media,
             hub_client::hub_board,
             hub_client::hub_edit,
+            hub_client::hub_board_els,
+            hub_client::hub_live,
             hub_client::hub_resolve,
             hub_client::hub_invite,
             hub_client::hub_new_project,

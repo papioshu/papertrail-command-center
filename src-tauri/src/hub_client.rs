@@ -421,7 +421,7 @@ impl Client {
     /* ----- local edits: cache + outbox in one transaction (§7.2) ----- */
 
     pub fn edit(&self, ws: &str, action: &str, kind: &str, record_id: Option<&str>, project: &str, fields: &Value) -> R<String> {
-        if !matches!(action, "create" | "update" | "delete") || !matches!(kind, "task" | "milestone" | "media" | "snapshot") {
+        if !matches!(action, "create" | "update" | "delete") || !matches!(kind, "task" | "milestone" | "media" | "snapshot" | "board" | "board_el") {
             return Err("unsupported edit".into());
         }
         let mut c = self.open_ws(ws)?;
@@ -611,13 +611,23 @@ impl Client {
             "members": meta(&c, "members").unwrap_or(json!([])),
             "records": rows("SELECT r.id, r.kind, r.project_id, r.version, r.fields, r.created_by, r.updated_by, r.updated_at,
                               (SELECT count(*) FROM outbox o WHERE o.record_id = r.id) pending
-                              FROM records r WHERE r.deleted = 0 ORDER BY r.kind, r.updated_at DESC")?,
+                              FROM records r WHERE r.deleted = 0 AND r.kind != 'board_el' ORDER BY r.kind, r.updated_at DESC")?,
             "conflicts": rows("SELECT id, record_id, kind, mine, theirs, reason, at FROM conflicts ORDER BY id")?,
             "pending": c.query_row("SELECT count(*) FROM outbox", [], |r| r.get::<_, i64>(0)).map_err(e)?,
             // hub project id -> local project id, for projects shared from this PC (their local chats/activity show).
             "links": cfg["links"].as_object().map(|l| l.iter().filter(|(_, v)| v["workspace"] == ws).map(|(k, v)| (v["project"].as_str().unwrap_or("").to_string(), json!(k))).collect::<Map<String, Value>>()).unwrap_or_default(),
             "last_sync": meta(&c, "last_sync"),
         }))
+    }
+
+    /// One board's canvas elements from the local cache (queued local edits included): [{id, data}].
+    pub fn board_els(&self, ws: &str, board: &str) -> R<Vec<Value>> {
+        let c = self.open_ws(ws)?;
+        let mut st = c
+            .prepare("SELECT id, json_extract(fields, '$.data') FROM records WHERE deleted = 0 AND kind = 'board_el' AND json_extract(fields, '$.board') = ?1")
+            .map_err(e)?;
+        let out = st.query_map([board], |r| Ok(json!({ "id": r.get::<_, String>(0)?, "data": r.get::<_, Option<String>>(1)? }))).map_err(e)?.filter_map(|r| r.ok()).collect();
+        Ok(out)
     }
 
     /// "Keep mine" re-queues the user's fields against the version they now see; "keep theirs" drops the copy.
@@ -1108,6 +1118,9 @@ impl HubState {
     }
 }
 
+/// A board is open (D044): sync every second instead of every minute, so edits show up live on other PCs.
+static LIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Starts the sync thread if this PC has joined a hub and it isn't running yet. No hub = nothing happens.
 pub fn start(app: &tauri::AppHandle) {
     use tauri::Manager;
@@ -1156,10 +1169,12 @@ pub fn start(app: &tauri::AppHandle) {
                 let _ = app.emit("hub-changed", ());
             }
             // §9: 60 s while the window is visible, 10 min in the tray; offline retries back off 5 s → 15 min.
-            let visible = app.get_webview_window("main").and_then(|w| w.is_visible().ok()).unwrap_or(false);
+            let visible = app.get_window("main").and_then(|w| w.is_visible().ok()).unwrap_or(false); // not get_webview_window: see lib.rs show_main
             let wait = if failures > 0 {
                 let jitter = u64::from(getrandom_u8()) % 5;
                 (5 * 3u64.saturating_pow(failures - 1)).min(900) + jitter
+            } else if visible && LIVE.load(std::sync::atomic::Ordering::Relaxed) {
+                1
             } else if visible {
                 60
             } else {
@@ -1255,6 +1270,17 @@ pub fn hub_edit(h: State<HubState>, workspace: String, action: String, kind: Str
     let id = h.client.edit(&workspace, &action, &kind, record_id.as_deref(), &project_id, &fields)?;
     h.wake();
     Ok(id)
+}
+
+#[tauri::command(async)]
+pub fn hub_board_els(h: State<HubState>, workspace: String, board: String) -> R<Vec<Value>> {
+    h.client.board_els(&workspace, &board)
+}
+
+#[tauri::command]
+pub fn hub_live(h: State<HubState>, on: bool) {
+    LIVE.store(on, std::sync::atomic::Ordering::Relaxed);
+    h.wake();
 }
 
 #[tauri::command(async)]

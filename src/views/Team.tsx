@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { api, type Row } from "../api";
 import { ago, AgentChip, brand, Card, Empty, ErrBox, Modal, StatusBar, useAsync, useNav } from "../ui";
+import Boards from "./Boards";
 
 /** Shared team workspaces on the self-hosted hub (D030–D035). Cards → a workspace page with its projects, tasks
  *  (claimable), media, project map and file list. Chats and local activity come from this PC only and are never sent.
@@ -716,7 +717,7 @@ function Conflicts({ ws, list, reload, onErr }: { ws: string; list: Row[]; reloa
 
 /* ---------- one workspace ---------- */
 
-const TABS = ["overview", "tasks", "media", "map", "files", "chats", "admin"] as const;
+const TABS = ["overview", "tasks", "boards", "media", "map", "files", "chats", "admin"] as const;
 type Tab = (typeof TABS)[number];
 
 function WorkspacePage({ w, me, onBack, onErr }: { w: Row; me: string; onBack: () => void; onErr: (e: string) => void }) {
@@ -764,6 +765,7 @@ function WorkspacePage({ w, me, onBack, onErr }: { w: Row; me: string; onBack: (
           </div>
         ) : <Empty>{can(b.role, "admin") ? "No shared projects yet. Open ADMIN to create one or share a project from this PC." : "No shared projects you can see yet."}</Empty>)}
         {tab === "tasks" && <Tasks ws={w.id} b={b} project={project} me={me} onErr={onErr} reload={board.reload} />}
+        {tab === "boards" && <Boards ws={w.id} b={b} project={project} me={me} onErr={onErr} reload={board.reload} />}
         {tab === "media" && <Media ws={w.id} b={b} project={project} onErr={onErr} reload={board.reload} />}
         {(tab === "map" || tab === "files") && <Structure key={project + tab} ws={w.id} b={b} project={project} glow={br.glow} mode={tab} local={local} onErr={onErr} reload={board.reload} />}
         {tab === "chats" && (project ? <LocalChats local={local} /> : <Empty>Pick a project above to see its chats from this PC.</Empty>)}
