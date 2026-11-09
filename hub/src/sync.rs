@@ -232,6 +232,11 @@ impl Hub {
                     (if row.deleted { Write::Nothing } else { Write::Tombstone(row.project) }, None)
                 } else if row.deleted {
                     (Write::Nothing, Some(json!({ "error": "deleted" })))
+                } else if kind == "board_el"
+                    && !row.fields.get("board").and_then(Value::as_str).is_some_and(|b| load(c, b).ok().flatten().is_some_and(|p| p.kind == "board" && !p.deleted))
+                {
+                    // Its board was deleted: the element is gone too (and its tombstone is on the way).
+                    (Write::Nothing, Some(json!({ "error": "deleted" })))
                 } else {
                     let base = b["base_version"].as_i64().filter(|v| (1..=row.version).contains(v)).ok_or_else(|| bad("base_version must be a version this record had"))?;
                     validate(c, ws, &row.project, kind, f, false)?;
@@ -283,6 +288,18 @@ impl Hub {
                     params![who.user, t, seq, id],
                 ))?;
                 log(&tx, Some(ws), who, "record.deleted", Some(id), json!({ "kind": kind, "project": project }))?;
+                // A deleted board takes its canvas elements with it: none of their content stays readable.
+                if kind == "board" {
+                    let els: Vec<String> = db(tx
+                        .prepare("SELECT id FROM records WHERE kind = 'board_el' AND deleted = 0 AND json_extract(fields, '$.board') = ?1")
+                        .and_then(|mut st| st.query_map([id], |r| r.get(0))?.collect()))?;
+                    for (i, el) in els.iter().enumerate() {
+                        db(tx.execute(
+                            "UPDATE records SET fields = '{}', field_versions = '{}', deleted = 1, version = version + 1, updated_by = ?1, updated_at = ?2, seq = ?3 WHERE id = ?4",
+                            params![who.user, t, seq + 1 + i as i64, el],
+                        ))?;
+                    }
+                }
             }
             Write::Nothing => {}
         }

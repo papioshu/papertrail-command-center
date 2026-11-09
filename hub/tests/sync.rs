@@ -545,4 +545,12 @@ fn boards_share_elements_last_writer_wins_and_only_contributors_draw() {
     a.create("board_el", &fx.p2, json!({ "board": board, "data": "{}" }));
     a.sync();
     assert_eq!(a.rejected.len(), n + 2);
+    // Deleting the board tombstones its elements: their content leaves every cache, and they can't be edited.
+    a.queue("delete", "board", &board, &fx.p1, json!(null));
+    a.sync();
+    b.sync();
+    assert_eq!(b.field(&el, "data"), Value::Null, "element content is gone from the other member's cache");
+    let feed = fx.call("GET", &format!("/v1/workspaces/{}/changes?since=0", fx.ws), Some("viewer"), json!({}));
+    let rec = feed.body["changes"].as_array().unwrap().iter().find(|r| r["id"] == json!(el)).unwrap();
+    assert_eq!((rec["deleted"].clone(), rec["fields"].clone()), (json!(true), json!({})));
 }
