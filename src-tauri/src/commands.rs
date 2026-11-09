@@ -565,7 +565,7 @@ pub fn get_sparks(st: State<AppState>, days: i64) -> R<Vec<Value>> {
 
 /// Chat slide-out: a separate window docked to the right edge of the dashboard, loading the configured
 /// web chat (Discord by default). Remote content gets no IPC access (capabilities cover "main" only).
-/// Toggling closes it, which frees its memory. `qr`: open Discord's login wide instead, because Discord only shows its
+/// Toggling closes it, which frees its memory. `qr`: dock Discord's login wider instead, because Discord only shows its
 /// scan-with-your-phone QR code on a wide page; the session it creates is shared with the slide-out.
 #[tauri::command(async)]
 pub fn toggle_chat(st: State<AppState>, app: tauri::AppHandle, qr: Option<bool>) -> R<bool> {
@@ -585,7 +585,8 @@ pub fn toggle_chat(st: State<AppState>, app: tauri::AppHandle, qr: Option<bool>)
     let scale = main.scale_factor().unwrap_or(1.0);
     let pos = main.outer_position().map_err(|e| e.to_string())?.to_logical::<f64>(scale);
     let size = main.outer_size().map_err(|e| e.to_string())?.to_logical::<f64>(scale);
-    let width = if qr { 1000.0 } else { 440.0 };
+    // Discord shows its QR code only on pages wider than 830px.
+    let width = if qr { 860.0 } else { 440.0 };
     // Dock outside the right edge when the monitor has room, else overlay the dashboard's right side.
     let monitor_right = main
         .current_monitor()
@@ -593,12 +594,12 @@ pub fn toggle_chat(st: State<AppState>, app: tauri::AppHandle, qr: Option<bool>)
         .flatten()
         .map(|m| { let p = m.position().to_logical::<f64>(scale); let s = m.size().to_logical::<f64>(scale); p.x + s.width })
         .unwrap_or(f64::MAX);
-    let x = if qr { pos.x + (size.width - width).max(0.0) / 2.0 } else if pos.x + size.width + width <= monitor_right { pos.x + size.width } else { pos.x + size.width - width };
+    let x = if pos.x + size.width + width <= monitor_right { pos.x + size.width } else { pos.x + size.width - width };
     tauri::WebviewWindowBuilder::new(&app, "chat", tauri::WebviewUrl::External(url.parse().map_err(|e| format!("{e}"))?))
         .title("PAPERTRAIL // CHAT")
         // Must match the main window's flags: webviews sharing a profile need identical browser args.
         .additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --renderer-process-limit=1 --disable-gpu-rasterization --disable-background-networking")
-        .inner_size(width, if qr { 760.0 } else { size.height.max(500.0) })
+        .inner_size(width, size.height.max(500.0))
         .position(x, pos.y)
         .background_color(tauri::window::Color(11, 8, 20, 255))
         .build()
