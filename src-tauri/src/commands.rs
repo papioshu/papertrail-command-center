@@ -493,7 +493,10 @@ pub fn save_settings(st: State<AppState>, app: tauri::AppHandle, patch: Value) -
         }
         Ok(())
     })?;
-    st.worker.send(Job::Refresh);
+    // Saved chats etc. don't change what gets indexed.
+    if obj.keys().any(|k| !k.starts_with("chat_")) {
+        st.worker.send(Job::Refresh);
+    }
     get_settings(st, app)
 }
 
@@ -565,27 +568,22 @@ pub fn get_sparks(st: State<AppState>, days: i64) -> R<Vec<Value>> {
 
 /// Chat slide-out: a separate window docked to the right edge of the dashboard, loading the configured
 /// web chat (Discord by default). Remote content gets no IPC access (capabilities cover "main" only).
-/// Toggling closes it, which frees its memory. `qr`: dock Discord's login wider instead, because Discord only shows its
-/// scan-with-your-phone QR code on a wide page; the session it creates is shared with the slide-out.
+/// Toggling hides it rather than closing: tearing down a webview that shares the dashboard's renderer left the
+/// dashboard drawing black (2026-11-09). `qr`: dock Discord's login wider, because Discord only shows its
+/// scan-with-your-phone QR code on pages wider than 830px. `url`: go straight to a saved chat.
 #[tauri::command(async)]
-pub fn toggle_chat(st: State<AppState>, app: tauri::AppHandle, qr: Option<bool>) -> R<bool> {
+pub fn toggle_chat(st: State<AppState>, app: tauri::AppHandle, qr: Option<bool>, url: Option<String>) -> R<bool> {
     use tauri::Manager;
+    let e = |e: tauri::Error| e.to_string();
     let qr = qr == Some(true);
-    if let Some(w) = app.get_webview_window("chat") {
-        w.close().map_err(|e| e.to_string())?;
-        if !qr {
-            return Ok(false);
-        }
-    }
-    let url = if qr { "https://discord.com/login".to_string() } else { with(&st, |c| Ok(registry::settings(c)["chat_url"].as_str().unwrap_or("").to_string()))? };
-    if !url.starts_with("https://") {
+    let target = if qr { Some("https://discord.com/login".to_string()) } else { url };
+    if target.as_ref().is_some_and(|u| !u.starts_with("https://")) {
         return Err("chat URL must start with https://".into());
     }
     let main = app.get_webview_window("main").ok_or("main window missing")?;
     let scale = main.scale_factor().unwrap_or(1.0);
-    let pos = main.outer_position().map_err(|e| e.to_string())?.to_logical::<f64>(scale);
-    let size = main.outer_size().map_err(|e| e.to_string())?.to_logical::<f64>(scale);
-    // Discord shows its QR code only on pages wider than 830px.
+    let pos = main.outer_position().map_err(e)?.to_logical::<f64>(scale);
+    let size = main.outer_size().map_err(e)?.to_logical::<f64>(scale);
     let width = if qr { 860.0 } else { 440.0 };
     // Dock outside the right edge when the monitor has room, else overlay the dashboard's right side.
     let monitor_right = main
@@ -595,16 +593,54 @@ pub fn toggle_chat(st: State<AppState>, app: tauri::AppHandle, qr: Option<bool>)
         .map(|m| { let p = m.position().to_logical::<f64>(scale); let s = m.size().to_logical::<f64>(scale); p.x + s.width })
         .unwrap_or(f64::MAX);
     let x = if pos.x + size.width + width <= monitor_right { pos.x + size.width } else { pos.x + size.width - width };
-    tauri::WebviewWindowBuilder::new(&app, "chat", tauri::WebviewUrl::External(url.parse().map_err(|e| format!("{e}"))?))
+    let (place, dims) = (tauri::LogicalPosition::new(x, pos.y), tauri::LogicalSize::new(width, size.height.max(500.0)));
+    if let Some(w) = app.get_webview_window("chat") {
+        if target.is_none() && w.is_visible().map_err(e)? {
+            w.hide().map_err(e)?;
+            return Ok(false);
+        }
+        if let Some(u) = target {
+            w.navigate(u.parse().map_err(|e| format!("{e}"))?).map_err(e)?;
+        }
+        w.set_size(dims).map_err(e)?;
+        w.set_position(place).map_err(e)?;
+        w.show().map_err(e)?;
+        let _ = w.set_focus();
+        return Ok(true);
+    }
+    let url = match target {
+        Some(u) => u,
+        None => with(&st, |c| Ok(registry::settings(c)["chat_url"].as_str().unwrap_or("").to_string()))?,
+    };
+    if !url.starts_with("https://") {
+        return Err("chat URL must start with https://".into());
+    }
+    let w = tauri::WebviewWindowBuilder::new(&app, "chat", tauri::WebviewUrl::External(url.parse().map_err(|e| format!("{e}"))?))
         .title("PAPERTRAIL // CHAT")
         // Must match the main window's flags: webviews sharing a profile need identical browser args.
         .additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --renderer-process-limit=1 --disable-gpu-rasterization --disable-background-networking")
-        .inner_size(width, size.height.max(500.0))
-        .position(x, pos.y)
+        .inner_size(dims.width, dims.height)
+        .position(place.x, place.y)
         .background_color(tauri::window::Color(11, 8, 20, 255))
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(e)?;
+    // The window's own X hides it too (same reason as above).
+    let h = w.clone();
+    w.on_window_event(move |ev| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = ev {
+            api.prevent_close();
+            let _ = h.hide();
+        }
+    });
     Ok(true)
+}
+
+/// The chat panel's current page, so it can be saved as a named chat (a group DM, a channel).
+#[tauri::command]
+pub fn chat_current(app: tauri::AppHandle) -> R<String> {
+    use tauri::Manager;
+    let w = app.get_webview_window("chat").ok_or("Open the Chat panel on the chat you want to save first.")?;
+    Ok(w.url().map_err(|e| e.to_string())?.to_string())
 }
 
 /// Folder map for a project: every real folder (repo depth <= 2, vault depth <= 2) plus folders seen in git

@@ -160,7 +160,9 @@ pub fn run() {
                     _ => {}
                 }
             }
-            if let WindowEvent::CloseRequested { api, .. } = ev {
+            // Main window only: this handler sees every window, and running it for the chat panel switched the
+            // dashboard's drawing off (black dashboard, 2026-11-09).
+            if let (WindowEvent::CloseRequested { api, .. }, "main") = (ev, w.label()) {
                 let st = w.app_handle().state::<AppState>();
                 let to_tray = st.db.lock().map(|c| registry::Config::load(&c).close_to_tray).unwrap_or(true);
                 *st.close_to_tray.lock().unwrap() = to_tray;
@@ -211,6 +213,7 @@ pub fn run() {
             commands::backup_db,
             commands::get_sparks,
             commands::toggle_chat,
+            commands::chat_current,
             commands::get_folders,
             commands::task_toggle_preview,
             commands::task_toggle,

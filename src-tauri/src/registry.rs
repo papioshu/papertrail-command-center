@@ -46,6 +46,7 @@ pub fn defaults() -> Value {
         },
         "discovery_refresh_hours": 24,
         "chat_url": "https://discord.com/app",
+        "chat_saved": [],
         "presets": [
             {"id":"continue","name":"Continue last task","agent":"any","project":null,
              "task":"Resolve the latest handoff and next logical action, review the worktree, and resume that work."},

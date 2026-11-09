@@ -83,6 +83,42 @@ function UpdateButton() {
   );
 }
 
+type SavedChat = { name: string; url: string };
+
+/** Chat slide-out button + saved chats (a group DM, a channel): pick one to open the panel right on it. */
+function ChatButton() {
+  const [open, setOpen] = useState(false);
+  const [saved, setSaved] = useState<SavedChat[]>([]);
+  const [name, setName] = useState("");
+  const fail = (e: unknown) => alertless(String(e));
+  useEffect(() => { if (open) api.settings().then((s) => setSaved((s.chat_saved as SavedChat[]) ?? []), fail); }, [open]);
+  const store = (next: SavedChat[]) => api.saveSettings({ chat_saved: next }).then(() => setSaved(next), fail);
+  const save = () => api.chatCurrent().then((url) => { store([...saved.filter((c) => c.url !== url), { name: name.trim() || "Chat", url }]); setName(""); }, fail);
+  return (
+    <div className="row" style={{ position: "relative", gap: 4 }}>
+      <button className="btn sm" onClick={() => api.toggleChat().catch(fail)} title="Slide-out chat (Discord by default; set the URL in Settings)">Chat</button>
+      <button className="btn sm" onClick={() => setOpen(!open)} aria-expanded={open} aria-label="Saved chats" title="Saved chats">▾</button>
+      {open && (
+        <div className="card" style={{ position: "absolute", top: 38, right: 0, width: 320, zIndex: 30, padding: "8px 12px" }}>
+          {saved.length === 0 && <div className="dim small">No saved chats yet. Open a chat in the panel (a group DM, a channel), name it below and save it.</div>}
+          {saved.map((c) => (
+            <div key={c.url} className="li click" onClick={() => { setOpen(false); api.toggleChat(false, c.url).catch(fail); }}>
+              <span className="small">{c.name}</span>
+              <span style={{ flex: 1 }} />
+              <button className="btn sm ghost" aria-label={`Remove ${c.name}`} onClick={(e) => { e.stopPropagation(); store(saved.filter((x) => x.url !== c.url)); }}>✕</button>
+            </div>
+          ))}
+          <div className="row" style={{ marginTop: 8, gap: 6 }}>
+            <input className="input" style={{ flex: 1 }} aria-label="Saved chat name" placeholder="Name, e.g. Team DM" value={name}
+              onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && save()} />
+            <button className="btn sm" onClick={save}>Save open chat</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Unpaired() {
   return (
     <div className="login"><div className="login-panel" style={{ textAlign: "center" }}>
@@ -192,7 +228,7 @@ export default function App() {
             </span>
           ) : <button className="btn sm" onClick={() => setGate(true)}>Sign in</button>}
           {PHONE ? null : <UpdateButton />}
-          <button className="btn sm desk-only" onClick={() => api.toggleChat().catch((e) => alertless(String(e)))} title="Slide-out chat (Discord by default; set the URL in Settings)">Chat</button>
+          {PHONE ? null : <ChatButton />}
           <button className="btn sm desk-only" onClick={() => api.refresh()} disabled={busy} title="Re-index projects, git and sessions">Refresh</button>
           <div className="sysstat">
             <div className="label" style={{ fontSize: 9 }}>System status</div>
