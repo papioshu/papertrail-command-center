@@ -566,13 +566,94 @@ pub fn get_sparks(st: State<AppState>, days: i64) -> R<Vec<Value>> {
     })
 }
 
-/// Chat slide-out: a separate window docked to the right edge of the dashboard, loading the configured
-/// web chat (Discord by default). Remote content gets no IPC access (capabilities cover "main" only).
-/// Toggling hides it rather than closing: tearing down a webview that shares the dashboard's renderer left the
-/// dashboard drawing black (2026-11-09). `qr`: dock Discord's login wider, because Discord only shows its
-/// scan-with-your-phone QR code on pages wider than 830px. `url`: go straight to a saved chat.
+/// Chat sidebar width in logical px (0 = hidden).
+static CHAT_W: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// Discord's unread count (the "(N)" its page title starts with) now, and when the panel was last open.
+static CHAT_COUNT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+static CHAT_SEEN: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
+
+/// Tells the dashboard whether the Chat button's unread dot shows: Discord's count rose since the panel was last
+/// open. Opening the panel, or reading elsewhere (count drops), clears it.
+fn chat_unread(app: &tauri::AppHandle, count: Option<i64>) {
+    use std::sync::atomic::Ordering::Relaxed;
+    use tauri::Emitter;
+    let n = count.unwrap_or_else(|| CHAT_COUNT.load(Relaxed));
+    CHAT_COUNT.store(n, Relaxed);
+    let seen = CHAT_SEEN.load(Relaxed);
+    let seen = if seen < 0 || CHAT_W.load(Relaxed) > 0 { n } else { seen.min(n) };
+    CHAT_SEEN.store(seen, Relaxed);
+    let _ = app.emit_to("main", "chat-unread", n > seen);
+}
+
+/// "(12) Discord | general" → 12; no count → 0.
+fn title_count(t: &str) -> i64 {
+    t.strip_prefix('(').and_then(|r| r.split(')').next()).and_then(|n| n.parse().ok()).unwrap_or(0)
+}
+
+/// Builds the chat webview inside the main window (hidden when `width` is 0: loaded at launch for the unread dot).
+pub fn create_chat(app: &tauri::AppHandle, url: &str, width: u32) -> R<tauri::Webview> {
+    use tauri::Manager;
+    let e = |e: tauri::Error| e.to_string();
+    if !url.starts_with("https://") {
+        return Err("chat URL must start with https://".into());
+    }
+    let win = app.get_window("main").ok_or("main window missing")?;
+    let builder = tauri::webview::WebviewBuilder::new("chat", tauri::WebviewUrl::External(url.parse().map_err(|e| format!("{e}"))?))
+        // Must match the main webview's flags: webviews sharing a profile need identical browser args.
+        .additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --renderer-process-limit=1 --disable-gpu-rasterization --disable-background-networking")
+        .background_color(tauri::window::Color(11, 8, 20, 255))
+        // Chat only (Discord's server + channel sidebar hidden; prefix matches survive Discord's class-hash changes;
+        // Ctrl+K still switches chats), recolored to the dashboard's violet palette (styles.css :root).
+        .initialization_script(CHAT_CSS)
+        // Loaded pages read "(N) Discord | <chat>"; the bare "Discord" while loading would fake a zero baseline.
+        .on_document_title_changed(|w, t| if t.contains(" | ") { chat_unread(w.app_handle(), Some(title_count(&t))) });
+    CHAT_W.store(width, std::sync::atomic::Ordering::Relaxed);
+    let chat = win.add_child(builder, tauri::LogicalPosition::new(0.0, 0.0), tauri::LogicalSize::new(width.max(1) as f64, 500.0)).map_err(e)?;
+    if width == 0 {
+        chat.hide().map_err(e)?;
+    }
+    layout_chat(app);
+    Ok(chat)
+}
+
+const CHAT_CSS: &str = r#"addEventListener("DOMContentLoaded",()=>{const s=document.createElement("style");s.textContent=`
+[class^="content_"]>[class^="sidebar_"]{display:none!important}
+.theme-dark,.theme-darker{--background-base-lowest:#07050f!important;--background-base-lower:#0b0814!important;--background-base-low:#110c20!important;--background-surface-high:#16102b!important;--background-surface-higher:#1d1638!important;--background-surface-highest:#2c2350!important;--chat-background:#16102b!important;--chat-background-default:#16102b!important;--background-secondary-alt:#110c20!important;--bg-surface-raised:#1d1638!important;--chat-border:#2c2350!important;--background-brand:#8b5cf6!important;--background-accent:#3a2f68!important}`;document.head.append(s)})"#;
+
+/// Pins the chat sidebar to the main window's right edge, full height. Called on toggle and on every resize.
+pub fn layout_chat(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    let (Some(win), Some(chat)) = (app.get_window("main"), app.get_webview("chat")) else { return };
+    let Ok(size) = win.inner_size() else { return };
+    let size = size.to_logical::<f64>(win.scale_factor().unwrap_or(1.0));
+    let w = (CHAT_W.load(std::sync::atomic::Ordering::Relaxed) as f64).min(size.width);
+    if size.width < 1.0 {
+        return; // minimized
+    }
+    // The dashboard's own view gets narrower (not covered), so its layout breakpoints see the real room left.
+    if let Some(main) = app.get_webview("main") {
+        let _ = main.set_bounds(tauri::Rect {
+            position: tauri::LogicalPosition::new(0.0, 0.0).into(),
+            size: tauri::LogicalSize::new(size.width - w, size.height).into(),
+        });
+    }
+    if w == 0.0 {
+        return; // hidden
+    }
+    let _ = chat.set_bounds(tauri::Rect {
+        position: tauri::LogicalPosition::new(size.width - w, 0.0).into(),
+        size: tauri::LogicalSize::new(w, size.height).into(),
+    });
+}
+
+/// Toggles the chat sidebar: web chat (Discord by default) docked inside the main window on the right, a second
+/// webview in the same window; the dashboard's view narrows to make room. Returns its width (0 = closed). Remote content gets no
+/// IPC access (capabilities cover the "main" webview only). Hidden rather than closed: tearing down a webview that
+/// shares the dashboard's renderer left the dashboard drawing black (2026-11-09). `qr`: wider, because Discord only
+/// shows its scan-with-your-phone QR code on pages wider than 830px. `url`: go straight to a saved chat.
 #[tauri::command(async)]
-pub fn toggle_chat(st: State<AppState>, app: tauri::AppHandle, qr: Option<bool>, url: Option<String>) -> R<bool> {
+pub fn toggle_chat(st: State<AppState>, app: tauri::AppHandle, qr: Option<bool>, url: Option<String>) -> R<u32> {
+    use std::sync::atomic::Ordering::Relaxed;
     use tauri::Manager;
     let e = |e: tauri::Error| e.to_string();
     let qr = qr == Some(true);
@@ -580,68 +661,39 @@ pub fn toggle_chat(st: State<AppState>, app: tauri::AppHandle, qr: Option<bool>,
     if target.as_ref().is_some_and(|u| !u.starts_with("https://")) {
         return Err("chat URL must start with https://".into());
     }
-    let main = app.get_webview_window("main").ok_or("main window missing")?;
-    let scale = main.scale_factor().unwrap_or(1.0);
-    let pos = main.outer_position().map_err(e)?.to_logical::<f64>(scale);
-    let size = main.outer_size().map_err(e)?.to_logical::<f64>(scale);
-    let width = if qr { 860.0 } else { 440.0 };
-    // Dock outside the right edge when the monitor has room, else overlay the dashboard's right side.
-    let monitor_right = main
-        .current_monitor()
-        .ok()
-        .flatten()
-        .map(|m| { let p = m.position().to_logical::<f64>(scale); let s = m.size().to_logical::<f64>(scale); p.x + s.width })
-        .unwrap_or(f64::MAX);
-    let x = if pos.x + size.width + width <= monitor_right { pos.x + size.width } else { pos.x + size.width - width };
-    let (place, dims) = (tauri::LogicalPosition::new(x, pos.y), tauri::LogicalSize::new(width, size.height.max(500.0)));
-    if let Some(w) = app.get_webview_window("chat") {
-        if target.is_none() && w.is_visible().map_err(e)? {
-            w.hide().map_err(e)?;
-            return Ok(false);
+    let width = if qr { 860 } else { 440 };
+    if let Some(chat) = app.get_webview("chat") {
+        if target.is_none() && CHAT_W.load(Relaxed) > 0 {
+            CHAT_W.store(0, Relaxed);
+            chat.hide().map_err(e)?;
+            layout_chat(&app);
+            return Ok(0);
         }
         if let Some(u) = target {
-            w.navigate(u.parse().map_err(|e| format!("{e}"))?).map_err(e)?;
+            chat.navigate(u.parse().map_err(|e| format!("{e}"))?).map_err(e)?;
         }
-        w.set_size(dims).map_err(e)?;
-        w.set_position(place).map_err(e)?;
-        w.show().map_err(e)?;
-        let _ = w.set_focus();
-        return Ok(true);
+        CHAT_W.store(width, Relaxed);
+        layout_chat(&app);
+        chat.show().map_err(e)?;
+        chat_unread(&app, None);
+        let _ = chat.set_focus();
+        return Ok(width);
     }
     let url = match target {
         Some(u) => u,
         None => with(&st, |c| Ok(registry::settings(c)["chat_url"].as_str().unwrap_or("").to_string()))?,
     };
-    if !url.starts_with("https://") {
-        return Err("chat URL must start with https://".into());
-    }
-    let w = tauri::WebviewWindowBuilder::new(&app, "chat", tauri::WebviewUrl::External(url.parse().map_err(|e| format!("{e}"))?))
-        .title("PAPERTRAIL // CHAT")
-        // Must match the main window's flags: webviews sharing a profile need identical browser args.
-        .additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --renderer-process-limit=1 --disable-gpu-rasterization --disable-background-networking")
-        .inner_size(dims.width, dims.height)
-        .position(place.x, place.y)
-        .background_color(tauri::window::Color(11, 8, 20, 255))
-        // Chat only: hide Discord's server + channel sidebar (prefix match survives Discord's class-hash changes). Ctrl+K still switches chats.
-        .initialization_script(r#"addEventListener("DOMContentLoaded",()=>{const s=document.createElement("style");s.textContent='[class^="content_"]>[class^="sidebar_"]{display:none!important}';document.head.append(s)})"#)
-        .build()
-        .map_err(e)?;
-    // The window's own X hides it too (same reason as above).
-    let h = w.clone();
-    w.on_window_event(move |ev| {
-        if let tauri::WindowEvent::CloseRequested { api, .. } = ev {
-            api.prevent_close();
-            let _ = h.hide();
-        }
-    });
-    Ok(true)
+    let chat = create_chat(&app, &url, width)?;
+    chat_unread(&app, None);
+    let _ = chat.set_focus();
+    Ok(width)
 }
 
 /// The chat panel's current page, so it can be saved as a named chat (a group DM, a channel).
 #[tauri::command]
 pub fn chat_current(app: tauri::AppHandle) -> R<String> {
     use tauri::Manager;
-    let w = app.get_webview_window("chat").ok_or("Open the Chat panel on the chat you want to save first.")?;
+    let w = app.get_webview("chat").ok_or("Open the Chat panel on the chat you want to save first.")?;
     Ok(w.url().map_err(|e| e.to_string())?.to_string())
 }
 
@@ -908,4 +960,14 @@ pub fn chat_list(st: State<AppState>, agent: Option<String>, project: String) ->
         r["last_reply"] = json!(snippet);
     }
     Ok(list)
+}
+
+#[cfg(test)]
+mod chat_tests {
+    #[test]
+    fn title_count() {
+        assert_eq!(super::title_count("(2179) Discord | Friends"), 2179);
+        assert_eq!(super::title_count("Discord | general"), 0);
+        assert_eq!(super::title_count("(x) Discord"), 0);
+    }
 }

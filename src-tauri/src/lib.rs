@@ -103,6 +103,15 @@ pub fn run() {
             db::set_setting(&conn, "task_snapshot", &Value::Object(now_snap))?;
             db::set_setting(&conn, "last_seen", &json!(util::now_iso()))?;
             let close_to_tray = registry::Config::load(&conn).close_to_tray;
+            // Load the chat hidden shortly after launch so the Chat button can show unread messages.
+            let chat_url = registry::settings(&conn)["chat_url"].as_str().unwrap_or("").to_string();
+            let h = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(8));
+                if chat_url.starts_with("https://") && h.get_webview("chat").is_none() {
+                    let _ = commands::create_chat(&h, &chat_url, 0);
+                }
+            });
             standby::hold_app_lock(&data_dir);
             if db::setting(&conn, "phone_enabled").and_then(|v| v.as_bool()) == Some(true) {
                 standby::register(true); // so a paired phone can start the dashboard once it's closed (D029)
@@ -151,6 +160,7 @@ pub fn run() {
             if w.label() == "main" {
                 match ev {
                     WindowEvent::Resized(_) => {
+                        commands::layout_chat(w.app_handle());
                         if let Some(ww) = w.app_handle().get_webview_window("main") {
                             let minimized = ww.is_minimized().unwrap_or(false);
                             webview_visible(&ww, !minimized);

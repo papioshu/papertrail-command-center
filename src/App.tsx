@@ -42,7 +42,7 @@ function Search({ go }: { go: (v: View, p: Row) => void }) {
   }, [q]);
   return (
     <div className="search" style={{ position: "relative" }}>
-      <input className="input" style={{ width: 280 }} placeholder="Search the paper trail…" value={q} onChange={(e) => setQ(e.target.value)} />
+      <input className="input" style={{ width: "100%" }} placeholder="Search the paper trail…" value={q} onChange={(e) => setQ(e.target.value)} />
       {hits.length > 0 && (
         <div className="card" style={{ position: "absolute", top: 38, right: 0, width: 480, maxHeight: 440, overflow: "auto", zIndex: 30, padding: "4px 14px" }}>
           {hits.map((h, i) => (
@@ -90,13 +90,18 @@ function ChatButton() {
   const [open, setOpen] = useState(false);
   const [saved, setSaved] = useState<SavedChat[]>([]);
   const [name, setName] = useState("");
+  const [unread, setUnread] = useState(false);
+  useEffect(() => { const u = on("chat-unread", setUnread); return () => { u.then((f) => f()); }; }, []);
   const fail = (e: unknown) => alertless(String(e));
   useEffect(() => { if (open) api.settings().then((s) => setSaved((s.chat_saved as SavedChat[]) ?? []), fail); }, [open]);
   const store = (next: SavedChat[]) => api.saveSettings({ chat_saved: next }).then(() => setSaved(next), fail);
   const save = () => api.chatCurrent().then((url) => { store([...saved.filter((c) => c.url !== url), { name: name.trim() || "Chat", url }]); setName(""); }, fail);
   return (
     <div className="row" style={{ position: "relative", gap: 4 }}>
-      <button className="btn sm" onClick={() => api.toggleChat().catch(fail)} title="Slide-out chat (Discord by default; set the URL in Settings)">Chat</button>
+      <button className="btn sm" style={{ position: "relative" }} onClick={() => api.toggleChat().catch(fail)}
+        title={unread ? "New messages" : "Chat sidebar (Discord by default; set the URL in Settings)"} aria-label={unread ? "Chat, new messages" : "Chat"}>
+        Chat{unread && <span className="unread-dot" />}
+      </button>
       <button className="btn sm" onClick={() => setOpen(!open)} aria-expanded={open} aria-label="Saved chats" title="Saved chats">▾</button>
       {open && (
         <div className="card" style={{ position: "absolute", top: 38, right: 0, width: 320, zIndex: 30, padding: "8px 12px" }}>

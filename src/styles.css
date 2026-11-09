@@ -32,6 +32,7 @@
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
+.unread-dot { position: absolute; top: -3px; right: -3px; width: 8px; height: 8px; border-radius: 50%; background: var(--signal); box-shadow: 0 0 6px var(--signal); }
 body { background: var(--void); color: var(--fg); font: 13px/1.5 var(--font-body); overflow: hidden; -webkit-font-smoothing: antialiased; }
 button, input, select, textarea { font: inherit; color: inherit; }
 a { color: var(--violet-glow); }
@@ -58,7 +59,10 @@ a { color: var(--violet-glow); }
     url("./assets/bg.webp") center top / cover no-repeat; }
 .backdrop::after { content: ""; position: absolute; inset: 0; pointer-events: none;
   background: repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.018) 0 1px, transparent 1px 3px); }
-.shell { display: grid; grid-template-rows: 68px 1fr 46px; height: 100%; }
+.shell { display: grid; grid-template-rows: 68px 1fr 46px; grid-template-columns: minmax(0, 1fr); height: 100%; }
+.topbar .search { width: 280px; min-width: 0; }
+/* Narrow window, or the chat sidebar open: the top bar still fits. */
+@media (max-width: 1250px) { .topbar { gap: 12px; padding: 0 18px; } .wordmark .name { letter-spacing: 0.2em; font-size: 14px; } .wordmark .tag, .ptbadge, .sysstat .label { display: none; } .topbar .search { width: auto; flex: 0 1 220px; } }
 .topbar { display: flex; align-items: center; gap: 22px; padding: 0 30px; border-bottom: 1px solid rgba(44, 35, 80, 0.7); }
 .wordmark { display: flex; align-items: center; gap: 14px; cursor: pointer; }
 .wordmark .name { font-family: var(--font-display); letter-spacing: 0.34em; font-size: 16px; font-weight: 400; }
