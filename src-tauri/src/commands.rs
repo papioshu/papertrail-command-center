@@ -622,6 +622,8 @@ pub fn toggle_chat(st: State<AppState>, app: tauri::AppHandle, qr: Option<bool>,
         .inner_size(dims.width, dims.height)
         .position(place.x, place.y)
         .background_color(tauri::window::Color(11, 8, 20, 255))
+        // Chat only: hide Discord's server + channel sidebar (prefix match survives Discord's class-hash changes). Ctrl+K still switches chats.
+        .initialization_script(r#"addEventListener("DOMContentLoaded",()=>{const s=document.createElement("style");s.textContent='[class^="content_"]>[class^="sidebar_"]{display:none!important}';document.head.append(s)})"#)
         .build()
         .map_err(e)?;
     // The window's own X hides it too (same reason as above).
