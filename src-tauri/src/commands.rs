@@ -602,8 +602,6 @@ pub fn create_chat(app: &tauri::AppHandle, url: &str, width: u32) -> R<tauri::We
         // Must match the main webview's flags: webviews sharing a profile need identical browser args.
         .additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --renderer-process-limit=1 --disable-gpu-rasterization --disable-background-networking")
         .background_color(tauri::window::Color(11, 8, 20, 255))
-        // Chat only (Discord's server + channel sidebar hidden; prefix matches survive Discord's class-hash changes;
-        // Ctrl+K still switches chats), recolored to the dashboard's violet palette (styles.css :root).
         .initialization_script(CHAT_CSS)
         // Loaded pages read "(N) Discord | <chat>"; the bare "Discord" while loading would fake a zero baseline.
         .on_document_title_changed(|w, t| if t.contains(" | ") { chat_unread(w.app_handle(), Some(title_count(&t))) });
@@ -616,9 +614,22 @@ pub fn create_chat(app: &tauri::AppHandle, url: &str, width: u32) -> R<tauri::We
     Ok(chat)
 }
 
-const CHAT_CSS: &str = r#"addEventListener("DOMContentLoaded",()=>{const s=document.createElement("style");s.textContent=`
+/// Injected into every Discord page: chat only (server + channel sidebar hidden; prefix matches survive Discord's
+/// class-hash changes), the dashboard's violet palette (styles.css :root), and on the DMs home just the DM list
+/// (no Friends page, no Nitro/Shop/Quests). The data attribute follows Discord's in-page navigation.
+const CHAT_CSS: &str = r#"(()=>{const f=()=>document.documentElement.toggleAttribute("data-ptcc-dms",location.pathname==="/channels/@me");
+for(const k of["pushState","replaceState"]){const o=history[k];history[k]=function(...a){const r=o.apply(this,a);f();return r}}
+addEventListener("popstate",f);f();
+addEventListener("DOMContentLoaded",()=>{const s=document.createElement("style");s.textContent=`
 [class^="content_"]>[class^="sidebar_"]{display:none!important}
-.theme-dark,.theme-darker{--background-base-lowest:#07050f!important;--background-base-lower:#0b0814!important;--background-base-low:#110c20!important;--background-surface-high:#16102b!important;--background-surface-higher:#1d1638!important;--background-surface-highest:#2c2350!important;--chat-background:#16102b!important;--chat-background-default:#16102b!important;--background-secondary-alt:#110c20!important;--bg-surface-raised:#1d1638!important;--chat-border:#2c2350!important;--background-brand:#8b5cf6!important;--background-accent:#3a2f68!important}`;document.head.append(s)})"#;
+.theme-dark,.theme-darker{--background-base-lowest:#07050f!important;--background-base-lower:#0b0814!important;--background-base-low:#110c20!important;--background-surface-high:#16102b!important;--background-surface-higher:#1d1638!important;--background-surface-highest:#2c2350!important;--chat-background:#16102b!important;--chat-background-default:#16102b!important;--background-secondary-alt:#110c20!important;--bg-surface-raised:#1d1638!important;--chat-border:#2c2350!important;--background-brand:#8b5cf6!important;--background-accent:#3a2f68!important}
+html[data-ptcc-dms] [class^="content_"]>[class^="sidebar_"]{display:flex!important;flex-direction:column!important;width:100%!important;max-width:none!important;flex:1 1 auto!important}
+html[data-ptcc-dms] [class^="content_"]>[class^="sidebar_"]>:not([class^="sidebarList_"]){display:none!important}
+html[data-ptcc-dms] [class^="sidebarList_"]{width:100%!important;flex:1 1 auto!important}
+html[data-ptcc-dms] [class^="content_"]>[class^="sidebar_"]~*{display:none!important}
+html[data-ptcc-dms] [class^="content_"]{grid-template-columns:100%!important;grid-template-areas:none!important}
+html[data-ptcc-dms] [class^="content_"]>[class^="sidebar_"]{grid-area:auto!important;grid-column:1/-1!important}
+html[data-ptcc-dms] nav[class^="privateChannels_"] *:has(> a[href="/store"]),html[data-ptcc-dms] nav[class^="privateChannels_"] *:has(> a[href="/shop"]),html[data-ptcc-dms] nav[class^="privateChannels_"] *:has(> a[href^="/quest"]){display:none!important}`;document.head.append(s)})})()"#;
 
 /// Pins the chat sidebar to the main window's right edge, full height. Called on toggle and on every resize.
 pub fn layout_chat(app: &tauri::AppHandle) {
@@ -669,8 +680,19 @@ pub fn toggle_chat(st: State<AppState>, app: tauri::AppHandle, qr: Option<bool>,
             layout_chat(&app);
             return Ok(0);
         }
-        if let Some(u) = target {
-            chat.navigate(u.parse().map_err(|e| format!("{e}"))?).map_err(e)?;
+        // Opening goes to the DM list; a saved chat jumps straight there. Inside Discord, move in-page (Discord's own
+        // router follows popstate), which is instant; a full load takes seconds.
+        let go = if qr { target } else { Some(target.unwrap_or_else(|| "https://discord.com/channels/@me".into())) };
+        match go.as_deref().and_then(|u| u.strip_prefix("https://discord.com")) {
+            Some(path) if !qr && chat.url().is_ok_and(|u| u.host_str() == Some("discord.com")) => {
+                let path = serde_json::to_string(path).map_err(|e| e.to_string())?;
+                chat.eval(format!("history.pushState(null,'',{path});dispatchEvent(new PopStateEvent('popstate'))")).map_err(e)?;
+            }
+            _ => {
+                if let Some(u) = go {
+                    chat.navigate(u.parse().map_err(|e| format!("{e}"))?).map_err(e)?;
+                }
+            }
         }
         CHAT_W.store(width, Relaxed);
         layout_chat(&app);
