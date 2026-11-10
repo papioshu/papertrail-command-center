@@ -9,6 +9,7 @@ import {
   reconcileElements,
   restoreElements,
   serializeAsJSON,
+  viewportCoordsToSceneCoords,
 } from "@excalidraw/excalidraw";
 import type { BinaryFileData, ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 import "@excalidraw/excalidraw/index.css";
@@ -34,6 +35,23 @@ type El = { id: string; version: number; isDeleted?: boolean; type: string; file
 
 const mimeOf = (name: string) => (/\.png$/i.test(name) ? "image/png" : /\.jpe?g$/i.test(name) ? "image/jpeg" : /\.gif$/i.test(name) ? "image/gif" : /\.webp$/i.test(name) ? "image/webp" : /\.svg$/i.test(name) ? "image/svg+xml" : "image/png");
 const dataUrl = (b: Blob) => new Promise<string>((ok, no) => { const r = new FileReader(); r.onload = () => ok(String(r.result)); r.onerror = () => no(new Error("Couldn't read that file.")); r.readAsDataURL(b); });
+// Docs (D048): PDFs get a page-1 preview, Word-type files a card, text/Markdown becomes a text note. Clicking a doc's
+// link saves the file from workspace media.
+const DOC = /\.(pdf|docx?|odt|rtf|pages|md|markdown|txt)$/i;
+const TEXT = /\.(md|markdown|txt)$/i;
+const DOC_LINK = "ptcc-doc:";
+async function pdfPreview(file: File): Promise<Blob> {
+  const pdfjs = await import("pdfjs-dist");
+  pdfjs.GlobalWorkerOptions.workerSrc = (await import("pdfjs-dist/build/pdf.worker.min.mjs?url")).default;
+  const pdf = await pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()), isEvalSupported: false }).promise;
+  const page = await pdf.getPage(1);
+  const vp = page.getViewport({ scale: 600 / page.getViewport({ scale: 1 }).width });
+  const cv = document.createElement("canvas");
+  cv.width = Math.ceil(vp.width); cv.height = Math.ceil(vp.height);
+  await page.render({ canvasContext: cv.getContext("2d")!, viewport: vp }).promise;
+  pdf.destroy();
+  return new Promise((ok, no) => cv.toBlob((b) => (b ? ok(b) : no(new Error("Couldn't draw that PDF page."))), "image/png"));
+}
 const stamp = () => new Date().toISOString().slice(0, 16).replace("T", " ").replace(":", "");
 
 export default function BoardCanvas({ ws, board, b, canDraw, onBack, onErr, reload }: { ws: string; board: Row; b: Row; canDraw: boolean; onBack: () => void; onErr: (e: string) => void; reload: () => void }) {
@@ -202,6 +220,68 @@ export default function BoardCanvas({ ws, board, b, canDraw, onBack, onErr, relo
     } catch (e) { setStatus(""); fail(e); }
   };
 
+  // Docs dropped or picked: each becomes workspace media plus elements placed where it was dropped (or mid-screen).
+  const addDocs = async (list: File[], at?: { x: number; y: number }) => {
+    if (!xapi || !list.length) return;
+    const st = xapi.getAppState();
+    let { x, y } = at ?? { x: -st.scrollX + st.width / 2 / st.zoom.value - 150, y: -st.scrollY + st.height / 2 / st.zoom.value - 100 };
+    try {
+      for (const f of list) {
+        if (f.size > 50 * 1024 * 1024) throw new Error(`${f.name} is over 50 MB.`);
+        setStatus(`Adding ${f.name}…`);
+        let els;
+        if (TEXT.test(f.name)) {
+          const text = (await f.text()).slice(0, 8000);
+          els = convertToExcalidrawElements([{ type: "text", x, y, text, fontSize: 16, strokeColor: INK } as never]);
+        } else {
+          const media = await api.hubUpload(ws, project, f.name, `On board: ${title}`, "Boards", await dataUrl(f));
+          const label = `📄 ${f.name}\n${(f.size / 1024 / 1024).toFixed(1)} MB · open the link to save it`;
+          if (/\.pdf$/i.test(f.name)) {
+            const png = await pdfPreview(f).catch(() => null);
+            if (png) {
+              const pid = await api.hubUpload(ws, project, `${f.name} page 1.png`, `Preview of ${f.name}`, "Boards", await dataUrl(png));
+              files.current.add(pid);
+              xapi.addFiles([{ id: pid, dataURL: await dataUrl(png), mimeType: "image/png", created: Date.now() } as unknown as BinaryFileData]);
+              const img = await createImageBitmap(png);
+              const h = Math.round((300 * img.height) / img.width);
+              els = convertToExcalidrawElements([
+                { type: "image", x, y, width: 300, height: h, fileId: pid, link: DOC_LINK + media } as never,
+                { type: "text", x, y: y + h + 8, text: label, fontSize: 14, strokeColor: INK, link: DOC_LINK + media } as never,
+              ]);
+            }
+          }
+          els ??= convertToExcalidrawElements([{
+            type: "rectangle", x, y, width: 300, height: 90, backgroundColor: NOTE_FILL, fillStyle: "solid", strokeColor: NOTE_FILL, roughness: 0, roundness: { type: 3 },
+            link: DOC_LINK + media, label: { text: label, strokeColor: NOTE_INK, fontSize: 16 },
+          } as never]);
+        }
+        xapi.updateScene({ elements: [...xapi.getSceneElementsIncludingDeleted(), ...els], captureUpdate: CaptureUpdateAction.IMMEDIATELY });
+        y += 40; x += 40;
+      }
+      setStatus(list.length > 1 ? `Added ${list.length} docs` : `Added ${list[0].name}`);
+      reload();
+    } catch (e) { setStatus(""); fail(e); }
+  };
+  const onDocDrop = (e: React.DragEvent) => {
+    const list = [...e.dataTransfer.files].filter((f) => DOC.test(f.name));
+    if (!list.length || !xapi || !canDraw) return; // images and .excalidraw files go to the canvas as before
+    e.preventDefault(); e.stopPropagation();
+    const p = viewportCoordsToSceneCoords({ clientX: e.clientX, clientY: e.clientY }, xapi.getAppState());
+    addDocs(list, { x: p.x, y: p.y });
+  };
+  // A doc's link saves the file (its media record) through the browser's download.
+  const openDoc = useCallback(async (el: { link?: string | null }, ev: CustomEvent<{ nativeEvent: MouseEvent | React.PointerEvent<HTMLCanvasElement> }>) => {
+    if (!el.link?.startsWith(DOC_LINK)) return;
+    ev.preventDefault();
+    const id = el.link.slice(DOC_LINK.length);
+    const name = mediaName(id);
+    try {
+      const a = document.createElement("a");
+      a.href = String(await api.hubFile(ws, id, name)); a.download = name; a.click();
+      setStatus(`Saved ${name} to Downloads`);
+    } catch (e) { fail(e); }
+  }, [ws, b.records, fail]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Import: adds a .excalidraw file's elements to this board; its images are uploaded as workspace media first.
   const importBoard = async (f: File | undefined) => {
     if (!xapi || !f) return;
@@ -234,6 +314,7 @@ export default function BoardCanvas({ ws, board, b, canDraw, onBack, onErr, relo
         <span className="dim small">{status}</span>
         <span style={{ flex: 1 }} />
         {canDraw && <button className="btn sm" onClick={addNote}>+ Note</button>}
+        {canDraw && <label className="btn sm" style={{ cursor: "pointer" }} title="PDF, Word, text or Markdown; or drop them on the board">+ Doc<input type="file" multiple accept=".pdf,.doc,.docx,.odt,.rtf,.pages,.md,.markdown,.txt" hidden onChange={(e) => { addDocs([...(e.target.files ?? [])]); e.target.value = ""; }} /></label>}
         {canDraw && <label className="btn sm" style={{ cursor: "pointer" }}>Import<input type="file" accept=".excalidraw,application/json" hidden onChange={(e) => { importBoard(e.target.files?.[0]); e.target.value = ""; }} /></label>}
         {canDraw && <button className="btn sm" onClick={() => setVersionsOpen(!versionsOpen)} aria-expanded={versionsOpen}>Versions{versions.length ? ` (${versions.length})` : ""}</button>}
         {canDraw && <button className="btn sm primary" onClick={() => save()}>Save to workspace</button>}
@@ -258,7 +339,7 @@ export default function BoardCanvas({ ws, board, b, canDraw, onBack, onErr, relo
           ))}
         </div>
       )}
-      <div className="board-canvas">
+      <div className="board-canvas" onDropCapture={onDocDrop} onDragOverCapture={(e) => e.preventDefault()}>
         <Excalidraw
           excalidrawAPI={setXapi}
           initialData={initial.current as never}
@@ -266,6 +347,7 @@ export default function BoardCanvas({ ws, board, b, canDraw, onBack, onErr, relo
           viewModeEnabled={!canDraw}
           onChange={onChange}
           generateIdForFile={generateIdForFile}
+          onLinkOpen={openDoc}
           UIOptions={{ canvasActions: { changeViewBackgroundColor: false, toggleTheme: false, loadScene: false, saveToActiveFile: false, export: false } }}
         >
           <MainMenu>
