@@ -7,3 +7,4 @@ hub/target/
 crates/*/target/
 public/excalidraw-assets/
 target-hub/
+dist-board/

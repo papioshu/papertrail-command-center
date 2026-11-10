@@ -488,6 +488,10 @@ body.phone .desk-only { display: none !important; }
 /* ---------- BOARDS (D044): the canvas fills the space between the top bar and the bottom nav; never white ---------- */
 .board-shell { position: fixed; top: 68px; left: 0; right: 0; bottom: 46px; z-index: 20; display: flex; flex-direction: column; background: #121212; }
 .board-shell.blackboard { background: #151815; }
+/* Boards on iPhone/iPad (D050): the board is the whole page; the bar scrolls sideways when it doesn't fit. */
+.web-board .board-shell { top: 0; bottom: 0; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+.web-board .board-bar { overflow-x: auto; flex-wrap: nowrap; white-space: nowrap; }
+.web-board .board-versions { width: min(360px, calc(100vw - 32px)); }
 .board-bar { display: flex; align-items: center; gap: 10px; padding: 8px 16px; background: var(--ink); border-bottom: 1px solid var(--line); }
 .board-bar .board-name { font-family: var(--font-display); letter-spacing: 0.22em; text-transform: uppercase; font-size: 13px; }
 .board-bar .chip.live { color: var(--lime); border-color: rgba(174, 240, 68, 0.4); }

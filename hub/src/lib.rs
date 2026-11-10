@@ -43,7 +43,61 @@ fn static_file(url: &str) -> Option<(&'static [u8], &'static str)> {
     }
 }
 
+/// Boards on iPhone/iPad (D050): the board page (a separate web build, `npm run build:board`) is served from the
+/// `board` folder next to the hub exe. Only plain names are looked up, so no path can leave that folder.
+pub fn board_path(root: &std::path::Path, url: &str) -> Option<(std::path::PathBuf, &'static str)> {
+    let rest = url.split(['?', '#']).next()?.strip_prefix("/board")?;
+    let rest = if rest.is_empty() { rest } else { rest.strip_prefix('/')? };
+    let rel = if rest.is_empty() { "board.html" } else { rest };
+    let safe = |s: &str| !s.is_empty() && !s.starts_with('.') && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b));
+    if !rel.split('/').all(safe) {
+        return None;
+    }
+    let kind = match rel.rsplit('.').next()? {
+        "html" => "text/html; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        "png" => "image/png",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "json" => "application/json",
+        _ => return None,
+    };
+    let path = root.join(rel);
+    path.is_file().then_some((path, kind))
+}
+
+fn serve_board(req: tiny_http::Request) -> Result<(), tiny_http::Request> {
+    let Some(root) = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("board"))) else { return Err(req) };
+    let Some((path, kind)) = board_path(&root, req.url()) else { return Err(req) };
+    let Ok(file) = std::fs::File::open(&path) else { return Err(req) };
+    let hashed = req.url().starts_with("/board/assets/");
+    let mut resp = tiny_http::Response::from_file(file);
+    for (k, v) in [
+        ("Content-Type", kind),
+        // Excalidraw shows images as data:/blob: URLs and runs the PDF preview in a worker.
+        ("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:; connect-src 'self' data: blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"),
+        ("X-Content-Type-Options", "nosniff"),
+        ("Referrer-Policy", "no-referrer"),
+        ("Cache-Control", if hashed { "max-age=31536000, immutable" } else { "no-cache" }),
+    ] {
+        if let Ok(h) = tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()) {
+            resp.add_header(h);
+        }
+    }
+    let _ = req.respond(resp);
+    Ok(())
+}
+
 fn serve_one(hub: &api::Hub, mut req: tiny_http::Request) {
+    if *req.method() == tiny_http::Method::Get && req.url().starts_with("/board") {
+        match serve_board(req) {
+            Ok(()) => return,
+            Err(r) => return respond(r, api::fail(404, "not_found")),
+        }
+    }
     if *req.method() == tiny_http::Method::Get {
         if let Some((body, kind)) = static_file(req.url()) {
             let mut resp = tiny_http::Response::from_data(body.to_vec());
@@ -84,4 +138,22 @@ pub fn serve(hub: Arc<api::Hub>, server: Arc<tiny_http::Server>, workers: usize)
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn board_page_paths_stay_in_the_board_folder() {
+        let root = std::env::temp_dir().join(format!("ptcc-board-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("assets")).unwrap();
+        std::fs::write(root.join("board.html"), "x").unwrap();
+        std::fs::write(root.join("assets").join("a-1.js"), "x").unwrap();
+        assert_eq!(super::board_path(&root, "/board/").unwrap().0, root.join("board.html"));
+        assert_eq!(super::board_path(&root, "/board#ws/b").unwrap().0, root.join("board.html"));
+        assert!(super::board_path(&root, "/board/assets/a-1.js?v=2").is_some());
+        for bad in ["/board/../hub.json", "/board/assets/..%2fx.js", "/board/.git/x.js", "/board//etc.js", "/board/assets\\a-1.js", "/boardx.html", "/board/missing.js", "/board/hub.db"] {
+            assert!(super::board_path(&root, bad).is_none(), "{bad}");
+        }
+        std::fs::remove_dir_all(root).ok();
+    }
 }

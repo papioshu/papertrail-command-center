@@ -21,7 +21,7 @@ import { api, on, type Row } from "../api";
  *  once by hash on the hub, and the element points at that media record. */
 
 // Fonts ship with the app (scripts/excalidraw-fonts.mjs); the CDN fallback is blocked by the CSP.
-(window as unknown as { EXCALIDRAW_ASSET_PATH: string }).EXCALIDRAW_ASSET_PATH = "/excalidraw-assets/";
+(window as unknown as { EXCALIDRAW_ASSET_PATH: string }).EXCALIDRAW_ASSET_PATH = import.meta.env.BASE_URL + "excalidraw-assets/";
 
 // Excalidraw's dark theme draws the canvas through invert(93%) hue-rotate(180deg), so colors are given pre-inverted:
 // these show as near-black (#121212), green-black (#151815), cream paper (#d8cfc0), its ink (#2a2437), light ink (#ece8fb).

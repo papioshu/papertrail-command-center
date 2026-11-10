@@ -142,15 +142,24 @@ function media() {
     list.length ? el("div", { className: "grid", style: "margin-top:10px" }, list.map(thumb)) : el("p", { className: "dim" }, "No media here yet.")];
 }
 
+// Boards (D050) open full screen on /board/; draw with Apple Pencil on iPad.
+function boards() {
+  const list = feed.records.filter((r) => r.kind === "board" && r.project_id === project);
+  return [el("p", { className: "dim" }, "Boards open full screen. On iPad, Apple Pencil draws and fingers move the canvas (the board switches to pen mode the first time the Pencil touches it)."),
+    ...(list.length ? list.map((b) => el("a", { href: `/board/#${ws}/${b.id}`, style: "display:block;color:inherit;text-decoration:none" },
+      el("div", { className: "card" }, el("div", { style: "font-weight:600" }, (b.fields || {}).title || "Board"), el("div", { className: "dim" }, (b.fields || {}).bg === "blackboard" ? "Blackboard" : "Dark grid"))))
+      : [el("p", { className: "dim" }, "No boards in this project yet. Paper makes them on the PC (TEAM › BOARDS).")])];
+}
+
 function render() {
   const wsSel = el("select", { className: "grow", on: { change: run(async (e) => { ws = e.target.value; project = ""; await load(); }) } },
     me.workspaces.map((w) => el("option", { value: w.id, selected: w.id === ws }, `${w.name} Â· ${w.title || w.role}`)));
   const pSel = el("select", { className: "grow", on: { change: (e) => { project = e.target.value; render(); } } },
     feed.projects.length ? feed.projects.map((p) => el("option", { value: p.id, selected: p.id === project }, p.name)) : el("option", {}, "No shared projects yet"));
-  const tabs = el("div", { className: "row tabs", style: "margin-top:8px" }, ["tasks", "media"].map((t) => el("button", { className: tab === t ? "on" : "", on: { click: () => { tab = t; render(); } } }, t.toUpperCase())),
+  const tabs = el("div", { className: "row tabs", style: "margin-top:8px" }, ["tasks", "media", "boards"].map((t) => el("button", { className: tab === t ? "on" : "", on: { click: () => { tab = t; render(); } } }, t.toUpperCase())),
     el("span", { className: "grow" }), el("button", { className: "small", on: { click: addDevice() } }, "+ Device"), el("button", { className: "small", on: { click: run(load) } }, "Refresh"));
   show(el("div", { className: "row" }, wsSel), el("div", { className: "row", style: "margin-top:8px" }, pSel), tabs,
-    ...(project ? (tab === "tasks" ? tasks() : media()) : [el("p", { className: "dim" }, "Nothing shared in this workspace yet.")]));
+    ...(project ? (tab === "tasks" ? tasks() : tab === "boards" ? boards() : media()) : [el("p", { className: "dim" }, "Nothing shared in this workspace yet.")]));
 }
 
 // Never switch accounts silently: show whose account the link is for, and refuse if this phone is already signed in.
