@@ -95,22 +95,26 @@ export default function Calendar() {
   const [edit, setEdit] = useState<Ev | null>(null);
   const [cals, setCals] = useState<Row[]>([]);
   const [spaces, setSpaces] = useState<Row[]>([]);
+  const [adding, setAdding] = useState(false);
   const team = (st?.team ?? {}) as Record<string, string>;
   const teamKey = JSON.stringify(team);
   const days = useMemo(() => DAYS.map((_, i) => plus(week, i)), [week]);
   const status = useCallback(() => api.gcalStatus().then(setSt, (e) => setErr(String(e))), []);
   useEffect(() => { status(); }, [status]);
 
-  // Your calendar plus every team calendar, merged.
+  // Your calendar, other connected accounts' main calendars and every team calendar, merged.
+  const extraMains = cals.filter((c) => c.account_primary).map((c) => String(c.id)).join(" ");
   const load = useCallback(() => {
     if (!st?.connected) return;
-    const ids = ["", ...new Set(Object.values(JSON.parse(teamKey) as Record<string, string>))];
+    const ids = ["", ...new Set([...(extraMains ? extraMains.split(" ") : []), ...Object.values(JSON.parse(teamKey) as Record<string, string>)])];
     Promise.all(ids.map((c) => api.gcalEvents(week.toISOString(), plus(week, 7).toISOString(), c)))
       .then((x) => { setEvents(x.flat()); setErr(""); }, (e) => setErr(String(e)));
-  }, [st?.connected, week, teamKey]);
+  }, [st?.connected, week, teamKey, extraMains]);
   const sync = useCallback(() => syncTeamCalendars().then((r) => { if (r && r.added + r.updated + r.removed) setMsg(`Team calendars: ${r.added} added, ${r.updated} updated, ${r.removed} removed.`); load(); }, (e) => setErr(String(e))), [load]);
   useEffect(() => { sync(); const t = setInterval(sync, 5 * 60 * 1000); return () => clearInterval(t); }, [sync]);
-  useEffect(() => { if (st?.connected) api.gcalCalendars().then(setCals, (e) => setErr(String(e))); }, [st?.connected]);
+  const accountsKey = JSON.stringify(st?.accounts ?? []);
+  useEffect(() => { if (st?.connected) api.gcalCalendars().then(setCals, (e) => setErr(String(e))); }, [st?.connected, accountsKey]);
+  const addAccount = () => { setAdding(true); api.gcalConnect(true).then(() => { setMsg("Account added. Its calendars are in the lists below."); return status(); }, (e) => setErr(String(e))).finally(() => setAdding(false)); };
 
   // Open tasks and milestones with a due date, from every workspace this PC has joined.
   useEffect(() => {
@@ -179,6 +183,14 @@ export default function Calendar() {
             <span className="dim small">Connected {st.connected_at ? `since ${String(st.connected_at).slice(0, 10)}` : ""} · refreshes every 5 minutes</span>
             <button className="btn sm ghost" onClick={() => api.gcalDisconnect().then(status, (e) => setErr(String(e)))}>Disconnect</button>
           </div>
+          <div className="row wrap" style={{ gap: 8, marginTop: 8, alignItems: "center" }}>
+            <span className="dim small">Other Google accounts:</span>
+            {((st.accounts ?? []) as string[]).map((a) => (
+              <span key={a} className="chip">{a} <button className="btn sm ghost" style={{ padding: "0 4px" }} title={`Sign out ${a} (your main account stays)`} aria-label={`Remove ${a}`}
+                onClick={() => api.gcalDisconnect(a).then(status, (e) => setErr(String(e)))}>✕</button></span>
+            ))}
+            <button className="btn sm" disabled={adding} onClick={addAccount} title="Your main account stays signed in. In Google Cloud, add the other email as a test user first.">{adding ? "Finish signing in in your browser…" : "+ Add another Google account"}</button>
+          </div>
           <Card title="Team calendars" className="cal-team">
             <div className="dim small" style={{ marginBottom: 10, lineHeight: 1.6 }}>
               One Google calendar per workspace keeps the team's open due dates, updated by itself. Set up once: in Google Calendar, Other calendars › + › Create new calendar (e.g. "BOMBSQUAD"); pick it below; then in that calendar's settings › Share with specific people, add Rich's and Profit's Google accounts. They tap Accept and it shows on their phones. Nothing to install for them.
@@ -189,7 +201,7 @@ export default function Calendar() {
                 <select className="input" value={team[w.id] ?? ""} aria-label={`Google calendar for ${w.name}`}
                   onChange={(e) => api.gcalSetTeam(w.id, e.target.value).then(() => status(), (x) => setErr(String(x)))}>
                   <option value="">Not synced</option>
-                  {cals.filter((c) => !c.primary).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  {cals.filter((c) => !c.primary).map((c) => <option key={c.id} value={c.id}>{c.name}{c.account && !c.account_primary ? ` · ${c.account}` : ""}</option>)}
                 </select>
               </div>
             ))}

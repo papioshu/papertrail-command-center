@@ -17,7 +17,27 @@ const TOKEN: &str = "https://oauth2.googleapis.com/token";
 const LIST: &str = "https://www.googleapis.com/calendar/v3/users/me/calendarList";
 const SCOPE: &str = "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.calendarlist.readonly";
 
-static ACCESS: Mutex<Option<(String, i64)>> = Mutex::new(None); // (token, expires at, unix secs)
+// Access tokens per account ("" = the main account, else an extra account's email): (token, expires at, unix secs).
+static ACCESS: Mutex<Option<std::collections::HashMap<String, (String, i64)>>> = Mutex::new(None);
+fn cached(acct: &str) -> Option<(String, i64)> {
+    ACCESS.lock().ok()?.as_ref()?.get(acct).cloned()
+}
+fn remember(acct: &str, t: Option<(String, i64)>) {
+    if let Ok(mut m) = ACCESS.lock() {
+        let m = m.get_or_insert_with(Default::default);
+        match t {
+            Some(t) => { m.insert(acct.to_string(), t); }
+            None => { m.remove(acct); }
+        }
+    }
+}
+
+/// Extra accounts (owner 2026-11-10): more Google accounts beside the main one, e.g. a team email that owns the team
+/// calendars. Settings `gcal.extra` = [{email, refresh_token}]; `gcal.cal_acct` maps their calendar ids to the email.
+fn account_of(c: &Value, cal: &str) -> String {
+    let a = c["cal_acct"][cal].as_str().unwrap_or_default();
+    if !cal.is_empty() && c["extra"].as_array().into_iter().flatten().any(|x| x["email"] == a) { a.to_string() } else { String::new() }
+}
 
 fn cfg(st: &State<AppState>) -> R<Value> {
     let c = st.db.lock().map_err(|_| "database lock poisoned")?;
@@ -72,14 +92,20 @@ fn code_from(path: &str, state: &str) -> R<String> {
     q.get("code").cloned().ok_or_else(|| "Google sent no sign-in code.".into())
 }
 
-fn token(st: &State<AppState>) -> R<String> {
-    if let Some((t, exp)) = ACCESS.lock().map_err(|_| "lock")?.clone() {
+/// An access token for the account that holds `cal` (empty = the main account).
+fn token(st: &State<AppState>, cal: &str) -> R<String> {
+    let c = cfg(st)?;
+    let acct = account_of(&c, cal);
+    if let Some((t, exp)) = cached(&acct) {
         if exp > now() + 60 {
             return Ok(t);
         }
     }
-    let c = cfg(st)?;
-    let refresh = s(&c, "refresh_token");
+    let refresh = if acct.is_empty() {
+        s(&c, "refresh_token")
+    } else {
+        c["extra"].as_array().into_iter().flatten().find(|x| x["email"] == acct.as_str()).map(|x| s(x, "refresh_token")).unwrap_or_default()
+    };
     if refresh.is_empty() {
         return Err("Connect Google Calendar first (CALENDAR › Connect).".into());
     }
@@ -90,14 +116,15 @@ fn token(st: &State<AppState>) -> R<String> {
         .into_json()
         .map_err(|e| e.to_string())?;
     let t = s(&v, "access_token");
-    *ACCESS.lock().map_err(|_| "lock")? = Some((t.clone(), now() + v["expires_in"].as_i64().unwrap_or(3600)));
+    remember(&acct, Some((t.clone(), now() + v["expires_in"].as_i64().unwrap_or(3600))));
     Ok(t)
 }
 
 #[tauri::command(async)]
 pub fn gcal_status(st: State<AppState>) -> R<Value> {
     let c = cfg(&st)?;
-    Ok(json!({ "has_client": !s(&c, "client_id").is_empty(), "connected": !s(&c, "refresh_token").is_empty(), "connected_at": c["connected_at"], "team": c["team"] }))
+    Ok(json!({ "has_client": !s(&c, "client_id").is_empty(), "connected": !s(&c, "refresh_token").is_empty(), "connected_at": c["connected_at"], "team": c["team"],
+        "accounts": c["extra"].as_array().into_iter().flatten().map(|x| x["email"].clone()).collect::<Vec<_>>() }))
 }
 
 /// Saves the OAuth client (from Google Cloud › Credentials › Desktop app). Replacing it signs out.
@@ -111,9 +138,10 @@ pub fn gcal_set_client(st: State<AppState>, client_id: String, client_secret: St
     save_cfg(&st, &json!({ "client_id": id, "client_secret": secret }))
 }
 
-/// Opens Google's sign-in in the browser and waits (up to 3 minutes) for it to come back to this PC.
+/// Opens Google's sign-in in the browser and waits (up to 3 minutes) for it to come back to this PC. `extra`: add
+/// another account beside the main one (the main one stays signed in).
 #[tauri::command(async)]
-pub fn gcal_connect(st: State<AppState>) -> R<()> {
+pub fn gcal_connect(st: State<AppState>, extra: Option<bool>) -> R<()> {
     let mut c = cfg(&st)?;
     let id = s(&c, "client_id");
     if id.is_empty() {
@@ -132,7 +160,7 @@ pub fn gcal_connect(st: State<AppState>) -> R<()> {
         .append_pair("code_challenge", &challenge(&verifier))
         .append_pair("code_challenge_method", "S256")
         .append_pair("access_type", "offline")
-        .append_pair("prompt", "consent")
+        .append_pair("prompt", if extra == Some(true) { "consent select_account" } else { "consent" })
         .append_pair("state", &state);
     crate::commands::shell_open(url.as_str())?;
     let deadline = std::time::Instant::now() + Duration::from_secs(180);
@@ -159,21 +187,46 @@ pub fn gcal_connect(st: State<AppState>) -> R<()> {
     if refresh.is_empty() {
         return Err("Google didn't grant offline access. Try Connect again.".into());
     }
+    let access = (s(&v, "access_token"), now() + v["expires_in"].as_i64().unwrap_or(3600));
+    if extra == Some(true) {
+        // The account's email is its primary calendar's id.
+        let list: Value = agent().get(LIST).set("Authorization", &format!("Bearer {}", access.0)).call().map_err(gerr)?.into_json().map_err(|e| e.to_string())?;
+        let email = list["items"].as_array().into_iter().flatten().find(|x| x["primary"] == true).map(|x| s(x, "id")).ok_or("Couldn't tell which Google account that was.")?;
+        if !c["extra"].is_array() {
+            c["extra"] = json!([]);
+        }
+        let ex = c["extra"].as_array_mut().ok_or("bad settings")?;
+        ex.retain(|x| x["email"] != email.as_str());
+        ex.push(json!({ "email": email, "refresh_token": refresh }));
+        remember(&email, Some(access));
+        return save_cfg(&st, &c);
+    }
     c["refresh_token"] = json!(refresh);
     c["connected_at"] = json!(crate::util::now_iso());
-    *ACCESS.lock().map_err(|_| "lock")? = Some((s(&v, "access_token"), now() + v["expires_in"].as_i64().unwrap_or(3600)));
+    remember("", Some(access));
     save_cfg(&st, &c)
 }
 
+/// Signs out the main account, or with `account` only that extra account.
 #[tauri::command(async)]
-pub fn gcal_disconnect(st: State<AppState>) -> R<()> {
+pub fn gcal_disconnect(st: State<AppState>, account: Option<String>) -> R<()> {
     let mut c = cfg(&st)?;
+    if let Some(a) = account.filter(|a| !a.is_empty()) {
+        if let Some(r) = c["extra"].as_array().into_iter().flatten().find(|x| x["email"] == a.as_str()).map(|x| s(x, "refresh_token")) {
+            let _ = agent().post("https://oauth2.googleapis.com/revoke").send_form(&[("token", &r)]);
+        }
+        if let Some(ex) = c["extra"].as_array_mut() {
+            ex.retain(|x| x["email"] != a.as_str());
+        }
+        remember(&a, None);
+        return save_cfg(&st, &c);
+    }
     let refresh = s(&c, "refresh_token");
     if !refresh.is_empty() {
         let _ = agent().post("https://oauth2.googleapis.com/revoke").send_form(&[("token", &refresh)]);
     }
     c.as_object_mut().map(|m| m.remove("refresh_token"));
-    *ACCESS.lock().map_err(|_| "lock")? = None;
+    remember("", None);
     save_cfg(&st, &c)
 }
 
@@ -183,7 +236,7 @@ pub fn gcal_events(st: State<AppState>, from: String, to: String, calendar: Opti
     let cal = calendar.unwrap_or_default();
     let v: Value = agent()
         .get(&events(&cal))
-        .set("Authorization", &format!("Bearer {}", token(&st)?))
+        .set("Authorization", &format!("Bearer {}", token(&st, &cal)?))
         .query("timeMin", &from)
         .query("timeMax", &to)
         .query("singleEvents", "true")
@@ -213,7 +266,8 @@ fn when(v: &Value) -> R<Value> {
 /// Adds an event (no id) or changes one (id). Fields: title, start, end, notes, location.
 #[tauri::command(async)]
 pub fn gcal_save(st: State<AppState>, id: Option<String>, event: Value, calendar: Option<String>) -> R<String> {
-    let url = events(&calendar.unwrap_or_default());
+    let cal = calendar.unwrap_or_default();
+    let url = events(&cal);
     let title = event["title"].as_str().map(str::trim).filter(|t| !t.is_empty()).ok_or("Give the event a title.")?;
     let mut body = json!({ "summary": title.chars().take(300).collect::<String>(), "start": when(&event["start"])?, "end": when(&event["end"])? });
     for (k, g) in [("notes", "description"), ("location", "location")] {
@@ -221,7 +275,7 @@ pub fn gcal_save(st: State<AppState>, id: Option<String>, event: Value, calendar
             body[g] = json!(x.chars().take(4000).collect::<String>());
         }
     }
-    let auth = format!("Bearer {}", token(&st)?);
+    let auth = format!("Bearer {}", token(&st, &cal)?);
     let r = match id.filter(|i| !i.is_empty()) {
         Some(i) => agent().request("PATCH", &format!("{url}/{}", enc(&i))).set("Authorization", &auth).send_json(body),
         None => agent().post(&url).set("Authorization", &auth).send_json(body),
@@ -236,20 +290,44 @@ fn enc(id: &str) -> String {
 
 #[tauri::command(async)]
 pub fn gcal_delete(st: State<AppState>, id: String, calendar: Option<String>) -> R<()> {
-    match agent().delete(&format!("{}/{}", events(&calendar.unwrap_or_default()), enc(&id))).set("Authorization", &format!("Bearer {}", token(&st)?)).call() {
+    let cal = calendar.unwrap_or_default();
+    match agent().delete(&format!("{}/{}", events(&cal), enc(&id))).set("Authorization", &format!("Bearer {}", token(&st, &cal)?)).call() {
         Ok(_) | Err(ureq::Error::Status(404 | 410, _)) => Ok(()),
         Err(x) => Err(gerr(x)),
     }
 }
 
-/// Writable calendars of the signed-in account (the owner creates one per workspace in Google Calendar).
+/// Writable calendars of the main account, then of each extra account (marked with `account`; that account's own
+/// main calendar also with `account_primary`). Remembers which extra account holds each of its calendars.
 #[tauri::command(async)]
 pub fn gcal_calendars(st: State<AppState>) -> R<Vec<Value>> {
-    let v: Value = agent().get(LIST).set("Authorization", &format!("Bearer {}", token(&st)?)).query("minAccessRole", "writer")
-        .call().map_err(gerr)?.into_json().map_err(|e| e.to_string())?;
-    Ok(v["items"].as_array().cloned().unwrap_or_default().into_iter()
-        .map(|c| json!({ "id": c["id"], "name": c["summaryOverride"].as_str().or(c["summary"].as_str()), "primary": c["primary"], "color": c["backgroundColor"] }))
-        .collect())
+    let list = |auth: String| -> R<Vec<Value>> {
+        let v: Value = agent().get(LIST).set("Authorization", &format!("Bearer {auth}")).query("minAccessRole", "writer")
+            .call().map_err(gerr)?.into_json().map_err(|e| e.to_string())?;
+        Ok(v["items"].as_array().cloned().unwrap_or_default())
+    };
+    let name = |c: &Value| json!(c["summaryOverride"].as_str().or(c["summary"].as_str()));
+    let mut out: Vec<Value> = list(token(&st, "")?)?.iter().map(|c| json!({ "id": c["id"], "name": name(c), "primary": c["primary"], "color": c["backgroundColor"] })).collect();
+    let mut c = cfg(&st)?;
+    let emails: Vec<String> = c["extra"].as_array().into_iter().flatten().map(|x| s(x, "email")).collect();
+    let mut map = serde_json::Map::new();
+    for email in emails {
+        // Its own main calendar is reachable through the email before the map is saved.
+        c["cal_acct"][&email] = json!(email);
+        save_cfg(&st, &c)?;
+        for x in list(token(&st, &email)?)? {
+            // A calendar the main account can also write (shared with it) stays on the main account.
+            if out.iter().any(|o| o["id"] == x["id"]) {
+                continue;
+            }
+            map.insert(s(&x, "id"), json!(email));
+            let label = if x["primary"] == true { json!(format!("{email} (main)")) } else { name(&x) };
+            out.push(json!({ "id": x["id"], "name": label, "account": email, "account_primary": x["primary"], "color": x["backgroundColor"] }));
+        }
+    }
+    c["cal_acct"] = Value::Object(map);
+    save_cfg(&st, &c)?;
+    Ok(out)
 }
 
 /// Workspace id -> Google calendar id (empty calendar = stop syncing that workspace).
@@ -286,7 +364,8 @@ pub fn gcal_sync_team(st: State<AppState>, items: Vec<Value>) -> R<Value> {
     let mut c = cfg(&st)?;
     let team = c["team"].clone();
     let mut pushed = c["pushed"].as_object().cloned().unwrap_or_default();
-    let auth = format!("Bearer {}", token(&st)?);
+    // Each calendar is written with the account that holds it.
+    let mut auths: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let (mut added, mut updated, mut removed) = (0, 0, 0);
     let mut seen = std::collections::HashSet::new();
     let mut todo: Vec<(String, String, String, Option<Value>)> = Vec::new(); // (id, calendar, sig, body if live)
@@ -307,7 +386,17 @@ pub fn gcal_sync_team(st: State<AppState>, items: Vec<Value>) -> R<Value> {
     let mut fail = None;
     for (id, cal, sig, body) in todo {
         let prev = pushed.get(&id).cloned().unwrap_or(Value::Null);
-        let r = match plan(&prev, &cal, &sig, body.is_some()) {
+        let pc = prev["cal"].as_str().unwrap_or_default().to_string();
+        let step = plan(&prev, &cal, &sig, body.is_some());
+        let on = if matches!(step, Step::Remove(_)) { pc.clone() } else { cal.clone() };
+        if step != Step::Keep && !auths.contains_key(&on) {
+            match token(&st, &on) {
+                Ok(t) => { auths.insert(on.clone(), format!("Bearer {t}")); }
+                Err(e) => { fail = Some(e); break; }
+            }
+        }
+        let auth = auths.get(&on).cloned().unwrap_or_default();
+        let r = match step {
             Step::Keep => Ok(()),
             Step::Add => agent().post(&events(&cal)).set("Authorization", &auth).send_json(body.unwrap()).map_err(gerr)
                 .and_then(|r| r.into_json::<Value>().map_err(|e| e.to_string()))
@@ -315,7 +404,6 @@ pub fn gcal_sync_team(st: State<AppState>, items: Vec<Value>) -> R<Value> {
             Step::Update(ev) => agent().request("PATCH", &format!("{}/{}", events(&cal), enc(&ev))).set("Authorization", &auth).send_json(body.unwrap()).map_err(gerr)
                 .map(|_| { pushed.insert(id.clone(), json!({ "cal": cal, "sig": sig, "ev": ev })); updated += 1; }),
             Step::Remove(ev) => {
-                let pc = prev["cal"].as_str().unwrap_or_default().to_string();
                 match agent().delete(&format!("{}/{}", events(&pc), enc(&ev))).set("Authorization", &auth).call() {
                     Ok(_) | Err(ureq::Error::Status(404 | 410, _)) => { pushed.remove(&id); removed += 1; Ok(()) }
                     Err(x) => Err(gerr(x)),
@@ -366,6 +454,15 @@ mod tests {
         assert_eq!(plan(&was, "other@group", "Logo|2026-11-12", true), Step::Remove("e1".into()), "moved calendar");
         assert_eq!(events("abc#x@group.calendar.google.com"), "https://www.googleapis.com/calendar/v3/calendars/abc%23x%40group.calendar.google.com/events");
         assert!(events("").ends_with("/primary/events"));
+    }
+
+    #[test]
+    fn calendars_of_extra_accounts_use_that_account() {
+        let c = json!({ "extra": [{ "email": "paper@x.com", "refresh_token": "r" }], "cal_acct": { "team@group": "paper@x.com", "old@group": "gone@x.com" } });
+        assert_eq!(account_of(&c, "team@group"), "paper@x.com");
+        assert_eq!(account_of(&c, ""), "", "empty = main account");
+        assert_eq!(account_of(&c, "mine@group"), "", "unknown calendar = main account");
+        assert_eq!(account_of(&c, "old@group"), "", "account removed = main account");
     }
 
     #[test]
