@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type Row } from "../api";
 import { Card, day, Empty, ErrBox, Modal } from "../ui";
+import { syncTeamCalendars } from "../calsync";
 
 /** CALENDAR (D047): the owner's Google Calendar (primary), two-way, beside the workspaces' due dates.
  *  Sign-in uses the owner's own Google OAuth client; tokens stay in the app's database, never in this page. */
 
-type Ev = { id?: string; title: string; date: string; end: string; start?: string; stop?: string; allDay: boolean; notes: string };
+type Ev = { id?: string; calendar?: string; title: string; date: string; end: string; start?: string; stop?: string; allDay: boolean; notes: string };
 const DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const monday = (d: Date) => { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; };
 const plus = (d: Date, n: number) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
@@ -39,7 +40,7 @@ function Setup({ hasClient, onDone, onErr }: { hasClient: boolean; onDone: () =>
   );
 }
 
-function Editor({ ev, onClose, onSaved }: { ev: Ev; onClose: () => void; onSaved: () => void }) {
+function Editor({ ev, cals, onClose, onSaved }: { ev: Ev; cals: Row[]; onClose: () => void; onSaved: () => void }) {
   const [f, setF] = useState(ev);
   const [err, setErr] = useState("");
   const onErr = setErr;
@@ -49,13 +50,13 @@ function Editor({ ev, onClose, onSaved }: { ev: Ev; onClose: () => void; onSaved
     const body = f.allDay
       ? { title: f.title, notes: f.notes, start: { date: f.date }, end: { date: day(plus(new Date(`${f.end < f.date ? f.date : f.end}T00:00`), 1)) } }
       : { title: f.title, notes: f.notes, start: { dateTime: new Date(`${f.date}T${f.start || "09:00"}`).toISOString() }, end: { dateTime: new Date(`${f.end < f.date ? f.date : f.end}T${f.stop || f.start || "10:00"}`).toISOString() } };
-    api.gcalSave(f.id ?? null, body).then(onSaved, (e) => onErr(String(e)));
+    api.gcalSave(f.id ?? null, body, f.calendar).then(onSaved, (e) => onErr(String(e)));
   };
   return (
     <Modal title={f.id ? "Edit event" : "New event"} onClose={onClose} foot={
       <>
         {f.id && (confirm
-          ? <button className="btn sm" style={{ color: "var(--signal)" }} onClick={() => api.gcalDelete(f.id!).then(onSaved, (e) => onErr(String(e)))}>Delete from Google Calendar</button>
+          ? <button className="btn sm" style={{ color: "var(--signal)" }} onClick={() => api.gcalDelete(f.id!, f.calendar).then(onSaved, (e) => onErr(String(e)))}>Delete from Google Calendar</button>
           : <button className="btn sm ghost" onClick={() => setConfirm(true)}>Delete</button>)}
         <span style={{ flex: 1 }} />
         <button className="btn sm ghost" onClick={onClose}>Cancel</button>
@@ -65,6 +66,11 @@ function Editor({ ev, onClose, onSaved }: { ev: Ev; onClose: () => void; onSaved
       <div className="col" style={{ gap: 10 }}>
         {err && <ErrBox error={err} />}
         <input className="input" autoFocus placeholder="Title" value={f.title} onChange={(e) => set("title", e.target.value)} aria-label="Title" />
+        {!f.id && cals.length > 1 && (
+          <select className="input" value={f.calendar ?? ""} onChange={(e) => set("calendar", e.target.value)} aria-label="Calendar">
+            {cals.map((c) => <option key={c.id} value={c.primary ? "" : c.id}>{c.primary ? "My calendar" : c.name}</option>)}
+          </select>
+        )}
         <label className="row small" style={{ gap: 8 }}><input type="checkbox" checked={f.allDay} onChange={(e) => set("allDay", e.target.checked)} /> All day</label>
         <div className="row wrap" style={{ gap: 8 }}>
           <input className="input" type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value, end: f.end < e.target.value ? e.target.value : f.end })} aria-label="Start date" />
@@ -87,20 +93,30 @@ export default function Calendar() {
   const [err, setErr] = useState("");
   const [msg, setMsg] = useState("");
   const [edit, setEdit] = useState<Ev | null>(null);
+  const [cals, setCals] = useState<Row[]>([]);
+  const [spaces, setSpaces] = useState<Row[]>([]);
+  const team = (st?.team ?? {}) as Record<string, string>;
+  const teamKey = JSON.stringify(team);
   const days = useMemo(() => DAYS.map((_, i) => plus(week, i)), [week]);
   const status = useCallback(() => api.gcalStatus().then(setSt, (e) => setErr(String(e))), []);
   useEffect(() => { status(); }, [status]);
 
+  // Your calendar plus every team calendar, merged.
   const load = useCallback(() => {
     if (!st?.connected) return;
-    api.gcalEvents(week.toISOString(), plus(week, 7).toISOString()).then((x) => { setEvents(x); setErr(""); }, (e) => setErr(String(e)));
-  }, [st?.connected, week]);
-  useEffect(() => { load(); const t = setInterval(load, 5 * 60 * 1000); return () => clearInterval(t); }, [load]);
+    const ids = ["", ...new Set(Object.values(JSON.parse(teamKey) as Record<string, string>))];
+    Promise.all(ids.map((c) => api.gcalEvents(week.toISOString(), plus(week, 7).toISOString(), c)))
+      .then((x) => { setEvents(x.flat()); setErr(""); }, (e) => setErr(String(e)));
+  }, [st?.connected, week, teamKey]);
+  const sync = useCallback(() => syncTeamCalendars().then((r) => { if (r && r.added + r.updated + r.removed) setMsg(`Team calendars: ${r.added} added, ${r.updated} updated, ${r.removed} removed.`); load(); }, (e) => setErr(String(e))), [load]);
+  useEffect(() => { sync(); const t = setInterval(sync, 5 * 60 * 1000); return () => clearInterval(t); }, [sync]);
+  useEffect(() => { if (st?.connected) api.gcalCalendars().then(setCals, (e) => setErr(String(e))); }, [st?.connected]);
 
   // Open tasks and milestones with a due date, from every workspace this PC has joined.
   useEffect(() => {
     (async () => {
       const s = await api.hubStatus().catch(() => null);
+      setSpaces((s?.workspaces ?? []) as Row[]);
       const out: Row[] = [];
       for (const w of (s?.workspaces ?? []) as Row[]) {
         const b = await api.hubBoard(w.id).catch(() => null);
@@ -115,22 +131,22 @@ export default function Calendar() {
   const open = (e: Row) => {
     const all = !!e.start?.date;
     const endDay = all ? day(plus(new Date(`${e.end.date}T00:00`), -1)) : day(new Date(e.end?.dateTime));
-    setEdit({ id: e.id, title: String(e.title ?? ""), notes: String(e.notes ?? ""), allDay: all, date: dayOf(e), end: endDay, start: all ? undefined : timeOf(e.start.dateTime), stop: all ? undefined : timeOf(e.end.dateTime) });
+    setEdit({ id: e.id, calendar: e.calendar || undefined, title: String(e.title ?? ""), notes: String(e.notes ?? ""), allDay: all, date: dayOf(e), end: endDay, start: all ? undefined : timeOf(e.start.dateTime), stop: all ? undefined : timeOf(e.end.dateTime) });
   };
-  const push = () => api.gcalPushDues(dues.map(({ id, title, due }) => ({ id, title, due }))).then((r) => { setMsg(`Due dates in Google Calendar: ${r.added} added, ${r.updated} updated.`); load(); }, (e) => setErr(String(e)));
+  const color = (cal?: string) => cals.find((c) => c.id === cal)?.color;
 
   if (!st) return null;
   return (
     <div>
       <div className="page-head">
-        <div><h1>Calendar</h1><div className="sub">Your Google Calendar, both ways · workspace due dates alongside</div></div>
+        <div><h1>Calendar</h1><div className="sub">Your Google Calendar, both ways · team calendars keep workspace due dates</div></div>
         {st.connected && (
           <div className="right row" style={{ gap: 8 }}>
             <button className="btn sm ghost" onClick={() => setWeek(plus(week, -7))} aria-label="Previous week">‹</button>
             <button className="btn sm" onClick={() => setWeek(monday(new Date()))}>Today</button>
             <button className="btn sm ghost" onClick={() => setWeek(plus(week, 7))} aria-label="Next week">›</button>
             <button className="btn sm primary" onClick={() => setEdit({ title: "", notes: "", allDay: false, date: day(new Date()), end: day(new Date()), start: "09:00", stop: "10:00" })}>+ Event</button>
-            <button className="btn sm" disabled={!dues.length} onClick={push} title="Adds each open task/milestone due date as an all-day event; pushing again updates them">Push {dues.length} due dates</button>
+            {Object.keys(team).length > 0 && <button className="btn sm" onClick={sync} title="Team calendars also sync by themselves every 5 minutes">Sync team now</button>}
           </div>
         )}
       </div>
@@ -149,7 +165,7 @@ export default function Calendar() {
                     <span>{DAYS[i]}</span><b>{d.getDate()}</b>
                   </button>
                   {evs.map((e) => (
-                    <button key={e.id} className={`cal-ev ${e.ptcc ? "due" : ""}`} onClick={() => open(e)} title={String(e.title ?? "")}>
+                    <button key={`${e.calendar}:${e.id}`} className={`cal-ev ${e.ptcc ? "due" : ""}`} onClick={() => open(e)} title={String(e.title ?? "")} style={e.calendar && color(e.calendar) ? { borderLeftColor: color(e.calendar) } : undefined}>
                       {e.start?.dateTime && <span className="mono">{hhmm(e.start.dateTime)}</span>} {e.title || "(no title)"}
                     </button>
                   ))}
@@ -163,10 +179,26 @@ export default function Calendar() {
             <span className="dim small">Connected {st.connected_at ? `since ${String(st.connected_at).slice(0, 10)}` : ""} · refreshes every 5 minutes</span>
             <button className="btn sm ghost" onClick={() => api.gcalDisconnect().then(status, (e) => setErr(String(e)))}>Disconnect</button>
           </div>
+          <Card title="Team calendars" className="cal-team">
+            <div className="dim small" style={{ marginBottom: 10, lineHeight: 1.6 }}>
+              One Google calendar per workspace keeps the team's open due dates, updated by itself. Set up once: in Google Calendar, Other calendars › + › Create new calendar (e.g. "BOMBSQUAD"); pick it below; then in that calendar's settings › Share with specific people, add Rich's and Profit's Google accounts. They tap Accept and it shows on their phones. Nothing to install for them.
+            </div>
+            {!spaces.length ? <Empty>Join a workspace in TEAM first.</Empty> : spaces.map((w) => (
+              <div key={w.id} className="row" style={{ gap: 10, alignItems: "center", marginBottom: 6 }}>
+                <b style={{ minWidth: 140 }}>{w.name}</b>
+                <select className="input" value={team[w.id] ?? ""} aria-label={`Google calendar for ${w.name}`}
+                  onChange={(e) => api.gcalSetTeam(w.id, e.target.value).then(() => status(), (x) => setErr(String(x)))}>
+                  <option value="">Not synced</option>
+                  {cals.filter((c) => !c.primary).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+            ))}
+            {spaces.length > 0 && !cals.some((c) => !c.primary) && <div className="dim small">No other calendars yet: create one in Google Calendar, then reopen this tab.</div>}
+          </Card>
           {!events.length && !dues.length && <Empty>Nothing this week.</Empty>}
         </>
       )}
-      {edit && <Editor ev={edit} onClose={() => setEdit(null)} onSaved={() => { setEdit(null); load(); }} />}
+      {edit && <Editor ev={edit} cals={cals} onClose={() => setEdit(null)} onSaved={() => { setEdit(null); load(); }} />}
     </div>
   );
 }

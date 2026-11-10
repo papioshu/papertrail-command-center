@@ -17,6 +17,7 @@ const Actions = lazy(() => import("./views/Actions"));
 const Chat = lazy(() => import("./views/Chat"));
 const Team = lazy(() => import("./views/Team"));
 const Calendar = lazy(() => import("./views/Calendar"));
+import { syncTeamCalendars } from "./calsync";
 
 // PapertrailOS bracketed bottom navigation.
 const NAV: [View, string][] = [
@@ -180,6 +181,8 @@ export default function App() {
   useEffect(() => { api.team().then((t) => { setMe(t.me); if (t.me) setGate(false); }, () => setMe(null)); }, []);
   const [params, setParams] = useState<Row>(() => savedSpot()?.params ?? {});
   useEffect(() => { if (PHONE) localStorage.setItem(SPOT, JSON.stringify({ view, params })); }, [view, params]);
+  // Team calendars (D048) stay current while the app runs; a no-op unless this PC connected Google and mapped one.
+  useEffect(() => { if (PHONE) return; const run = () => { syncTeamCalendars().catch(() => {}); }; const t0 = setTimeout(run, 20_000); const t = setInterval(run, 10 * 60_000); return () => { clearTimeout(t0); clearInterval(t); }; }, []);
   const [status, setStatus] = useState<Row>({ state: "idle" });
   const [lastRefresh, setLastRefresh] = useState<string | null>(null);
   const [launching, setLaunching] = useState<{ p: Row; agent?: "claude" | "codex"; mode?: LaunchReq["mode"]; preset?: string; task?: string } | null>(null);

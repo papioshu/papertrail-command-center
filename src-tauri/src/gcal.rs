@@ -1,7 +1,7 @@
 //! Google Calendar, two-way (owner 2026-11-09, D047). The owner's own Google Cloud OAuth client (type "Desktop
 //! app") signs in through the system browser with PKCE and a one-shot 127.0.0.1 callback; the refresh token stays in
-//! the app's database (settings key `gcal`, never sent to the page). Reads and writes the primary calendar only;
-//! task and milestone due dates are pushed as all-day events tagged with the item id, so pushing again updates them.
+//! the app's database (settings key `gcal`, never sent to the page). Each workspace can map to a Google calendar the
+//! owner shares with the team (D048); its open due dates are kept there as all-day events tagged with the record id.
 
 use crate::{db, AppState};
 use serde_json::{json, Value};
@@ -14,8 +14,8 @@ type R<T> = Result<T, String>;
 
 const AUTH: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN: &str = "https://oauth2.googleapis.com/token";
-const EVENTS: &str = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
-const SCOPE: &str = "https://www.googleapis.com/auth/calendar.events";
+const LIST: &str = "https://www.googleapis.com/calendar/v3/users/me/calendarList";
+const SCOPE: &str = "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.calendarlist.readonly";
 
 static ACCESS: Mutex<Option<(String, i64)>> = Mutex::new(None); // (token, expires at, unix secs)
 
@@ -97,7 +97,7 @@ fn token(st: &State<AppState>) -> R<String> {
 #[tauri::command(async)]
 pub fn gcal_status(st: State<AppState>) -> R<Value> {
     let c = cfg(&st)?;
-    Ok(json!({ "has_client": !s(&c, "client_id").is_empty(), "connected": !s(&c, "refresh_token").is_empty(), "connected_at": c["connected_at"] }))
+    Ok(json!({ "has_client": !s(&c, "client_id").is_empty(), "connected": !s(&c, "refresh_token").is_empty(), "connected_at": c["connected_at"], "team": c["team"] }))
 }
 
 /// Saves the OAuth client (from Google Cloud › Credentials › Desktop app). Replacing it signs out.
@@ -177,11 +177,12 @@ pub fn gcal_disconnect(st: State<AppState>) -> R<()> {
     save_cfg(&st, &c)
 }
 
-/// Events on the primary calendar between two RFC 3339 times (recurring events expanded).
+/// Events of one calendar (empty = primary) between two RFC 3339 times (recurring events expanded).
 #[tauri::command(async)]
-pub fn gcal_events(st: State<AppState>, from: String, to: String) -> R<Vec<Value>> {
+pub fn gcal_events(st: State<AppState>, from: String, to: String, calendar: Option<String>) -> R<Vec<Value>> {
+    let cal = calendar.unwrap_or_default();
     let v: Value = agent()
-        .get(EVENTS)
+        .get(&events(&cal))
         .set("Authorization", &format!("Bearer {}", token(&st)?))
         .query("timeMin", &from)
         .query("timeMax", &to)
@@ -194,7 +195,7 @@ pub fn gcal_events(st: State<AppState>, from: String, to: String) -> R<Vec<Value
         .map_err(|e| e.to_string())?;
     Ok(v["items"].as_array().cloned().unwrap_or_default().into_iter().map(|e| json!({
         "id": e["id"], "title": e["summary"], "start": e["start"], "end": e["end"], "link": e["htmlLink"],
-        "location": e["location"], "notes": e["description"], "ptcc": e["extendedProperties"]["private"]["ptcc"],
+        "location": e["location"], "notes": e["description"], "ptcc": e["extendedProperties"]["private"]["ptcc"], "calendar": cal,
     })).collect())
 }
 
@@ -211,7 +212,8 @@ fn when(v: &Value) -> R<Value> {
 
 /// Adds an event (no id) or changes one (id). Fields: title, start, end, notes, location.
 #[tauri::command(async)]
-pub fn gcal_save(st: State<AppState>, id: Option<String>, event: Value) -> R<String> {
+pub fn gcal_save(st: State<AppState>, id: Option<String>, event: Value, calendar: Option<String>) -> R<String> {
+    let url = events(&calendar.unwrap_or_default());
     let title = event["title"].as_str().map(str::trim).filter(|t| !t.is_empty()).ok_or("Give the event a title.")?;
     let mut body = json!({ "summary": title.chars().take(300).collect::<String>(), "start": when(&event["start"])?, "end": when(&event["end"])? });
     for (k, g) in [("notes", "description"), ("location", "location")] {
@@ -221,8 +223,8 @@ pub fn gcal_save(st: State<AppState>, id: Option<String>, event: Value) -> R<Str
     }
     let auth = format!("Bearer {}", token(&st)?);
     let r = match id.filter(|i| !i.is_empty()) {
-        Some(i) => agent().request("PATCH", &format!("{EVENTS}/{}", enc(&i))).set("Authorization", &auth).send_json(body),
-        None => agent().post(EVENTS).set("Authorization", &auth).send_json(body),
+        Some(i) => agent().request("PATCH", &format!("{url}/{}", enc(&i))).set("Authorization", &auth).send_json(body),
+        None => agent().post(&url).set("Authorization", &auth).send_json(body),
     };
     let v: Value = r.map_err(gerr)?.into_json().map_err(|e| e.to_string())?;
     Ok(s(&v, "id"))
@@ -233,37 +235,109 @@ fn enc(id: &str) -> String {
 }
 
 #[tauri::command(async)]
-pub fn gcal_delete(st: State<AppState>, id: String) -> R<()> {
-    match agent().delete(&format!("{EVENTS}/{}", enc(&id))).set("Authorization", &format!("Bearer {}", token(&st)?)).call() {
-        Ok(_) | Err(ureq::Error::Status(410, _)) => Ok(()),
+pub fn gcal_delete(st: State<AppState>, id: String, calendar: Option<String>) -> R<()> {
+    match agent().delete(&format!("{}/{}", events(&calendar.unwrap_or_default()), enc(&id))).set("Authorization", &format!("Bearer {}", token(&st)?)).call() {
+        Ok(_) | Err(ureq::Error::Status(404 | 410, _)) => Ok(()),
         Err(x) => Err(gerr(x)),
     }
 }
 
-/// Pushes dated items ({id, title, due: YYYY-MM-DD}) as all-day events tagged ptcc=<id>: new ones are added, ones
-/// already pushed are updated in place. Returns (added, updated).
+/// Writable calendars of the signed-in account (the owner creates one per workspace in Google Calendar).
 #[tauri::command(async)]
-pub fn gcal_push_dues(st: State<AppState>, items: Vec<Value>) -> R<Value> {
-    let auth = format!("Bearer {}", token(&st)?);
-    let (mut added, mut updated) = (0, 0);
-    for it in items.iter().take(500) {
-        let (id, title, due) = (s(it, "id"), s(it, "title"), s(it, "due"));
-        let Ok(d) = chrono::NaiveDate::parse_from_str(&due, "%Y-%m-%d") else { continue };
-        if id.is_empty() || title.is_empty() {
-            continue;
-        }
-        let body = json!({ "summary": title.chars().take(300).collect::<String>(), "start": { "date": due }, "end": { "date": (d + chrono::Duration::days(1)).to_string() },
-            "extendedProperties": { "private": { "ptcc": id } } });
-        let found: Value = agent().get(EVENTS).set("Authorization", &auth).query("privateExtendedProperty", &format!("ptcc={id}")).query("maxResults", "1")
-            .call().map_err(gerr)?.into_json().map_err(|e| e.to_string())?;
-        match found["items"][0]["id"].as_str() {
-            Some(ev) => { agent().request("PATCH", &format!("{EVENTS}/{}", enc(ev))).set("Authorization", &auth).send_json(body).map_err(gerr)?; updated += 1; }
-            None => { agent().post(EVENTS).set("Authorization", &auth).send_json(body).map_err(gerr)?; added += 1; }
-        }
-    }
-    Ok(json!({ "added": added, "updated": updated }))
+pub fn gcal_calendars(st: State<AppState>) -> R<Vec<Value>> {
+    let v: Value = agent().get(LIST).set("Authorization", &format!("Bearer {}", token(&st)?)).query("minAccessRole", "writer")
+        .call().map_err(gerr)?.into_json().map_err(|e| e.to_string())?;
+    Ok(v["items"].as_array().cloned().unwrap_or_default().into_iter()
+        .map(|c| json!({ "id": c["id"], "name": c["summaryOverride"].as_str().or(c["summary"].as_str()), "primary": c["primary"], "color": c["backgroundColor"] }))
+        .collect())
 }
 
+/// Workspace id -> Google calendar id (empty calendar = stop syncing that workspace).
+#[tauri::command(async)]
+pub fn gcal_set_team(st: State<AppState>, workspace: String, calendar: String) -> R<()> {
+    let mut c = cfg(&st)?;
+    if !c["team"].is_object() {
+        c["team"] = json!({});
+    }
+    if calendar.trim().is_empty() { c["team"].as_object_mut().map(|m| m.remove(&workspace)); } else { c["team"][&workspace] = json!(calendar.trim()); }
+    save_cfg(&st, &c)
+}
+
+/// The sync plan for one item: what changed since the last push decides the call.
+#[derive(Debug, PartialEq)]
+enum Step { Add, Update(String), Remove(String), Keep }
+fn plan(prev: &Value, cal: &str, sig: &str, live: bool) -> Step {
+    let ev = prev["ev"].as_str().unwrap_or_default().to_string();
+    match (ev.is_empty(), live) {
+        (true, true) => Step::Add,
+        (true, false) => Step::Keep,
+        (false, false) => Step::Remove(ev),
+        (false, true) if prev["cal"].as_str() != Some(cal) => Step::Remove(ev), // moved calendar: removed now, added next pass
+        (false, true) if prev["sig"].as_str() == Some(sig) => Step::Keep,
+        (false, true) => Step::Update(ev),
+    }
+}
+
+/// Keeps team calendars in step with the workspaces: items are {id, workspace, title, due: YYYY-MM-DD, done}. Open
+/// dated items in a workspace with a calendar become all-day events; changed ones are updated; done, undated or
+/// vanished ones are removed. What was pushed is remembered (settings `gcal.pushed`), so unchanged items cost nothing.
+#[tauri::command(async)]
+pub fn gcal_sync_team(st: State<AppState>, items: Vec<Value>) -> R<Value> {
+    let mut c = cfg(&st)?;
+    let team = c["team"].clone();
+    let mut pushed = c["pushed"].as_object().cloned().unwrap_or_default();
+    let auth = format!("Bearer {}", token(&st)?);
+    let (mut added, mut updated, mut removed) = (0, 0, 0);
+    let mut seen = std::collections::HashSet::new();
+    let mut todo: Vec<(String, String, String, Option<Value>)> = Vec::new(); // (id, calendar, sig, body if live)
+    for it in items.iter().take(2000) {
+        let (id, title, due) = (s(it, "id"), s(it, "title"), s(it, "due"));
+        let cal = team[s(it, "workspace")].as_str().unwrap_or_default().to_string();
+        let date = chrono::NaiveDate::parse_from_str(&due, "%Y-%m-%d").ok();
+        if id.is_empty() { continue; }
+        seen.insert(id.clone());
+        let live = !cal.is_empty() && !title.is_empty() && date.is_some() && !it["done"].as_bool().unwrap_or(false);
+        let body = date.filter(|_| live).map(|d| json!({ "summary": title.chars().take(300).collect::<String>(), "start": { "date": due },
+            "end": { "date": (d + chrono::Duration::days(1)).to_string() }, "extendedProperties": { "private": { "ptcc": id } } }));
+        todo.push((id, cal, format!("{title}|{due}"), body));
+    }
+    for (id, prev) in pushed.clone() {
+        if !seen.contains(&id) { todo.push((id.clone(), prev["cal"].as_str().unwrap_or_default().into(), String::new(), None)); }
+    }
+    let mut fail = None;
+    for (id, cal, sig, body) in todo {
+        let prev = pushed.get(&id).cloned().unwrap_or(Value::Null);
+        let r = match plan(&prev, &cal, &sig, body.is_some()) {
+            Step::Keep => Ok(()),
+            Step::Add => agent().post(&events(&cal)).set("Authorization", &auth).send_json(body.unwrap()).map_err(gerr)
+                .and_then(|r| r.into_json::<Value>().map_err(|e| e.to_string()))
+                .map(|v| { pushed.insert(id.clone(), json!({ "cal": cal, "sig": sig, "ev": v["id"] })); added += 1; }),
+            Step::Update(ev) => agent().request("PATCH", &format!("{}/{}", events(&cal), enc(&ev))).set("Authorization", &auth).send_json(body.unwrap()).map_err(gerr)
+                .map(|_| { pushed.insert(id.clone(), json!({ "cal": cal, "sig": sig, "ev": ev })); updated += 1; }),
+            Step::Remove(ev) => {
+                let pc = prev["cal"].as_str().unwrap_or_default().to_string();
+                match agent().delete(&format!("{}/{}", events(&pc), enc(&ev))).set("Authorization", &auth).call() {
+                    Ok(_) | Err(ureq::Error::Status(404 | 410, _)) => { pushed.remove(&id); removed += 1; Ok(()) }
+                    Err(x) => Err(gerr(x)),
+                }
+            }
+        };
+        if let Err(e) = r { fail = Some(e); break; } // keep what got done; the next pass retries the rest
+    }
+    c["pushed"] = Value::Object(pushed);
+    save_cfg(&st, &c)?;
+    match fail {
+        Some(e) => Err(e),
+        None => Ok(json!({ "added": added, "updated": updated, "removed": removed })),
+    }
+}
+
+/// A calendar's events URL; the id is percent-encoded (group calendar ids contain '@' and '#').
+fn events(cal: &str) -> String {
+    let id = if cal.is_empty() { "primary" } else { cal };
+    let enc: String = id.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect();
+    format!("https://www.googleapis.com/calendar/v3/calendars/{enc}/events")
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,6 +352,20 @@ mod tests {
         assert_eq!(code_from("/?state=abc&code=4%2F0Ab", "abc").unwrap(), "4/0Ab");
         assert!(code_from("/?state=evil&code=x", "abc").is_err());
         assert!(code_from("/?error=access_denied&state=abc", "abc").unwrap_err().contains("cancelled"));
+    }
+
+    #[test]
+    fn team_sync_plans_each_item_from_what_was_pushed() {
+        let none = Value::Null;
+        let was = json!({ "cal": "team@group", "sig": "Logo|2026-11-12", "ev": "e1" });
+        assert_eq!(plan(&none, "team@group", "Logo|2026-11-12", true), Step::Add);
+        assert_eq!(plan(&none, "", "", false), Step::Keep, "never pushed, nothing to remove");
+        assert_eq!(plan(&was, "team@group", "Logo|2026-11-12", true), Step::Keep, "unchanged costs nothing");
+        assert_eq!(plan(&was, "team@group", "Logo|2026-11-14", true), Step::Update("e1".into()));
+        assert_eq!(plan(&was, "team@group", "Logo|2026-11-12", false), Step::Remove("e1".into()), "done or deleted");
+        assert_eq!(plan(&was, "other@group", "Logo|2026-11-12", true), Step::Remove("e1".into()), "moved calendar");
+        assert_eq!(events("abc#x@group.calendar.google.com"), "https://www.googleapis.com/calendar/v3/calendars/abc%23x%40group.calendar.google.com/events");
+        assert!(events("").ends_with("/primary/events"));
     }
 
     #[test]
