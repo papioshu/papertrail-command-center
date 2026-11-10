@@ -24,8 +24,13 @@ fn rel_path(p: &str) -> bool {
         && !p.contains('\\')
         && !p.contains(':')
         && !p.chars().any(char::is_control)
-        && p.split('/').all(|s| !s.is_empty() && s != "." && s != ".." && !s.eq_ignore_ascii_case(".git"))
-}
+        && p.split('/').all(|s| {
+            // Windows drops trailing dots/spaces (".git." == ".git") and has 8.3 short names (GIT~1) and device names.
+            let low = s.to_ascii_lowercase();
+            let stem = low.split('.').next().unwrap_or_default();
+            !s.is_empty() && !s.ends_with('.') && !s.ends_with(' ') && low != ".git" && !low.starts_with("git~")
+                && !matches!(stem, "con" | "prn" | "aux" | "nul" | "com1" | "com2" | "com3" | "com4" | "com5" | "com6" | "com7" | "com8" | "com9" | "lpt1" | "lpt2" | "lpt3" | "lpt4" | "lpt5" | "lpt6" | "lpt7" | "lpt8" | "lpt9")
+        })}
 
 /// What a share run does: (path, existing record id if changed) to upload, and record ids to remove.
 fn plan(local: &HashMap<String, String>, remote: &HashMap<String, (String, String)>) -> (Vec<(String, Option<String>)>, Vec<String>) {
@@ -159,8 +164,14 @@ fn target(repo: &Path, path: &str) -> R<PathBuf> {
     while !probe.exists() {
         probe = probe.parent().map(Path::to_path_buf).ok_or("bad path")?;
     }
-    if !probe.canonicalize().map_err(|e| e.to_string())?.starts_with(&root) || t.canonicalize().is_ok_and(|c| !c.starts_with(&root)) {
+    let real = probe.canonicalize().map_err(|e| e.to_string())?;
+    if !real.starts_with(&root) || t.canonicalize().is_ok_and(|c| !c.starts_with(&root)) {
         return Err("That path leads outside the project.".into());
+    }
+    // As Windows resolved it (short names, case), nothing may land inside .git.
+    let inside = |p: &Path| p.strip_prefix(&root).map(|r| r.components().any(|c| c.as_os_str().to_string_lossy().eq_ignore_ascii_case(".git"))).unwrap_or(true);
+    if inside(&real) || t.canonicalize().is_ok_and(|c| inside(&c)) {
+        return Err("That path isn't allowed.".into());
     }
     Ok(t)
 }
@@ -239,7 +250,9 @@ mod tests {
         std::fs::create_dir_all(repo.join("art")).unwrap();
         assert!(target(&repo, "art/logo.png").unwrap().starts_with(&repo));
         assert!(target(&repo, "new/dir/readme.md").is_ok(), "new folders are fine");
-        for bad in ["../x", "/etc/passwd", "C:/x", ".git/config", "a\\b", ".env", "keys/server.pem", "my secrets.txt"] {
+        std::fs::create_dir_all(repo.join(".git").join("hooks")).unwrap();
+        for bad in ["../x", "/etc/passwd", "C:/x", ".git/config", "a\\b", ".env", "keys/server.pem", "my secrets.txt", ".git./hooks/pre-commit", ".git /config",
+                    "GIT~1/config", "docs/con.txt", "nul", "a/./b", "x/../y", "file.txt."] {
             assert!(target(&repo, bad).is_err(), "{bad} must be refused");
         }
         let _ = std::fs::remove_dir_all(repo);

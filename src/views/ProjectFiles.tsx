@@ -141,7 +141,7 @@ export default function ProjectFiles({ ws, b, project, local, me, onErr, reload 
         </details>
       )}
 
-      {!list.length && !owner && <Empty>The owner hasn't shared this project's files yet.</Empty>}
+      {!list.length && !owner && <Empty>{can(b.role, "admin") ? "To share files, share this project from the PC that has it (TEAM › Share a local project), then open FILES there." : "The owner hasn't shared this project's files yet."}</Empty>}
 
       {preview && (
         <Modal title="Share this project's files with the workspace" onClose={() => setPreview(null)}

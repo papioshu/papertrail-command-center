@@ -586,11 +586,11 @@ fn project_files_are_published_by_owners_and_changed_only_through_accepted_propo
     let n = c.rejected.len();
     c.create("file", &fx.p1, json!({ "path": "x.txt", "sha256": v1 }));
     c.queue("update", "file", &file, &fx.p1, json!({ "sha256": v1 }));
-    for bad in ["../escape.txt", "/abs.txt", "C:/x.txt", ".git/config", "a//b", "a\\b"] {
+    for bad in ["../escape.txt", "/abs.txt", "C:/x.txt", ".git/config", "a//b", "a\\b", ".git./hooks/x", ".git /config", "GIT~1/config", "con.txt"] {
         c.create("proposal", &fx.p1, json!({ "path": bad, "sha256": v1, "base": null }));
     }
     c.sync();
-    assert_eq!(c.rejected.len(), n + 8);
+    assert_eq!(c.rejected.len(), n + 12);
     // A proposal waits; the proposer can't accept it, the owner can.
     let v2 = put("contributor", b"logo v2, brighter");
     let prop = c.create("proposal", &fx.p1, json!({ "path": "art/logo.txt", "sha256": v2, "base": v1, "note": "brighter" }));

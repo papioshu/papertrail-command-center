@@ -21,8 +21,13 @@ const DOC_KINDS: [&str; 3] = ["snapshot", "file", "proposal"];
 /// A project-relative file path: forward slashes, no "..", no drive or root, no control characters, not inside .git.
 fn rel_path(p: &str) -> bool {
     !p.is_empty() && p.len() <= 500 && !p.starts_with('/') && !p.contains('\\') && !p.contains(':') && !p.chars().any(char::is_control)
-        && p.split('/').all(|s| !s.is_empty() && s != "." && s != ".." && !s.eq_ignore_ascii_case(".git"))
-}
+        && p.split('/').all(|s| {
+            // Windows drops trailing dots/spaces (".git." == ".git") and has 8.3 short names (GIT~1) and device names.
+            let low = s.to_ascii_lowercase();
+            let stem = low.split('.').next().unwrap_or_default();
+            !s.is_empty() && !s.ends_with('.') && !s.ends_with(' ') && low != ".git" && !low.starts_with("git~")
+                && !matches!(stem, "con" | "prn" | "aux" | "nul" | "com1" | "com2" | "com3" | "com4" | "com5" | "com6" | "com7" | "com8" | "com9" | "lpt1" | "lpt2" | "lpt3" | "lpt4" | "lpt5" | "lpt6" | "lpt7" | "lpt8" | "lpt9")
+        })}
 const FEED_MAX: i64 = 500;
 
 /// Client-made ids are UUIDs (§7.1): 36 chars of hex and dashes.
