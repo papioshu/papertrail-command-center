@@ -66,6 +66,39 @@ function Updates() {
   );
 }
 
+/** Google accounts for CALENDAR (D047, D051): the main one, plus extra ones beside it; each can be signed out alone. */
+function GoogleAccounts() {
+  const [st, setSt] = useState<Row | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const load = () => api.gcalStatus().then(setSt, (e) => setErr(String(e)));
+  useEffect(() => { load(); }, []);
+  const run = (p: Promise<unknown>) => { setErr(null); setBusy(true); p.then(load, (e) => setErr(String(e))).finally(() => setBusy(false)); };
+  if (!st) return null;
+  return (
+    <Card title="Google Calendar accounts">
+      <div className="col">
+        {!st.connected ? <div className="small">Not connected. Connect your main account on the CALENDAR tab.</div> : (
+          <div className="row wrap" style={{ gap: 8, alignItems: "center" }}>
+            <span className="small">Main account{st.connected_at ? `, since ${String(st.connected_at).slice(0, 10)}` : ""}</span>
+            <button className="btn sm ghost" disabled={busy} onClick={() => run(api.gcalDisconnect())}>Disconnect</button>
+          </div>
+        )}
+        {((st.accounts ?? []) as string[]).map((a) => (
+          <div key={a} className="row wrap" style={{ gap: 8, alignItems: "center" }}>
+            <span className="small">{a}</span>
+            <button className="btn sm ghost" disabled={busy} title="Your main account stays signed in" onClick={() => run(api.gcalDisconnect(a))}>Disconnect</button>
+          </div>
+        ))}
+        {st.connected && <div className="row"><button className="btn sm" disabled={busy} onClick={() => { setAdding(true); run(api.gcalConnect(true).finally(() => setAdding(false))); }}>{adding ? "Finish signing in in your browser…" : "+ Add another Google account"}</button></div>}
+        {err && <ErrBox error={err} />}
+        <div className="dim small">Extra accounts sit beside your main one; their calendars show on CALENDAR and can be team calendars. While the Google app is in Testing, add each email as a test user first.</div>
+      </div>
+    </Card>
+  );
+}
+
 export default function Settings() {
   const s = useAsync(() => api.settings(), []);
   const diag = useAsync(() => api.diagnostics(), [], ["projects-updated"]);
@@ -135,6 +168,7 @@ export default function Settings() {
           </div>
         </Card>
         <Updates />
+        <GoogleAccounts />
         <PhoneAccess />
         <Card title="Sources">
           <div className="col">

@@ -95,7 +95,6 @@ export default function Calendar() {
   const [edit, setEdit] = useState<Ev | null>(null);
   const [cals, setCals] = useState<Row[]>([]);
   const [spaces, setSpaces] = useState<Row[]>([]);
-  const [adding, setAdding] = useState(false);
   const team = (st?.team ?? {}) as Record<string, string>;
   const teamKey = JSON.stringify(team);
   const days = useMemo(() => DAYS.map((_, i) => plus(week, i)), [week]);
@@ -114,7 +113,6 @@ export default function Calendar() {
   useEffect(() => { sync(); const t = setInterval(sync, 5 * 60 * 1000); return () => clearInterval(t); }, [sync]);
   const accountsKey = JSON.stringify(st?.accounts ?? []);
   useEffect(() => { if (st?.connected) api.gcalCalendars().then(setCals, (e) => setErr(String(e))); }, [st?.connected, accountsKey]);
-  const addAccount = () => { setAdding(true); api.gcalConnect(true).then(() => { setMsg("Account added. Its calendars are in the lists below."); return status(); }, (e) => setErr(String(e))).finally(() => setAdding(false)); };
 
   // Open tasks and milestones with a due date, from every workspace this PC has joined.
   useEffect(() => {
@@ -180,16 +178,7 @@ export default function Calendar() {
             })}
           </div>
           <div className="row" style={{ gap: 8, marginTop: 14 }}>
-            <span className="dim small">Connected {st.connected_at ? `since ${String(st.connected_at).slice(0, 10)}` : ""} · refreshes every 5 minutes</span>
-            <button className="btn sm ghost" onClick={() => api.gcalDisconnect().then(status, (e) => setErr(String(e)))}>Disconnect</button>
-          </div>
-          <div className="row wrap" style={{ gap: 8, marginTop: 8, alignItems: "center" }}>
-            <span className="dim small">Other Google accounts:</span>
-            {((st.accounts ?? []) as string[]).map((a) => (
-              <span key={a} className="chip">{a} <button className="btn sm ghost" style={{ padding: "0 4px" }} title={`Sign out ${a} (your main account stays)`} aria-label={`Remove ${a}`}
-                onClick={() => api.gcalDisconnect(a).then(status, (e) => setErr(String(e)))}>✕</button></span>
-            ))}
-            <button className="btn sm" disabled={adding} onClick={addAccount} title="Your main account stays signed in. In Google Cloud, add the other email as a test user first.">{adding ? "Finish signing in in your browser…" : "+ Add another Google account"}</button>
+            <span className="dim small">Connected {st.connected_at ? `since ${String(st.connected_at).slice(0, 10)}` : ""} · refreshes every 5 minutes · Google accounts are in Settings</span>
           </div>
           <Card title="Team calendars" className="cal-team">
             <div className="dim small" style={{ marginBottom: 10, lineHeight: 1.6 }}>

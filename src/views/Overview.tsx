@@ -208,6 +208,46 @@ function DailyPass({ b }: { b: Row }) {
   );
 }
 
+/** The next 7 days from CALENDAR (owner 2026-11-10): your Google calendars plus team calendars; click opens CALENDAR. */
+function Week() {
+  const { nav } = useNav();
+  const data = useAsync(async () => {
+    const st = await api.gcalStatus();
+    if (!st.connected) return null;
+    const from = new Date(); from.setHours(0, 0, 0, 0);
+    const to = new Date(from); to.setDate(to.getDate() + 7);
+    const ids = ["", ...new Set([...((st.accounts ?? []) as string[]), ...Object.values((st.team ?? {}) as Record<string, string>)])];
+    return (await Promise.all(ids.map((c) => api.gcalEvents(from.toISOString(), to.toISOString(), c).catch(() => [] as Row[])))).flat();
+  }, []);
+  if (data.data === null) return null; // Google not connected
+  const days = [...Array(7)].map((_, i) => { const d = new Date(); d.setDate(d.getDate() + i); return d; });
+  const dayOf = (e: Row) => (e.start?.date ? String(e.start.date) : day(new Date(e.start?.dateTime)));
+  return (
+    <>
+      <div className="sect"><h2>Next 7 days</h2><div className="rule" /><button className="btn sm aside" onClick={() => nav("calendar")}>Open calendar</button></div>
+      {data.error ? <ErrBox error={data.error} /> : (
+        <div className="cal-week compact">
+          {days.map((d, i) => {
+            const evs = (data.data ?? []).filter((e) => dayOf(e) === day(d));
+            return (
+              <div key={i} className={`cal-day ${i === 0 ? "today" : ""}`}>
+                <button className="cal-head" onClick={() => nav("calendar")}><span>{d.toLocaleDateString(undefined, { weekday: "short" }).toUpperCase()}</span><b>{d.getDate()}</b></button>
+                {evs.slice(0, 5).map((e) => (
+                  <button key={`${e.calendar}:${e.id}`} className={`cal-ev ${e.ptcc ? "due" : ""}`} onClick={() => nav("calendar")} title={String(e.title ?? "")}>
+                    {e.start?.dateTime && <span className="mono">{new Date(e.start.dateTime).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>} {e.title || "(no title)"}
+                  </button>
+                ))}
+                {evs.length > 5 && <div className="dim small">+{evs.length - 5} more</div>}
+                {!evs.length && <div className="dim small" style={{ padding: "4px 2px" }}>{data.loading ? "…" : "—"}</div>}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </>
+  );
+}
+
 export default function Overview() {
   const projects = useAsync(() => api.projects(), [], REFRESH);
   const brief = useAsync(() => api.briefing(), [], REFRESH);
@@ -280,6 +320,8 @@ export default function Overview() {
           <div className="dim small mono" style={{ fontSize: 10, letterSpacing: ".08em" }}>Each node is a project; brightness and pulse follow its last recorded activity. Lines are explicit cross-references in Book of Secrets files. Drag to turn · wheel to zoom · click to open.</div>
         </div>
       </div>
+
+      {!PHONE && <div style={{ marginTop: 18 }}><Week /></div>}
 
       <div className="sect" style={{ marginTop: 18 }}>
         <h2>Workspaces</h2><div className="rule" />
