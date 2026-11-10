@@ -5,6 +5,7 @@ mod commands;
 mod continuity;
 mod db;
 mod discovery;
+mod gcal;
 mod gitscan;
 mod hub_client;
 mod indexer;
@@ -252,6 +253,14 @@ pub fn run() {
             hub_client::hub_edit,
             hub_client::hub_board_els,
             hub_client::hub_live,
+            gcal::gcal_status,
+            gcal::gcal_set_client,
+            gcal::gcal_connect,
+            gcal::gcal_disconnect,
+            gcal::gcal_events,
+            gcal::gcal_save,
+            gcal::gcal_delete,
+            gcal::gcal_push_dues,
             hub_client::hub_resolve,
             hub_client::hub_invite,
             hub_client::hub_new_project,
