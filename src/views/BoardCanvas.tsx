@@ -39,6 +39,9 @@ const stamp = () => new Date().toISOString().slice(0, 16).replace("T", " ").repl
 export default function BoardCanvas({ ws, board, b, canDraw, onBack, onErr, reload }: { ws: string; board: Row; b: Row; canDraw: boolean; onBack: () => void; onErr: (e: string) => void; reload: () => void }) {
   const [xapi, setXapi] = useState<ExcalidrawImperativeAPI | null>(null);
   const [status, setStatus] = useState("");
+  const [versionsOpen, setVersionsOpen] = useState(false);
+  const [label, setLabel] = useState("");
+  const [restoring, setRestoring] = useState("");
   const recOf = useRef(new Map<string, string>()); // element id -> board_el record id
   const known = useRef(new Map<string, number>()); // element id -> last version sent or received
   const files = useRef(new Set<string>()); // media record ids already handed to the canvas
@@ -47,7 +50,9 @@ export default function BoardCanvas({ ws, board, b, canDraw, onBack, onErr, relo
   const title = String(board.fields?.title ?? "Board");
   const bg = board.fields?.bg === "blackboard" ? "blackboard" : "grid";
   const project = String(board.project_id);
-  const fail = useCallback((e: unknown) => onErr(String(e)), [onErr]);
+  // The board covers the page's error box, so errors also show in the board bar.
+  const fail = useCallback((e: unknown) => { setStatus(String(e)); onErr(String(e)); }, [onErr]);
+  const versions = (b.records ?? []).filter((r: Row) => r.kind === "media" && r.fields?.board === board.id && /\.excalidraw$/.test(String(r.fields?.name))).sort((x: Row, y: Row) => String(y.updated_at).localeCompare(String(x.updated_at)));
   const mediaName = (id: string) => String((b.records ?? []).find((r: Row) => r.id === id)?.fields?.name ?? "image.png");
 
   // Images: fetched from the hub one at a time, only for elements on this board.
@@ -154,20 +159,46 @@ export default function BoardCanvas({ ws, board, b, canDraw, onBack, onErr, relo
     xapi.updateScene({ elements: [...xapi.getSceneElementsIncludingDeleted(), ...els], appState: { selectedElementIds: { [els[0].id]: true } } as never, captureUpdate: CaptureUpdateAction.IMMEDIATELY });
   };
 
-  // Export: a PNG (as seen) and the editable .excalidraw file, both saved into the workspace's media under "Boards".
-  const exportBoard = async () => {
+  // Save a version: a PNG (as seen, also the board's thumbnail) and the editable .excalidraw file, both saved into the
+  // workspace's media under "Boards" and tagged with this board, so they survive a rename.
+  const exportBoard = async (label = "") => {
+    if (!xapi) return;
+    setStatus("Saving version…");
+    const elements = xapi.getSceneElements();
+    const appState = xapi.getAppState();
+    const fileMap = xapi.getFiles();
+    const name = `${title}${label ? ` — ${label}` : ""} ${stamp()}`;
+    const png = await exportToBlob({ elements, appState: { ...appState, exportBackground: true, exportWithDarkMode: true }, files: fileMap, mimeType: "image/png", exportPadding: 32 });
+    await api.hubUpload(ws, project, `${name}.png`, `Export of board ${title}`, "Boards", await dataUrl(png), board.id);
+    const json = serializeAsJSON(elements, appState, fileMap, "local");
+    await api.hubUpload(ws, project, `${name}.excalidraw`, `Editable copy of board ${title}`, "Boards", await dataUrl(new Blob([json], { type: "application/json" })), board.id);
+    setStatus("Version saved to MEDIA › Boards");
+    reload();
+  };
+  const save = (label = "") => exportBoard(label).then(() => setLabel(""), (e) => { setStatus(""); fail(e); });
+
+  // Restore: the current board is saved as a version first, then every element is replaced by the saved one for
+  // everyone (versions bumped past the live ones, so last-writer-wins keeps the restore).
+  const restore = async (v: Row) => {
     if (!xapi) return;
     try {
-      setStatus("Exporting…");
-      const elements = xapi.getSceneElements();
-      const appState = xapi.getAppState();
-      const fileMap = xapi.getFiles();
-      const png = await exportToBlob({ elements, appState: { ...appState, exportBackground: true, exportWithDarkMode: true }, files: fileMap, mimeType: "image/png", exportPadding: 32 });
-      await api.hubUpload(ws, project, `${title} ${stamp()}.png`, `Export of board ${title}`, "Boards", await dataUrl(png));
-      const json = serializeAsJSON(elements, appState, fileMap, "local");
-      await api.hubUpload(ws, project, `${title} ${stamp()}.excalidraw`, `Editable copy of board ${title}`, "Boards", await dataUrl(new Blob([json], { type: "application/json" })));
-      setStatus("Exported to MEDIA › Boards");
-      reload();
+      await exportBoard("before restore");
+      setStatus("Restoring…");
+      const url = String(await api.hubFile(ws, v.id, String(v.fields?.name)));
+      const bin = atob(url.slice(url.indexOf(",") + 1));
+      const scene = await loadFromBlob(new Blob([Uint8Array.from(bin, (ch) => ch.charCodeAt(0))], { type: "application/json" }), null, null);
+      const now = xapi.getSceneElementsIncludingDeleted();
+      const top = Math.max(0, ...now.map((e) => e.version), ...scene.elements.map((e) => e.version)) + 1;
+      const bump = <T extends object>(e: T, extra: object = {}) => ({ ...e, ...extra, version: top, versionNonce: (Math.random() * 2 ** 31) | 0, updated: Date.now() });
+      const keep = new Set(scene.elements.map((e) => e.id));
+      xapi.addFiles(Object.values(scene.files ?? {}));
+      xapi.updateScene({
+        elements: [...now.filter((e) => !keep.has(e.id)).map((e) => bump(e, { isDeleted: true })), ...scene.elements.map((e) => bump(e))] as never,
+        captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+      });
+      loadFiles(xapi, scene.elements as unknown as El[]);
+      setRestoring(""); setVersionsOpen(false);
+      setStatus(`Restored ${String(v.fields?.name).replace(/\.excalidraw$/, "")}`);
     } catch (e) { setStatus(""); fail(e); }
   };
 
@@ -204,8 +235,29 @@ export default function BoardCanvas({ ws, board, b, canDraw, onBack, onErr, relo
         <span style={{ flex: 1 }} />
         {canDraw && <button className="btn sm" onClick={addNote}>+ Note</button>}
         {canDraw && <label className="btn sm" style={{ cursor: "pointer" }}>Import<input type="file" accept=".excalidraw,application/json" hidden onChange={(e) => { importBoard(e.target.files?.[0]); e.target.value = ""; }} /></label>}
-        <button className="btn sm primary" onClick={exportBoard} disabled={!canDraw}>Export to workspace</button>
+        {canDraw && <button className="btn sm" onClick={() => setVersionsOpen(!versionsOpen)} aria-expanded={versionsOpen}>Versions{versions.length ? ` (${versions.length})` : ""}</button>}
+        {canDraw && <button className="btn sm primary" onClick={() => save()}>Save to workspace</button>}
       </div>
+      {versionsOpen && (
+        <div className="card board-versions">
+          <div className="row" style={{ gap: 6 }}>
+            <input className="input" placeholder="Label, e.g. pitch draft" value={label} aria-label="Version label" maxLength={60}
+              onChange={(e) => setLabel(e.target.value)} onKeyDown={(e) => e.key === "Enter" && save(label.trim())} style={{ flex: 1 }} />
+            <button className="btn sm primary" onClick={() => save(label.trim())}>Save version</button>
+          </div>
+          {!versions.length ? <div className="dim small">No saved versions yet.</div> : versions.map((v: Row) => (
+            <div key={v.id} className="row" style={{ gap: 6, alignItems: "center" }}>
+              <span className="small" style={{ flex: 1 }}>{String(v.fields?.name).replace(/\.excalidraw$/, "")}</span>
+              {restoring === v.id ? (
+                <>
+                  <button className="btn sm" style={{ color: "var(--signal)" }} onClick={() => restore(v)}>Restore for everyone</button>
+                  <button className="btn sm ghost" onClick={() => setRestoring("")}>Keep</button>
+                </>
+              ) : <button className="btn sm ghost" onClick={() => setRestoring(v.id)}>Restore</button>}
+            </div>
+          ))}
+        </div>
+      )}
       <div className="board-canvas">
         <Excalidraw
           excalidrawAPI={setXapi}

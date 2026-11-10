@@ -1342,7 +1342,7 @@ fn mime(name: &str) -> &'static str {
 }
 
 #[tauri::command(async)]
-pub fn hub_upload(h: State<HubState>, workspace: String, project_id: String, name: String, caption: Option<String>, folder: Option<String>, data: String) -> R<String> {
+pub fn hub_upload(h: State<HubState>, workspace: String, project_id: String, name: String, caption: Option<String>, folder: Option<String>, data: String, board: Option<String>) -> R<String> {
     let bytes = b64_decode(&data)?;
     let mut f = json!({ "name": name.chars().take(200).collect::<String>() });
     if let Some(d) = folder.map(|d| d.trim().to_string()).filter(|d| !d.is_empty()) {
@@ -1350,6 +1350,9 @@ pub fn hub_upload(h: State<HubState>, workspace: String, project_id: String, nam
     }
     if let Some(c) = caption.filter(|c| !c.trim().is_empty()) {
         f["caption"] = json!(c.chars().take(1000).collect::<String>());
+    }
+    if let Some(b) = board {
+        f["board"] = json!(b);
     }
     let id = h.client.publish_file(&workspace, &project_id, "media", &bytes, f)?;
     h.wake();

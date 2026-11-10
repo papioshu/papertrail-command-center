@@ -545,6 +545,15 @@ fn boards_share_elements_last_writer_wins_and_only_contributors_draw() {
     a.create("board_el", &fx.p2, json!({ "board": board, "data": "{}" }));
     a.sync();
     assert_eq!(a.rejected.len(), n + 2);
+    // A saved version (media) names its board; only a board of the same project.
+    let sha = store::hash_bytes(b"version");
+    let auth = format!("Bearer {}", fx.token("admin"));
+    let put = |p: &str| fx.hub.handle("PUT", &format!("/v1/workspaces/{}/projects/{p}/blobs/{sha}", fx.ws), Some(&auth), b"version").code;
+    assert_eq!((put(&fx.p1), put(&fx.p2)), (200, 200));
+    let ver = a.create("media", &fx.p1, json!({ "sha256": sha, "name": "v.excalidraw", "board": board }));
+    a.create("media", &fx.p2, json!({ "sha256": sha, "name": "v.excalidraw", "board": board }));
+    a.sync();
+    assert_eq!((a.field(&ver, "board"), a.rejected.len()), (json!(board), n + 3));
     // Deleting the board tombstones its elements: their content leaves every cache, and they can't be edited.
     a.queue("delete", "board", &board, &fx.p1, json!(null));
     a.sync();

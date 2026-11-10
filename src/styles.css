@@ -433,7 +433,7 @@ body.phone .desk-only { display: none !important; }
   .home .board { display: grid; grid-template-columns: 1fr 1fr; }
   .home .board > div { border-right: 0 !important; }
   .home .board > div:nth-child(odd) { border-right: 1px solid var(--line) !important; }
-  .sphere { height: 340px; min-height: 0; }
+  .sphere { height: 316px; min-height: 0; } /* owner 2026-11-09: globe 7% smaller on cover screens (size follows height) */
   .hero { grid-template-columns: 1fr; gap: 14px; }
   .hero h1 { font-size: 22px; letter-spacing: 0.12em; }
   .board > div { min-width: 92px; padding: 10px 14px; }
@@ -498,6 +498,8 @@ body.phone .desk-only { display: none !important; }
 .board-card { display: flex; flex-direction: column; gap: 8px; padding: 12px; min-height: 120px;
   background-image: linear-gradient(rgba(139, 92, 246, 0.07) 1px, transparent 1px), linear-gradient(90deg, rgba(139, 92, 246, 0.07) 1px, transparent 1px); background-size: 16px 16px; }
 .board-card.blackboard { background-image: none; background-color: #151815; }
-.board-open { all: unset; cursor: pointer; flex: 1; display: flex; align-items: flex-end; min-height: 60px; }
+.board-open { all: unset; cursor: pointer; flex: 1; display: flex; flex-direction: column; justify-content: flex-end; gap: 8px; min-height: 60px; }
+.board-thumb { width: 100%; height: 120px; object-fit: cover; border: 1px solid var(--line); background: #121212; }
+.board-versions { position: absolute; right: 16px; top: 48px; z-index: 5; width: 360px; max-height: 60vh; overflow: auto; display: flex; flex-direction: column; gap: 8px; padding: 12px; background: var(--ink); }
 .board-open:focus-visible { outline: 1px solid var(--violet-glow); outline-offset: 4px; }
 .board-title { font-family: var(--font-display); letter-spacing: 0.2em; text-transform: uppercase; font-size: 14px; }

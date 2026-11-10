@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { api, type Row } from "../api";
 import { ago, Empty } from "../ui";
 
@@ -10,6 +10,18 @@ const BoardCanvas = lazy(() => import("./BoardCanvas"));
 const RANK: Record<string, number> = { owner: 0, admin: 1, editor: 2, contributor: 3, viewer: 4 };
 const can = (role: string, need: string) => (RANK[role] ?? 9) <= RANK[need];
 const BG = { grid: "Dark grid", blackboard: "Blackboard" } as const;
+
+// The card shows the board's latest saved PNG (fetched from the hub once per card).
+function Thumb({ ws, media }: { ws: string; media?: Row }) {
+  const [url, setUrl] = useState("");
+  useEffect(() => {
+    if (!media) return;
+    let live = true;
+    api.hubFile(ws, media.id, String(media.fields?.name)).then((u) => live && setUrl(String(u)), () => {});
+    return () => { live = false; };
+  }, [ws, media?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  return url ? <img className="board-thumb" src={url} alt="" /> : null;
+}
 
 export default function Boards({ ws, b, project, me, onErr, reload }: { ws: string; b: Row; project: string; me: string; onErr: (e: string) => void; reload: () => void }) {
   const boards: Row[] = (b.records ?? []).filter((r: Row) => r.kind === "board" && (!project || r.project_id === project));
@@ -41,6 +53,7 @@ export default function Boards({ ws, b, project, me, onErr, reload }: { ws: stri
       setName(""); reload(); setOpenId(id);
     } catch (e) { fail(e); }
   };
+  const thumbOf = (id: string) => (b.records ?? []).filter((m: Row) => m.kind === "media" && m.fields?.board === id && /\.png$/.test(String(m.fields?.name))).sort((x: Row, y: Row) => String(y.updated_at).localeCompare(String(x.updated_at)))[0];
   const mine = (r: Row) => r.created_by === me || can(b.role, "editor");
   return (
     <div className="col" style={{ gap: 12 }}>
@@ -72,6 +85,7 @@ export default function Boards({ ws, b, project, me, onErr, reload }: { ws: stri
                   }} />
               ) : (
                 <button className="board-open" onClick={() => setOpenId(r.id)} title="Open board">
+                  <Thumb ws={ws} media={thumbOf(r.id)} />
                   <span className="board-title">{r.fields?.title}</span>
                 </button>
               )}

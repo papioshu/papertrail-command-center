@@ -100,7 +100,8 @@ fn validate(c: &Connection, ws: &str, project: &str, kind: &str, f: &Map<String,
             // Boards (D044): a board names its background; each canvas element is its own record holding the
             // element's JSON, in a board of the same project.
             ("board", "bg") => matches!(v.as_str(), Some("grid" | "blackboard")),
-            ("board_el", "board") => {
+            // A board's exports (its thumbnail and saved versions) name the board, so renames don't orphan them.
+            ("board_el" | "media", "board") => {
                 create
                     && v.as_str().is_some_and(|b| load(c, b).ok().flatten().is_some_and(|r| r.kind == "board" && r.ws == ws && r.project == project && !r.deleted))
             }
