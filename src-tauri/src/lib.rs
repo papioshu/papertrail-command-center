@@ -13,6 +13,7 @@ mod launcher;
 mod phone;
 mod registry;
 pub mod standby;
+mod team_files;
 mod team;
 mod util;
 
@@ -263,6 +264,12 @@ pub fn run() {
             gcal::gcal_calendars,
             gcal::gcal_set_team,
             gcal::gcal_sync_team,
+            team_files::hub_files_preview,
+            team_files::hub_files_share,
+            team_files::hub_files,
+            team_files::hub_propose,
+            team_files::hub_proposal_preview,
+            team_files::hub_proposal_decide,
             hub_client::hub_resolve,
             hub_client::hub_invite,
             hub_client::hub_new_project,

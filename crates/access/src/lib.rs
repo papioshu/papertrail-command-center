@@ -259,6 +259,10 @@ pub enum Publishable {
     /// A creative board in a workspace project and its canvas elements (D044).
     Board,
     BoardElement,
+    /// A file of a linked project, sent only after the owner approves the share (D048; git-tracked, no secrets), and
+    /// a teammate's proposed change to one, which changes nothing until the owner accepts it.
+    ProjectFile,
+    Proposal,
 }
 
 /// Unknown kinds are private. Sessions, transcripts, credentials, settings, paths, launches, discoveries,
@@ -276,6 +280,8 @@ pub fn publishable(kind: &str) -> Option<Publishable> {
         "snapshot" => Publishable::Snapshot,
         "board" => Publishable::Board,
         "board_el" => Publishable::BoardElement,
+        "file" => Publishable::ProjectFile,
+        "proposal" => Publishable::Proposal,
         _ => return None,
     })
 }

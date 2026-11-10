@@ -88,7 +88,7 @@ pub fn uuid() -> R<String> {
     Ok(format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32]))
 }
 
-fn write_atomic(path: &Path, data: &[u8]) -> R<()> {
+pub(crate) fn write_atomic(path: &Path, data: &[u8]) -> R<()> {
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, data).and_then(|_| std::fs::rename(&tmp, path)).map_err(|e| format!("{}: {e}", path.display()))
 }
@@ -421,7 +421,7 @@ impl Client {
     /* ----- local edits: cache + outbox in one transaction (§7.2) ----- */
 
     pub fn edit(&self, ws: &str, action: &str, kind: &str, record_id: Option<&str>, project: &str, fields: &Value) -> R<String> {
-        if !matches!(action, "create" | "update" | "delete") || !matches!(kind, "task" | "milestone" | "media" | "snapshot" | "board" | "board_el") {
+        if !matches!(action, "create" | "update" | "delete") || !matches!(kind, "task" | "milestone" | "media" | "snapshot" | "board" | "board_el" | "file" | "proposal") {
             return Err("unsupported edit".into());
         }
         let mut c = self.open_ws(ws)?;
@@ -611,13 +611,28 @@ impl Client {
             "members": meta(&c, "members").unwrap_or(json!([])),
             "records": rows("SELECT r.id, r.kind, r.project_id, r.version, r.fields, r.created_by, r.updated_by, r.updated_at,
                               (SELECT count(*) FROM outbox o WHERE o.record_id = r.id) pending
-                              FROM records r WHERE r.deleted = 0 AND r.kind != 'board_el' ORDER BY r.kind, r.updated_at DESC")?,
+                              FROM records r WHERE r.deleted = 0 AND r.kind NOT IN ('board_el', 'file') ORDER BY r.kind, r.updated_at DESC")?,
             "conflicts": rows("SELECT id, record_id, kind, mine, theirs, reason, at FROM conflicts ORDER BY id")?,
             "pending": c.query_row("SELECT count(*) FROM outbox", [], |r| r.get::<_, i64>(0)).map_err(e)?,
             // hub project id -> local project id, for projects shared from this PC (their local chats/activity show).
             "links": cfg["links"].as_object().map(|l| l.iter().filter(|(_, v)| v["workspace"] == ws).map(|(k, v)| (v["project"].as_str().unwrap_or("").to_string(), json!(k))).collect::<Map<String, Value>>()).unwrap_or_default(),
             "last_sync": meta(&c, "last_sync"),
         }))
+    }
+
+    /// Live records of one kind in one project from the local cache: [{id, fields, version, created_by, updated_at}].
+    pub fn records_of(&self, ws: &str, project: &str, kind: &str) -> R<Vec<Value>> {
+        let c = self.open_ws(ws)?;
+        let mut st = c.prepare("SELECT id, fields, version, created_by, updated_at FROM records WHERE deleted = 0 AND kind = ?1 AND project_id = ?2").map_err(e)?;
+        let out = st
+            .query_map(params![kind, project], |r| {
+                Ok(json!({ "id": r.get::<_, String>(0)?, "fields": Value::Object(obj(&r.get::<_, String>(1)?)), "version": r.get::<_, i64>(2)?,
+                           "created_by": r.get::<_, Option<String>>(3)?, "updated_at": r.get::<_, Option<String>>(4)? }))
+            })
+            .map_err(e)?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(out)
     }
 
     /// One board's canvas elements from the local cache (queued local edits included): [{id, data}].
@@ -813,7 +828,7 @@ pub fn b64_decode(s: &str) -> R<Vec<u8>> {
     Ok(out)
 }
 
-fn sha256_hex(b: &[u8]) -> String {
+pub(crate) fn sha256_hex(b: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect()
 }
@@ -866,8 +881,8 @@ pub fn build_snapshot(repo: &Path) -> R<(Value, usize)> {
 }
 
 impl Client {
-    /// Uploads a file into a shared project, then queues its record. Needs the hub to be reachable.
-    pub fn publish_file(&self, ws: &str, project: &str, kind: &str, bytes: &[u8], fields: Value) -> R<String> {
+    /// Uploads bytes into a shared project's file store (once per hash). Needs the hub to be reachable.
+    pub fn put_blob(&self, ws: &str, project: &str, bytes: &[u8]) -> R<String> {
         if bytes.len() > 25 * 1024 * 1024 {
             return Err("Files can be at most 25 MB.".into());
         }
@@ -878,8 +893,17 @@ impl Client {
             Net::Reply(code, v) => return Err(format!("The hub refused the upload ({code}: {})", v["error"].as_str().unwrap_or("error"))),
             Net::Down(d) => return Err(format!("Can't reach the hub ({d}).")),
         }
+        Ok(sha)
+    }
+
+    /// Uploads a file into a shared project, then queues its record. Needs the hub to be reachable.
+    pub fn publish_file(&self, ws: &str, project: &str, kind: &str, bytes: &[u8], fields: Value) -> R<String> {
+        let sha = self.put_blob(ws, project, bytes)?;
         let mut f = fields.as_object().cloned().unwrap_or_default();
         f.insert("sha256".into(), json!(sha));
+        if kind == "file" {
+            return self.edit(ws, "create", kind, None, project, &Value::Object(f)); // shared project files aren't cached twice on this PC
+        }
         let dir = self.dir.join("files").join(ws);
         if std::fs::create_dir_all(&dir).is_ok() {
             let _ = write_atomic(&dir.join(&sha), bytes);
@@ -1380,7 +1404,7 @@ pub fn hub_file(h: State<HubState>, workspace: String, record_id: String, name: 
     }
 }
 
-fn repo_of(st: &State<AppState>, id: &str) -> R<PathBuf> {
+pub(crate) fn repo_of(st: &State<AppState>, id: &str) -> R<PathBuf> {
     let c = st.db.lock().map_err(|_| "database lock poisoned")?;
     let repo: Option<String> = c.query_row("SELECT repo_path FROM projects WHERE id = ?1", [id], |r| r.get(0)).map_err(|_| "unknown project")?;
     repo.map(PathBuf::from).filter(|p| p.is_dir()).ok_or_else(|| "This project has no git repository to snapshot.".into())

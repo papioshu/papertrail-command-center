@@ -563,3 +563,57 @@ fn boards_share_elements_last_writer_wins_and_only_contributors_draw() {
     let rec = feed.body["changes"].as_array().unwrap().iter().find(|r| r["id"] == json!(el)).unwrap();
     assert_eq!((rec["deleted"].clone(), rec["fields"].clone()), (json!(true), json!({})));
 }
+
+#[test]
+fn project_files_are_published_by_owners_and_changed_only_through_accepted_proposals() {
+    let fx = fixture();
+    let put = |actor: &str, body: &[u8]| {
+        let auth = format!("Bearer {}", fx.token(actor));
+        let sha = store::hash_bytes(body);
+        assert_eq!(fx.hub.handle("PUT", &format!("/v1/workspaces/{}/projects/{}/blobs/{sha}", fx.ws, fx.p1), Some(&auth), body).code, 200);
+        sha
+    };
+    let mut o = Client::new(&fx, "owner");
+    let mut c = Client::new(&fx, "contributor");
+    let v1 = put("owner", b"logo v1");
+    let file = o.create("file", &fx.p1, json!({ "path": "art/logo.txt", "sha256": v1 }));
+    o.sync();
+    c.sync();
+    assert_eq!((c.field(&file, "path"), c.field(&file, "size")), (json!("art/logo.txt"), json!(7)), "teammate sees the shared file");
+    let get = |actor: &str, id: &str| fx.call("GET", &format!("/v1/workspaces/{}/media/{id}", fx.ws), Some(actor), json!({}));
+    assert_eq!(get("contributor", &file).raw.as_deref(), Some(&b"logo v1"[..]), "and can download it");
+    // Teammates can't publish or change shared files directly, and paths stay inside the project.
+    let n = c.rejected.len();
+    c.create("file", &fx.p1, json!({ "path": "x.txt", "sha256": v1 }));
+    c.queue("update", "file", &file, &fx.p1, json!({ "sha256": v1 }));
+    for bad in ["../escape.txt", "/abs.txt", "C:/x.txt", ".git/config", "a//b", "a\\b"] {
+        c.create("proposal", &fx.p1, json!({ "path": bad, "sha256": v1, "base": null }));
+    }
+    c.sync();
+    assert_eq!(c.rejected.len(), n + 8);
+    // A proposal waits; the proposer can't accept it, the owner can.
+    let v2 = put("contributor", b"logo v2, brighter");
+    let prop = c.create("proposal", &fx.p1, json!({ "path": "art/logo.txt", "sha256": v2, "base": v1, "note": "brighter" }));
+    c.sync();
+    let n = c.rejected.len();
+    c.queue("update", "proposal", &prop, &fx.p1, json!({ "status": "accepted" }));
+    c.sync();
+    assert_eq!(c.rejected.len(), n + 1, "proposer can't decide");
+    o.sync();
+    o.queue("update", "proposal", &prop, &fx.p1, json!({ "status": "accepted" }));
+    o.queue("update", "file", &file, &fx.p1, json!({ "sha256": v2 }));
+    o.sync();
+    c.sync();
+    assert_eq!((c.field(&prop, "status"), c.field(&file, "size")), (json!("accepted"), json!(17)), "accepted, and the shared copy moved on");
+    // A file can only point at content uploaded into its own project.
+    let n = o.rejected.len();
+    o.queue("update", "file", &file, &fx.p1, json!({ "sha256": store::hash_bytes(b"never uploaded") }));
+    o.sync();
+    assert_eq!(o.rejected.len(), n + 1);
+    // The proposer may withdraw an open proposal of their own.
+    let p2 = c.create("proposal", &fx.p1, json!({ "path": "new/readme.md", "sha256": v2, "base": null }));
+    c.sync();
+    c.queue("delete", "proposal", &p2, &fx.p1, json!(null));
+    c.sync();
+    assert_eq!(c.field(&p2, "path"), Value::Null, "withdrawn");
+}

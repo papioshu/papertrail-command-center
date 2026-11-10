@@ -10,11 +10,19 @@ use serde_json::{json, Map, Value};
 
 pub const MAX_BLOB: usize = 25 * 1024 * 1024;
 /// Must stay a subset of `ptcc_access::publishable` (checked in `op`).
-const KINDS: [&str; 6] = ["task", "milestone", "media", "snapshot", "board", "board_el"];
+const KINDS: [&str; 8] = ["task", "milestone", "media", "snapshot", "board", "board_el", "file", "proposal"];
 /// One canvas element (D044) is about this size at most: a long freehand stroke or a big text block.
 const BOARD_EL_MAX: usize = 256 * 1024;
 /// Kinds whose content is an uploaded file named by `sha256`.
-const FILE_KINDS: [&str; 2] = ["media", "snapshot"];
+const FILE_KINDS: [&str; 4] = ["media", "snapshot", "file", "proposal"];
+/// Kinds read with doc.read (project files) rather than media.read.
+const DOC_KINDS: [&str; 3] = ["snapshot", "file", "proposal"];
+
+/// A project-relative file path: forward slashes, no "..", no drive or root, no control characters, not inside .git.
+fn rel_path(p: &str) -> bool {
+    !p.is_empty() && p.len() <= 500 && !p.starts_with('/') && !p.contains('\\') && !p.contains(':') && !p.chars().any(char::is_control)
+        && p.split('/').all(|s| !s.is_empty() && s != "." && s != ".." && !s.eq_ignore_ascii_case(".git"))
+}
 const FEED_MAX: i64 = 500;
 
 /// Client-made ids are UUIDs (§7.1): 36 chars of hex and dashes.
@@ -100,6 +108,14 @@ fn validate(c: &Connection, ws: &str, project: &str, kind: &str, f: &Map<String,
             // Boards (D044): a board names its background; each canvas element is its own record holding the
             // element's JSON, in a board of the same project.
             ("board", "bg") => matches!(v.as_str(), Some("grid" | "blackboard")),
+            // Project files (D048): the owner's shared copy may change content; a proposal names the version it
+            // started from (null = a new file) and waits for the owner.
+            ("file", "sha256") => v.as_str().is_some_and(sha_ok),
+            ("proposal", "sha256") => create && v.as_str().is_some_and(sha_ok),
+            ("file" | "proposal", "path") => create && v.as_str().is_some_and(rel_path),
+            ("proposal", "base") => create && (v.is_null() || v.as_str().is_some_and(sha_ok)),
+            ("proposal", "note") => text(v, 0, 1000),
+            ("proposal", "status") => matches!(v.as_str(), Some("open" | "accepted" | "declined")),
             // A board's exports (its thumbnail and saved versions) name the board, so renames don't orphan them.
             ("board_el" | "media", "board") => {
                 create
@@ -116,6 +132,7 @@ fn validate(c: &Connection, ws: &str, project: &str, kind: &str, f: &Map<String,
         ("media", true) => &["sha256", "name"],
         ("snapshot", true) => &["sha256", "files", "dirs"],
         ("board_el", true) => &["board", "data"],
+        ("file" | "proposal", true) => &["sha256", "path"],
         (_, true) => &["title"],
         _ => &[],
     };
@@ -140,7 +157,11 @@ impl Hub {
         let ck = |p: Perm, t: Target, a: &str| self.check(c, who, m, p, t, a);
         match (kind, created_by) {
             ("milestone", _) => ck(Perm::MilestoneEdit, proj, "milestone.edit")?,
-            ("snapshot", _) => ck(Perm::DocPublish, proj, "doc.publish")?,
+            ("snapshot" | "file", _) => ck(Perm::DocPublish, proj, "doc.publish")?,
+            // Anyone who may add media proposes changes; only a publisher decides. A proposer may withdraw their own.
+            ("proposal", None) => ck(Perm::MediaUpload, proj, "file.propose")?,
+            ("proposal", Some(by)) if f.is_empty() && by == who.user => {}
+            ("proposal", Some(_)) => ck(Perm::DocPublish, proj, "file.decide")?,
             // Anyone who may add media to the project draws on its boards, on anyone's elements: a shared canvas.
             ("board_el", _) => ck(Perm::MediaUpload, proj, "board.draw")?,
             ("task", None) => ck(Perm::TaskCreate, proj, "task.create")?,
@@ -241,6 +262,16 @@ impl Hub {
                 } else {
                     let base = b["base_version"].as_i64().filter(|v| (1..=row.version).contains(v)).ok_or_else(|| bad("base_version must be a version this record had"))?;
                     validate(c, ws, &row.project, kind, f, false)?;
+                    // A shared file's new content must already be uploaded into this project, like on create.
+                    let new_size = match f.get("sha256").and_then(Value::as_str) {
+                        Some(sha) if FILE_KINDS.contains(&kind) => {
+                            let size: Option<i64> = db(c
+                                .query_row("SELECT size FROM blobs WHERE sha256 = ?1 AND workspace_id = ?2 AND project_id = ?3", params![sha, ws, row.project], |r| r.get(0))
+                                .optional())?;
+                            Some(size.filter(|_| self.media.as_ref().is_some_and(|d| d.join(sha).exists())).ok_or_else(|| bad("upload the file to this project first"))?)
+                        }
+                        _ => None,
+                    };
                     // A field clashes when another device changed it after the version this edit started from. Ops
                     // queued on one device are sent in order, so a device never conflicts with its own earlier edits.
                     // Canvas elements are last-writer-wins: two people moving one shape is not worth a conflict screen.
@@ -256,6 +287,9 @@ impl Hub {
                         for (k, val) in f {
                             fields.insert(k.clone(), val.clone());
                             fv.insert(k.clone(), json!([v, who.device]));
+                        }
+                        if let Some(size) = new_size {
+                            fields.insert("size".into(), json!(size));
                         }
                         (Write::Update(fields, fv, v), None)
                     }
@@ -339,7 +373,7 @@ impl Hub {
             kinds.extend(["media", "board", "board_el"]);
         }
         if m.has(Perm::ProjectRead) && m.has(Perm::DocRead) {
-            kinds.push("snapshot");
+            kinds.extend(["snapshot", "file", "proposal"]);
         }
         let mut st = db(c.prepare(&format!(
             "SELECT {RECORD_COLS} FROM records r
@@ -404,7 +438,7 @@ impl Hub {
     pub(crate) fn get_media(&self, c: &Connection, who: &Caller, ws: &str, id: &str) -> Res {
         let m = membership(c, ws, &who.user);
         let row = load(c, id)?.filter(|r| r.ws == ws && FILE_KINDS.contains(&r.kind.as_str()));
-        let perm = if row.as_ref().is_some_and(|r| r.kind == "snapshot") { Perm::DocRead } else { Perm::MediaRead };
+        let perm = if row.as_ref().is_some_and(|r| DOC_KINDS.contains(&r.kind.as_str())) { Perm::DocRead } else { Perm::MediaRead };
         // Unknown ids are checked against the workspace so they refuse exactly like hidden ones.
         let project = row.as_ref().map(|r| r.project.clone()).unwrap_or_default();
         self.check(c, who, m.as_ref(), perm, Target::Project { workspace: ws, project: &project }, "media.read")?;

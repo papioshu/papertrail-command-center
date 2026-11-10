@@ -1,3 +1,4 @@
+import ProjectFiles from "./ProjectFiles";
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { api, type Row } from "../api";
 import { ago, AgentChip, brand, Card, Empty, ErrBox, Modal, StatusBar, useAsync, useNav } from "../ui";
@@ -454,11 +455,12 @@ function Files({ snap, dir, setDir }: { snap: Row; dir: string; setDir: (d: stri
   );
 }
 
-function Structure({ ws, b, project, glow, mode, local, onErr, reload }: { ws: string; b: Row; project: string; glow: string; mode: "map" | "files"; local?: string; onErr: (e: string) => void; reload: () => void }) {
+function Structure({ ws, b, project, glow, mode, local, me, onErr, reload }: { ws: string; b: Row; project: string; glow: string; mode: "map" | "files"; local?: string; me: string; onErr: (e: string) => void; reload: () => void }) {
   const { rec, snap } = useSnapshot(ws, b, project);
   const [dir, setDir] = useState("");
   const [preview, setPreview] = useState<Row | null>(null);
   if (!project) return <Empty>Pick a project above to see its {mode === "map" ? "map" : "files"}.</Empty>;
+  if (mode === "files") return <ProjectFiles ws={ws} b={b} project={project} local={local} me={me} onErr={onErr} reload={reload} />;
   const publish = local && can(b.role, "editor");
   return (
     <div className="col" style={{ gap: 10 }}>
@@ -767,7 +769,7 @@ function WorkspacePage({ w, me, onBack, onErr }: { w: Row; me: string; onBack: (
         {tab === "tasks" && <Tasks ws={w.id} b={b} project={project} me={me} onErr={onErr} reload={board.reload} />}
         {tab === "boards" && <Boards ws={w.id} b={b} project={project} me={me} onErr={onErr} reload={board.reload} />}
         {tab === "media" && <Media ws={w.id} b={b} project={project} onErr={onErr} reload={board.reload} />}
-        {(tab === "map" || tab === "files") && <Structure key={project + tab} ws={w.id} b={b} project={project} glow={br.glow} mode={tab} local={local} onErr={onErr} reload={board.reload} />}
+        {(tab === "map" || tab === "files") && <Structure key={project + tab} ws={w.id} b={b} project={project} glow={br.glow} mode={tab} local={local} me={me} onErr={onErr} reload={board.reload} />}
         {tab === "chats" && (project ? <LocalChats local={local} /> : <Empty>Pick a project above to see its chats from this PC.</Empty>)}
         {tab === "admin" && <Admin ws={w.id} b={b} me={me} reload={board.reload} onErr={onErr} />}
       </div></section>

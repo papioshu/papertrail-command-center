@@ -146,10 +146,16 @@ export const api = {
   updateInstall: () => call<void>("app_update_install"),
   hubSyncNow: () => call<void>("hub_sync_now"),
   hubBoard: (workspace: string) => call<Row>("hub_board", { workspace }),
-  hubEdit: (workspace: string, action: "create" | "update" | "delete", kind: "task" | "milestone" | "board" | "board_el", projectId: string, fields: Row | null, recordId?: string) =>
+  hubEdit: (workspace: string, action: "create" | "update" | "delete", kind: "task" | "milestone" | "board" | "board_el" | "proposal", projectId: string, fields: Row | null, recordId?: string) =>
     call<string>("hub_edit", { workspace, action, kind, recordId, projectId, fields }),
   hubBoardEls: (workspace: string, board: string) => call<{ id: string; data: string | null }[]>("hub_board_els", { workspace, board }),
   hubLive: (on: boolean) => call<void>("hub_live", { on }),
+  hubFilesPreview: (project: string) => call<Row>("hub_files_preview", { project }),
+  hubFilesShare: (project: string) => call<Row>("hub_files_share", { project }),
+  hubFiles: (workspace: string, project: string) => call<Row[]>("hub_files", { workspace, project }),
+  hubPropose: (workspace: string, project: string, path: string, base: string | null, note: string, data: string) => call<string>("hub_propose", { workspace, project, path, base, note, data }),
+  hubProposalPreview: (workspace: string, project: string, id: string) => call<Row>("hub_proposal_preview", { workspace, project, id }),
+  hubProposalDecide: (workspace: string, project: string, id: string, accept: boolean, force: boolean) => call<void>("hub_proposal_decide", { workspace, project, id, accept, force }),
   gcalStatus: () => call<Row>("gcal_status"),
   gcalSetClient: (clientId: string, clientSecret: string) => call<void>("gcal_set_client", { clientId, clientSecret }),
   gcalConnect: () => call<void>("gcal_connect"),
