@@ -40,6 +40,7 @@ const dataUrl = (b: Blob) => new Promise<string>((ok, no) => { const r = new Fil
 const DOC = /\.(pdf|docx?|odt|rtf|pages|md|markdown|txt)$/i;
 const TEXT = /\.(md|markdown|txt)$/i;
 const DOC_LINK = "ptcc-doc:";
+const size = (n: number) => (n < 1024 * 1024 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
 async function pdfPreview(file: File): Promise<Blob> {
   const pdfjs = await import("pdfjs-dist");
   pdfjs.GlobalWorkerOptions.workerSrc = (await import("pdfjs-dist/build/pdf.worker.min.mjs?url")).default;
@@ -144,13 +145,18 @@ export default function BoardCanvas({ ws, board, b, canDraw, onBack, onErr, relo
         const rec = recOf.current.get(el.id);
         if (!rec && el.isDeleted) { known.current.set(el.id, el.version); continue; }
         known.current.set(el.id, el.version);
-        if (rec) await api.hubEdit(ws, "update", "board_el", project, { data }, rec);
-        else recOf.current.set(el.id, await api.hubEdit(ws, "create", "board_el", project, { board: board.id, data }));
+        try {
+          if (rec) await api.hubEdit(ws, "update", "board_el", project, { data }, rec);
+          else recOf.current.set(el.id, await api.hubEdit(ws, "create", "board_el", project, { board: board.id, data }));
+        } catch (e) {
+          known.current.delete(el.id); // not saved: the next pass sends it again
+          throw e;
+        }
         n++;
       }
       if (n) setStatus("Saved");
-    }).catch((e) => { setStatus(""); fail(e); });
-  }, [xapi, canDraw, ws, project, board.id, fail]);
+    }).catch((e) => { setStatus(""); fail(e); window.clearTimeout(timer.current); timer.current = window.setTimeout(() => push(), 3000); });
+  }, [xapi, canDraw, ws, project, board.id, fail]); // eslint-disable-line react-hooks/exhaustive-deps
   const onChange = useCallback(() => { window.clearTimeout(timer.current); timer.current = window.setTimeout(push, 250); }, [push]);
   useEffect(() => () => { window.clearTimeout(timer.current); push(); }, [push]);
 
@@ -235,7 +241,7 @@ export default function BoardCanvas({ ws, board, b, canDraw, onBack, onErr, relo
           els = convertToExcalidrawElements([{ type: "text", x, y, text, fontSize: 16, strokeColor: INK } as never]);
         } else {
           const media = await api.hubUpload(ws, project, f.name, `On board: ${title}`, "Boards", await dataUrl(f));
-          const label = `📄 ${f.name}\n${(f.size / 1024 / 1024).toFixed(1)} MB · open the link to save it`;
+          const label = `📄 ${f.name}\n${size(f.size)} · link ↗ saves it`;
           if (/\.pdf$/i.test(f.name)) {
             const png = await pdfPreview(f).catch(() => null);
             if (png) {
@@ -256,7 +262,7 @@ export default function BoardCanvas({ ws, board, b, canDraw, onBack, onErr, relo
           } as never]);
         }
         xapi.updateScene({ elements: [...xapi.getSceneElementsIncludingDeleted(), ...els], captureUpdate: CaptureUpdateAction.IMMEDIATELY });
-        y += 40; x += 40;
+        x = Math.max(...els.map((el) => el.x + el.width)) + 40; // next doc to the right
       }
       setStatus(list.length > 1 ? `Added ${list.length} docs` : `Added ${list[0].name}`);
       reload();

@@ -366,7 +366,10 @@ impl Client {
             return Err("You're not in that workspace.".into());
         }
         let c = Connection::open(self.ws_path(ws)?).map_err(e)?;
-        c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;").map_err(e)?;
+        // The wait must be set before anything else: even switching to WAL takes a lock (sync writes every second
+        // while a board is open), and without it that fails at once with "database is locked".
+        c.busy_timeout(Duration::from_secs(10)).map_err(e)?;
+        c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;").map_err(e)?;
         c.execute_batch(WS_SCHEMA).map_err(e)?;
         Ok(c)
     }
@@ -425,7 +428,8 @@ impl Client {
             return Err("unsupported edit".into());
         }
         let mut c = self.open_ws(ws)?;
-        let tx = c.transaction().map_err(e)?;
+        // Immediate: take the write lock up front (and wait for it), instead of failing when a read upgrades to a write.
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(e)?;
         let id = match record_id {
             Some(id) => id.to_string(),
             None if action == "create" => uuid()?,
