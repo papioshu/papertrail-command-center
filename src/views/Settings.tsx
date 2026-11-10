@@ -99,6 +99,28 @@ function GoogleAccounts() {
   );
 }
 
+/** Ghost voice on this PC (D052): a one-time download of the local speech engine (whisper.cpp + English model). */
+function GhostVoice() {
+  const [st, setSt] = useState<Row | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const load = () => api.voiceStatus().then(setSt, (e) => setErr(String(e)));
+  useEffect(() => { load(); }, []);
+  return (
+    <Card title="Ghost voice">
+      <div className="col">
+        {st?.installed ? <div className="small">Ready. Hold <b>🎙 Ghost</b> in the top bar, or hold <b>Ctrl+Space</b>, and speak. Try "what's due this week", "add task … to BOMBSQUAD due Friday", "open OARA", "what's on my calendar".</div> : (
+          <div className="row wrap" style={{ gap: 8 }}>
+            <button className="btn primary" disabled={busy} onClick={() => { setErr(null); setBusy(true); api.voiceInstall().then(load, (e) => setErr(String(e))).finally(() => setBusy(false)); }}>{busy ? "Downloading… (about 160 MB)" : "Download speech engine"}</button>
+          </div>
+        )}
+        {err && <ErrBox error={err} />}
+        <div className="dim small">Speech is turned into text on this PC by whisper.cpp (free, offline); it runs only while you talk to Ghost. Phones: the team page has Ask Ghost, "Hey Ghost" and a Siri shortcut.</div>
+      </div>
+    </Card>
+  );
+}
+
 export default function Settings() {
   const s = useAsync(() => api.settings(), []);
   const diag = useAsync(() => api.diagnostics(), [], ["projects-updated"]);
@@ -169,6 +191,7 @@ export default function Settings() {
         </Card>
         <Updates />
         <GoogleAccounts />
+        <GhostVoice />
         <PhoneAccess />
         <Card title="Sources">
           <div className="col">

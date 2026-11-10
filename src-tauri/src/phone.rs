@@ -83,6 +83,20 @@ pub(crate) fn tailscale_ip() -> Option<String> {
     None
 }
 
+/// This PC's tailnet HTTPS address (https://name.tailnet.ts.net) when the tailnet has HTTPS certificates turned on.
+/// Phones need HTTPS for the microphone (Ghost voice, D052).
+pub(crate) fn tailscale_https() -> Option<String> {
+    for exe in ["tailscale", r"C:\Program Files\Tailscale\tailscale.exe"] {
+        if let Ok(o) = crate::util::run(exe, &["status", "--json"], None, Duration::from_secs(5)) {
+            let v: serde_json::Value = serde_json::from_str(&o.stdout).ok()?;
+            let name = v["Self"]["DNSName"].as_str()?.trim_end_matches('.').to_string();
+            let certs = v["CertDomains"].as_array().is_some_and(|c| c.iter().any(|d| d == name.as_str()));
+            return (certs && name.ends_with(".ts.net")).then(|| format!("https://{name}"));
+        }
+    }
+    None
+}
+
 fn enabled(app: &AppHandle) -> bool {
     let st = app.state::<AppState>();
     let on = st.db.lock().ok().and_then(|c| db::setting(&c, "phone_enabled")).and_then(|v| v.as_bool());

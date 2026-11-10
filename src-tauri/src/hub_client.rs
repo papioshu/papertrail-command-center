@@ -309,9 +309,21 @@ impl Client {
     /// The address to put in links for other devices: the Tailscale one, but only once the hub answers there
     /// (it picks the address up within a minute of Tailscale signing in); otherwise the address we use.
     fn share_url(&self, url: &str) -> String {
+        // The hub on this PC behind `tailscale serve` (HTTPS, so phones can use the microphone) comes first.
+        let probe = |u: &str| ureq::AgentBuilder::new().timeout(Duration::from_secs(4)).build().get(&format!("{u}/v1/health")).call().is_ok();
+        if url.trim_end_matches('/') == "http://127.0.0.1:8770" { // `tailscale serve` fronts exactly this hub
+            if let Some(https) = crate::phone::tailscale_https().filter(|h| probe(h)) {
+                return https;
+            }
+        }
         let ts = shareable(url, crate::phone::tailscale_ip().as_deref());
         let up = ts != url && ureq::AgentBuilder::new().timeout(Duration::from_secs(2)).build().get(&format!("{ts}/v1/health")).call().is_ok();
         if up { ts } else { url.to_string() }
+    }
+
+    /// Ghost (D052): what was said, answered by the hub with this person's rights.
+    pub fn voice(&self, text: &str, workspace: Option<&str>) -> R<Value> {
+        self.need("POST", "/v1/voice", Some(&json!({ "text": text, "workspace": workspace })))
     }
 
     /// A one-time link (and QR) that signs another of this person's devices in (D041).
@@ -1297,6 +1309,11 @@ pub fn hub_set_vault_media(h: State<HubState>, on: bool) -> R<()> {
 #[tauri::command(async)]
 pub fn hub_sync_now(h: State<HubState>) {
     h.wake();
+}
+
+#[tauri::command(async)]
+pub fn hub_voice(h: State<HubState>, text: String, workspace: Option<String>) -> R<Value> {
+    h.client.voice(&text, workspace.as_deref())
 }
 
 #[tauri::command(async)]

@@ -18,6 +18,7 @@ const Chat = lazy(() => import("./views/Chat"));
 const Team = lazy(() => import("./views/Team"));
 const Calendar = lazy(() => import("./views/Calendar"));
 import { syncTeamCalendars } from "./calsync";
+import GhostButton from "./Ghost";
 
 // PapertrailOS bracketed bottom navigation.
 const NAV: [View, string][] = [
@@ -238,6 +239,7 @@ export default function App() {
             </span>
           ) : <button className="btn sm" onClick={() => setGate(true)}>Sign in</button>}
           {PHONE ? null : <UpdateButton />}
+          {PHONE ? null : <GhostButton />}
           {PHONE ? null : <ChatButton />}
           <button className="btn sm desk-only" onClick={() => api.refresh()} disabled={busy} title="Re-index projects, git and sessions">Refresh</button>
           <div className="sysstat">

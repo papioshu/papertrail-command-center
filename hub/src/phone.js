@@ -148,7 +148,89 @@ function boards() {
   return [el("p", { className: "dim" }, "Boards open full screen. On iPad, Apple Pencil draws and fingers move the canvas (the board switches to pen mode the first time the Pencil touches it)."),
     ...(list.length ? list.map((b) => el("a", { href: `/board/#${ws}/${b.id}`, style: "display:block;color:inherit;text-decoration:none" },
       el("div", { className: "card" }, el("div", { style: "font-weight:600" }, (b.fields || {}).title || "Board"), el("div", { className: "dim" }, (b.fields || {}).bg === "blackboard" ? "Blackboard" : "Dark grid"))))
-      : [el("p", { className: "dim" }, "No boards in this project yet. Paper makes them on the PC (TEAM � BOARDS).")])];
+      : [el("p", { className: "dim" }, "No boards in this project yet. Paper makes them on the PC (TEAM › BOARDS).")])];
+}
+
+/* ---------- Ghost: voice (D052) ---------- */
+// The phone's own recognizer hears; the hub's /v1/voice understands and acts with this person's rights; the phone speaks
+// the answer. Browsers only allow the microphone on the https:// address.
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let wake = null, armed = 0, ghostLog = [];
+const voiceOk = () => SR && window.isSecureContext;
+function speak(t) { try { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(t)); } catch { /* no voice: the text still shows */ } }
+function beep() {
+  try { const a = new (window.AudioContext || window.webkitAudioContext)(), o = a.createOscillator(), g = a.createGain(); o.frequency.value = 880; g.gain.value = 0.08; o.connect(g); g.connect(a.destination); o.start(); o.stop(a.currentTime + 0.12); } catch { /* silent */ }
+}
+function ghostShow(heard, answer) {
+  ghostLog = [{ heard, answer }, ...ghostLog].slice(0, 3);
+  const box = $("ghost-out");
+  if (box) box.replaceChildren(...ghostLog.map((x) => el("div", { className: "card" }, el("div", { className: "dim" }, x.heard), x.answer ? el("div", {}, x.answer) : null)));
+}
+async function ask(text) {
+  ghostShow(`"${text}"`, "…");
+  try {
+    const r = await api("POST", "/v1/voice", { text, workspace: ws });
+    ghostLog[0].answer = r.say; ghostShow(ghostLog.shift().heard, r.say); speak(r.say);
+    load().catch(() => {});
+  } catch (e) { ghostLog[0].answer = e.message; ghostShow(ghostLog.shift().heard, e.message); }
+}
+function listenOnce() {
+  if (!voiceOk()) return say(SR ? "Voice needs the secure link (https://). Ask Paper for a new device link." : "This browser can't listen. Use Safari or Chrome.");
+  const rec = new SR();
+  rec.lang = "en-US"; rec.interimResults = false; rec.maxAlternatives = 1;
+  rec.onresult = (e) => ask(e.results[0][0].transcript);
+  rec.onerror = (e) => { if (e.error !== "no-speech" && e.error !== "aborted") say("Voice: " + e.error); };
+  if (wake) wake.abort();
+  rec.onend = () => { if (localStorage.getItem("ptcc-ghost-wake") === "1") startWake(); };
+  beep(); ghostShow("Listening…", ""); rec.start();
+}
+// "Hey Ghost": listens while this page is open and on screen (phones never let a web page listen in the background).
+function startWake() {
+  if (!voiceOk() || wake || document.hidden) return;
+  const rec = new SR();
+  rec.lang = "en-US"; rec.continuous = true; rec.interimResults = false;
+  rec.onresult = (e) => {
+    const t = e.results[e.results.length - 1][0].transcript.trim();
+    if (armed > Date.now()) { armed = 0; return ask(t); }
+    const m = t.match(/\bghost\b[\s,.!?]*(.*)$/i);
+    if (!m) return;
+    if (m[1].trim().length > 2) ask(m[1].trim()); else { armed = Date.now() + 8000; beep(); ghostShow("Yes?", ""); }
+  };
+  rec.onerror = (e) => { if (e.error === "not-allowed") { localStorage.setItem("ptcc-ghost-wake", "0"); say("Microphone access was refused."); render(); } };
+  rec.onend = () => { wake = null; if (localStorage.getItem("ptcc-ghost-wake") === "1" && !document.hidden) setTimeout(startWake, 400); };
+  wake = rec; rec.start();
+}
+function stopWake() { const w = wake; wake = null; if (w) w.abort(); }
+
+// "Hey Siri, Ghost": a key for an Apple Shortcut that sends what Siri heard to the hub and speaks the answer.
+function siriSetup() {
+  return run(async () => {
+    const r = await api("POST", "/v1/devices", { name: "Siri shortcut" });
+    const field = (label, value) => el("div", { className: "row", style: "margin:6px 0" }, el("span", { className: "dim", style: "min-width:110px" }, label),
+      el("input", { value, readOnly: true, className: "grow", on: { focus: (e) => e.target.select() } }));
+    show(el("h1", {}, "HEY SIRI, GHOST"),
+      el("p", { className: "dim" }, "Works with the phone locked. Tailscale must be on. Treat the key like a password: it acts as you."),
+      field("URL", `${location.origin}/v1/voice`), field("Header value", `Bearer ${r.token}`),
+      el("ol", { style: "line-height:1.7;padding-left:20px" },
+        el("li", {}, "Open Shortcuts › + . Name the shortcut Ghost."),
+        el("li", {}, "Add action: Dictate Text."),
+        el("li", {}, "Add action: Get Contents of URL. Paste the URL. Show More: Method POST; Headers: add Authorization with the header value above; Request Body JSON: add key text, value Dictated Text."),
+        el("li", {}, "Add action: Get Dictionary Value: Value for key say in Contents of URL."),
+        el("li", {}, "Add action: Speak Text (Dictionary Value)."),
+        el("li", {}, "Say \"Hey Siri, Ghost\", then your command.")),
+      el("button", { className: "primary", on: { click: run(load) } }, "Done"));
+  });
+}
+
+function ghostBar() {
+  const on = localStorage.getItem("ptcc-ghost-wake") === "1";
+  if (on) setTimeout(startWake, 0); // picks listening back up after a reload or refresh
+  const toggle = () => { localStorage.setItem("ptcc-ghost-wake", on ? "0" : "1"); if (on) stopWake(); else startWake(); render(); };
+  return [el("div", { className: "row", style: "margin-top:8px" },
+    el("button", { className: "primary", on: { click: listenOnce } }, "🎙 Ask Ghost"),
+    el("button", { className: on ? "on" : "", style: on ? "border-color:var(--lime);color:var(--lime)" : "", on: { click: toggle }, title: "Listens for \"Hey Ghost\" while this page is open" }, on ? "Hey Ghost: on" : "Hey Ghost: off"),
+    /iPhone|iPad|Macintosh/.test(navigator.userAgent) ? el("button", { className: "small", on: { click: siriSetup() } }, "Siri") : null),
+    el("div", { id: "ghost-out" }, ghostLog.map((x) => el("div", { className: "card" }, el("div", { className: "dim" }, x.heard), x.answer ? el("div", {}, x.answer) : null)))];
 }
 
 function render() {
@@ -158,7 +240,7 @@ function render() {
     feed.projects.length ? feed.projects.map((p) => el("option", { value: p.id, selected: p.id === project }, p.name)) : el("option", {}, "No shared projects yet"));
   const tabs = el("div", { className: "row tabs", style: "margin-top:8px" }, ["tasks", "media", "boards"].map((t) => el("button", { className: tab === t ? "on" : "", on: { click: () => { tab = t; render(); } } }, t.toUpperCase())),
     el("span", { className: "grow" }), el("button", { className: "small", on: { click: addDevice() } }, "+ Device"), el("button", { className: "small", on: { click: run(load) } }, "Refresh"));
-  show(el("div", { className: "row" }, wsSel), el("div", { className: "row", style: "margin-top:8px" }, pSel), tabs,
+  show(el("div", { className: "row" }, wsSel), el("div", { className: "row", style: "margin-top:8px" }, pSel), ...ghostBar(), tabs,
     ...(project ? (tab === "tasks" ? tasks() : tab === "boards" ? boards() : media()) : [el("p", { className: "dim" }, "Nothing shared in this workspace yet.")]));
 }
 
@@ -206,6 +288,9 @@ async function start() {
 }
 
 window.addEventListener("hashchange", () => start().catch((e) => say(e.message)));
-document.addEventListener("visibilitychange", () => { if (!document.hidden && token && ws) load().catch(() => {}); });
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && token && ws) load().catch(() => {});
+  if (document.hidden) stopWake(); else if (localStorage.getItem("ptcc-ghost-wake") === "1") startWake();
+});
 setInterval(() => { if (!document.hidden && token && ws) load().catch(() => {}); }, 30000);
 start().catch((e) => say(e.message));

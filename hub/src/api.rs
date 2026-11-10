@@ -338,6 +338,7 @@ impl Hub {
             ("POST", ["workspaces", ws, "roles"]) => self.save_role(&c, &who, ws, &b),
             ("DELETE", ["workspaces", ws, "roles"]) => self.delete_role(&c, &who, ws, &b),
             ("POST", ["workspaces", ws, "ops"]) => self.op(&mut c, &who, ws, &b),
+            ("POST", ["voice"]) => self.voice(&mut c, &who, &b),
             ("GET", ["workspaces", ws, "changes"]) => self.changes(&c, &who, ws, query),
             ("GET", ["workspaces", ws, "media", id]) => self.get_media(&c, &who, ws, id),
             _ => Err(not_found()),
@@ -409,7 +410,7 @@ impl Hub {
         Ok(Reply { code: 200, body: json!({}), raw: Some(b) })
     }
 
-    fn me(&self, c: &Connection, who: &Caller) -> Res {
+    pub(crate) fn me(&self, c: &Connection, who: &Caller) -> Res {
         let name: String = db(c.query_row("SELECT name FROM users WHERE id = ?1", [&who.user], |r| r.get(0)))?;
         let mut st = db(c.prepare(
             "SELECT w.id, w.name, m.role, m.scope IS NOT NULL, m.title FROM memberships m JOIN workspaces w ON w.id = m.workspace_id AND w.deleted = 0

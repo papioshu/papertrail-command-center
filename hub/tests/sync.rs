@@ -617,3 +617,29 @@ fn project_files_are_published_by_owners_and_changed_only_through_accepted_propo
     c.sync();
     assert_eq!(c.field(&p2, "path"), Value::Null, "withdrawn");
 }
+
+#[test]
+fn ghost_voice_uses_the_callers_own_rights() {
+    let fx = fixture();
+    let say = |who: &str, text: &str| {
+        let r = fx.call("POST", "/v1/voice", Some(who), json!({ "text": text }));
+        assert_eq!(r.code, 200, "{r:?}");
+        r.body["say"].as_str().unwrap().to_string()
+    };
+    let added = say("editor", "Hey Ghost, add task order sample tees for contracts due tomorrow");
+    assert!(added.starts_with("Added Order sample tees to FLY WING contracts, due"), "{added}");
+    let feed = fx.call("GET", &format!("/v1/workspaces/{}/changes", fx.ws), Some("owner"), json!({}));
+    let t = feed.body["changes"].as_array().unwrap().iter().find(|x| x["fields"]["title"] == "Order sample tees").expect("task created").clone();
+    assert_eq!(t["project_id"], fx.p2.as_str());
+    assert!(t["fields"]["due"].is_string());
+    assert!(say("editor", "what's due this week").contains("Order sample tees"));
+    assert_eq!(say("editor", "claim the sample tees"), "Order sample tees is yours.");
+    assert!(say("editor", "what are my tasks").contains("Order sample tees"));
+    assert_eq!(say("viewer", "mark sample tees done"), "Your role can't do that.");
+    assert_eq!(say("scoped", "mark sample tees done"), "I couldn't find an open task like sample tees.", "a task outside your scope stays invisible");
+    assert_eq!(say("editor", "mark sample tees as done"), "Marked Order sample tees done.");
+    assert_eq!(say("editor", "what's blocked"), "Nothing is blocked.");
+    assert!(say("editor", "note the drop moves to December").starts_with("Saved your note"));
+    assert!(say("editor", "sing").starts_with("I heard: sing."));
+    assert_eq!(fx.hub.handle("POST", "/v1/voice", None, b"{\"text\":\"catch me up\"}").code, 401);
+}

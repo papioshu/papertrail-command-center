@@ -68,6 +68,11 @@ a { color: var(--violet-glow); }
 .wordmark .name { font-family: var(--font-display); letter-spacing: 0.34em; font-size: 16px; font-weight: 400; }
 .wordmark .tag { font-family: var(--font-mono); letter-spacing: 0.3em; font-size: 9.5px; color: var(--muted); margin-top: 2px; }
 .topbar .spacer { flex: 1; }
+/* Ghost (D052): hold-to-talk button and the answer card under the top bar. */
+.ghost-btn { touch-action: none; user-select: none; }
+.ghost-btn.rec { color: var(--signal); border-color: var(--signal); }
+.ghost-btn.think { color: var(--violet-glow); }
+.ghost-card { position: fixed; top: 74px; right: 30px; z-index: 50; max-width: 420px; padding: 12px 14px; background: var(--panel); border: 1px solid var(--line-2); box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5); display: flex; flex-direction: column; gap: 6px; cursor: pointer; }
 .sysstat { border-left: 1px solid var(--line); padding-left: 16px; }
 .sysstat .v { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.16em; }
 .ptbadge { width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--violet); display: grid; place-items: center;

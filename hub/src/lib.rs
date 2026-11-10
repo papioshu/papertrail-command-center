@@ -4,6 +4,7 @@
 pub mod api;
 pub mod store;
 pub mod sync;
+pub mod voice;
 
 use std::io::Read;
 use std::net::IpAddr;

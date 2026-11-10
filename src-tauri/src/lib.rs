@@ -6,6 +6,7 @@ mod continuity;
 mod db;
 mod discovery;
 mod gcal;
+mod voice;
 mod gitscan;
 mod hub_client;
 mod indexer;
@@ -255,6 +256,10 @@ pub fn run() {
             hub_client::hub_board_els,
             hub_client::hub_live,
             gcal::gcal_status,
+            voice::voice_status,
+            voice::voice_install,
+            voice::voice_transcribe,
+            hub_client::hub_voice,
             gcal::gcal_set_client,
             gcal::gcal_connect,
             gcal::gcal_disconnect,
