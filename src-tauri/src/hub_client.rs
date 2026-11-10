@@ -1025,22 +1025,33 @@ fn own_exe_sha() -> R<String> {
     Ok(sha256_hex(&std::fs::read(std::env::current_exe().map_err(e)?).map_err(e)?))
 }
 
+/// The installer keeps the build's file time, so the exe's modified time is when it was built (UTC RFC 3339).
+fn own_exe_built() -> String {
+    std::env::current_exe()
+        .and_then(std::fs::metadata)
+        .and_then(|m| m.modified())
+        .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        .unwrap_or_default()
+}
+
 impl Client {
-    /// What the hub offers, and whether it differs from this build.
-    pub fn update_check(&self, current: &str) -> R<Value> {
+    /// What the hub offers, and whether it's a different build published after this one (`built` = this exe's
+    /// build time; empty = unknown). A PC running a newer local build is never offered the older published one.
+    pub fn update_check(&self, current: &str, built: &str) -> R<Value> {
         let v = match self.call("GET", "/v1/app/latest", None) {
             Net::Reply(200, v) => v,
             Net::Reply(404, _) => return Ok(json!({ "available": false, "published": false })),
             Net::Reply(code, _) => return Err(format!("The hub refused ({code}).")),
             Net::Down(d) => return Err(format!("Can't reach the hub ({d}).")),
         };
-        let available = v["exe_sha256"].as_str().is_some_and(|s| s != current);
+        let newer = built.is_empty() || v["built_at"].as_str().is_none_or(|b| b > built);
+        let available = newer && v["exe_sha256"].as_str().is_some_and(|s| s != current);
         Ok(json!({ "available": available, "published": true, "commit": v["commit"], "built_at": v["built_at"], "installer_sha256": v["installer_sha256"] }))
     }
 
     /// Downloads the published installer into `dir` and checks it against the fingerprint the hub announced.
     pub fn download_update(&self, dir: &Path) -> R<PathBuf> {
-        let want = self.update_check("")?["installer_sha256"].as_str().map(String::from).ok_or("No update is published.")?;
+        let want = self.update_check("", "")?["installer_sha256"].as_str().map(String::from).ok_or("No update is published.")?;
         let res = self.request("GET", "/v1/app/installer").map_err(|_| "Can't reach the hub.".to_string())?.call().map_err(|x| format!("Download failed ({x})."))?;
         let mut b = Vec::new();
         std::io::Read::read_to_end(&mut std::io::Read::take(res.into_reader(), 200 * 1024 * 1024), &mut b).map_err(e)?;
@@ -1059,7 +1070,7 @@ pub fn app_update_check(h: State<HubState>) -> R<Value> {
     if h.client.config().is_none() {
         return Err("Updates come from your team's hub. Join it in TEAM first.".into());
     }
-    let mut v = h.client.update_check(&own_exe_sha()?)?;
+    let mut v = h.client.update_check(&own_exe_sha()?, &own_exe_built())?;
     v["current"] = json!(own_exe_sha()?.chars().take(12).collect::<String>());
     Ok(v)
 }
@@ -1934,14 +1945,15 @@ mod tests {
         let d = tmp("upd");
         let a = Client::new(&d);
         a.join(&link, "Rich", "PC").unwrap();
-        assert_eq!(a.update_check("x").unwrap()["published"], false);
+        assert_eq!(a.update_check("x", "").unwrap()["published"], false);
         let share = h.data.join("share");
         std::fs::create_dir_all(&share).unwrap();
         std::fs::write(share.join(ptcc_hub::api::INSTALLER), b"MZ new build").unwrap();
-        let latest = |inst: &str| json!({ "exe_sha256": "new-exe", "installer_sha256": inst, "commit": "abc1234" }).to_string();
+        let latest = |inst: &str| json!({ "exe_sha256": "new-exe", "installer_sha256": inst, "commit": "abc1234", "built_at": "2026-11-09T23:11:00Z" }).to_string();
         std::fs::write(share.join("latest.json"), latest(&sha256_hex(b"MZ new build"))).unwrap();
-        assert_eq!(a.update_check("old-exe").unwrap()["available"], true);
-        assert_eq!(a.update_check("new-exe").unwrap()["available"], false, "already on it");
+        assert_eq!(a.update_check("old-exe", "2026-11-09T20:00:00Z").unwrap()["available"], true);
+        assert_eq!(a.update_check("new-exe", "").unwrap()["available"], false, "already on it");
+        assert_eq!(a.update_check("dev-exe", "2026-11-10T05:48:00Z").unwrap()["available"], false, "a newer local build isn't downgraded");
         let got = a.download_update(&d.join("dl")).unwrap();
         assert_eq!(std::fs::read(got).unwrap(), b"MZ new build");
         // A swapped installer (fingerprint mismatch) is refused.
