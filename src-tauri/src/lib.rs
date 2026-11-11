@@ -260,6 +260,7 @@ pub fn run() {
             voice::voice_install,
             voice::voice_transcribe,
             hub_client::hub_voice,
+            hub_client::hub_presence,
             gcal::gcal_set_client,
             gcal::gcal_connect,
             gcal::gcal_disconnect,

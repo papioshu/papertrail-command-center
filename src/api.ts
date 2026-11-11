@@ -160,6 +160,7 @@ export const api = {
   voiceStatus: () => call<Row>("voice_status"),
   voiceInstall: () => call<void>("voice_install"),
   voiceTranscribe: (wav: string, hint: string) => call<string>("voice_transcribe", { wav, hint }),
+  hubPresence: (workspace: string, board: string, body: Row) => call<{ people: Row[] }>("hub_presence", { workspace, board, body }),
   hubVoice: (text: string, workspace?: string) => call<Row>("hub_voice", { text, workspace }),
   gcalSetClient: (clientId: string, clientSecret: string) => call<void>("gcal_set_client", { clientId, clientSecret }),
   gcalConnect: (extra?: boolean) => call<void>("gcal_connect", { extra }),

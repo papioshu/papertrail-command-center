@@ -65,6 +65,7 @@ export const api = {
     const up = await http("PUT", `/v1/workspaces/${ws}/projects/${project}/blobs/auto`, bytes, false);
     return op(ws, "create", "media", project, { sha256: up.sha256, name, caption: caption.slice(0, 1000), folder, ...(board ? { board } : {}) });
   },
+  hubPresence: (ws: string, board: string, body: Row) => http("POST", `/v1/workspaces/${ws}/boards/${board}/presence`, JSON.stringify(body)),
   // While a board is open: pull every 1.5 s and tell the canvas when something arrived.
   hubLive: async (on: boolean) => {
     window.clearInterval(live);

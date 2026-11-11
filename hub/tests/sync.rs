@@ -643,3 +643,27 @@ fn ghost_voice_uses_the_callers_own_rights() {
     assert!(say("editor", "sing").starts_with("I heard: sing."));
     assert_eq!(fx.hub.handle("POST", "/v1/voice", None, b"{\"text\":\"catch me up\"}").code, 401);
 }
+
+#[test]
+fn board_presence_shows_other_readers_cursors_only() {
+    let fx = fixture();
+    let mut a = Client::new(&fx, "editor");
+    let b1 = a.create("board", &fx.p1, json!({ "title": "Mood", "bg": "grid" }));
+    let b2 = a.create("board", &fx.p2, json!({ "title": "Contracts", "bg": "grid" }));
+    a.sync();
+    let at = |who: &str, board: &str, body: Value| fx.call("POST", &format!("/v1/workspaces/{}/boards/{board}/presence", fx.ws), Some(who), body);
+    assert_eq!(at("editor", &b1, json!({ "x": 10, "y": 20, "sel": ["e1"] })).body["people"], json!([]), "alone: nobody else");
+    let seen = at("viewer", &b1, json!({ "x": 1, "y": 2 }));
+    assert_eq!(seen.code, 200);
+    let p = &seen.body["people"][0];
+    assert_eq!((p["name"].clone(), p["x"].clone(), p["sel"].clone()), (json!("editor"), json!(10.0), json!(["e1"])));
+    assert_eq!(at("editor", &b1, json!({ "x": 11, "y": 20 })).body["people"][0]["name"], "viewer");
+    // Leaving drops you at once; a board in another project is only for its readers.
+    at("viewer", &b1, json!({ "leave": true }));
+    assert_eq!(at("editor", &b1, json!({ "x": 11, "y": 20 })).body["people"], json!([]));
+    // A board outside your projects looks exactly like one that doesn't exist.
+    assert_eq!(at("scoped", &b2, json!({ "x": 0, "y": 0 })).code, at("scoped", "nope", json!({ "x": 0, "y": 0 })).code);
+    assert!(at("scoped", &b2, json!({ "x": 0, "y": 0 })).code >= 400);
+    assert!(at("outsider", &b1, json!({ "x": 0, "y": 0 })).code >= 400);
+    assert_eq!(at("editor", &b1, json!({ "x": 11, "y": 20 })).body["people"], json!([]), "refused callers never show up");
+}

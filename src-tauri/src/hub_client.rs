@@ -322,6 +322,15 @@ impl Client {
     }
 
     /// Ghost (D052): what was said, answered by the hub with this person's rights.
+    /// Board presence (B3): sends this person's cursor, returns everyone else's on that board.
+    pub fn presence(&self, ws: &str, board: &str, body: &Value) -> R<Value> {
+        let ok = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+        if !ok(ws) || !ok(board) {
+            return Err("bad board id".into());
+        }
+        self.need("POST", &format!("/v1/workspaces/{ws}/boards/{board}/presence"), Some(body))
+    }
+
     pub fn voice(&self, text: &str, workspace: Option<&str>) -> R<Value> {
         self.need("POST", "/v1/voice", Some(&json!({ "text": text, "workspace": workspace })))
     }
@@ -1314,6 +1323,11 @@ pub fn hub_sync_now(h: State<HubState>) {
 #[tauri::command(async)]
 pub fn hub_voice(h: State<HubState>, text: String, workspace: Option<String>) -> R<Value> {
     h.client.voice(&text, workspace.as_deref())
+}
+
+#[tauri::command(async)]
+pub fn hub_presence(h: State<HubState>, workspace: String, board: String, body: Value) -> R<Value> {
+    h.client.presence(&workspace, &board, &body)
 }
 
 #[tauri::command(async)]

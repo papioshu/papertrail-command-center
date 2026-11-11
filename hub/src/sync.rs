@@ -457,4 +457,31 @@ impl Hub {
         let bytes = self.media.as_ref().and_then(|d| std::fs::read(d.join(sha)).ok()).ok_or_else(not_found)?;
         Ok(Reply { code: 200, body: json!({}), raw: Some(bytes) })
     }
+
+    /// `POST …/boards/{board}/presence {x, y, sel?, leave?}` (B3): this person's cursor in, everyone else's out. Sent about
+    /// twice a second while a board is open; anyone not heard from for 8 s is dropped. Readers of the board only.
+    pub(crate) fn presence(&self, c: &Connection, who: &Caller, ws: &str, board: &str, b: &Value) -> Res {
+        let m = membership(c, ws, &who.user);
+        let row = load(c, board)?.filter(|r| r.ws == ws && r.kind == "board");
+        let project = row.as_ref().map(|r| r.project.clone()).unwrap_or_default();
+        self.check(c, who, m.as_ref(), Perm::MediaRead, Target::Project { workspace: ws, project: &project }, "board.presence")?;
+        row.filter(|r| !r.deleted).ok_or_else(not_found)?;
+        let name: String = db(c.query_row("SELECT name FROM users WHERE id = ?1", [&who.user], |r| r.get(0)))?;
+        let num = |k: &str| b[k].as_f64().filter(|v| v.is_finite()).map(|v| v.clamp(-1e7, 1e7));
+        let sel: Vec<Value> = b["sel"].as_array().into_iter().flatten().filter_map(|v| v.as_str().filter(|s| s.len() <= 64).map(|s| json!(s))).take(50).collect();
+        let now = std::time::Instant::now();
+        let mut all = self.presence.lock().unwrap_or_else(|e| e.into_inner());
+        all.retain(|_, people| {
+            people.retain(|_, (_, t)| now.duration_since(*t).as_secs() < 8);
+            !people.is_empty()
+        });
+        let people = all.entry(board.to_string()).or_default();
+        if b["leave"] == true {
+            people.remove(&who.user);
+        } else if let (Some(x), Some(y)) = (num("x"), num("y")) {
+            people.insert(who.user.clone(), (json!({ "user": who.user, "name": name, "x": x, "y": y, "sel": sel }), now));
+        }
+        let others: Vec<Value> = people.iter().filter(|(u, _)| **u != who.user).map(|(_, (v, _))| v.clone()).collect();
+        Ok(ok(json!({ "people": others })))
+    }
 }

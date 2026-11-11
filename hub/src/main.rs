@@ -113,9 +113,18 @@ fn serve_cmd(data: &Path, mut args: Vec<String>) -> Result<(), String> {
     let _lock = store::lock(data)?;
     let hub = Arc::new(api::Hub::new(store::open(Some(data))?, Some(data.join("media"))));
     let mut workers = Vec::new();
-    for ip in &binds {
-        let addr = std::net::SocketAddr::new(*ip, port);
-        let server = Arc::new(tiny_http::Server::http(addr).map_err(|e| format!("can't listen on {addr}: {e}"))?);
+    for ip in binds.clone() {
+        let addr = std::net::SocketAddr::new(ip, port);
+        let server = match tiny_http::Server::http(addr) {
+            Ok(s) => Arc::new(s),
+            // Tailscale switched off still reports its address: serve this PC now, add Tailscale when it's back.
+            Err(e) if watch_tailscale && !ip.is_loopback() => {
+                eprintln!("ptcc-hub: can't listen on {addr} yet: {e}");
+                binds.retain(|b| *b != ip);
+                continue;
+            }
+            Err(e) => return Err(format!("can't listen on {addr}: {e}")),
+        };
         println!("ptcc-hub listening on http://{addr}");
         workers.extend(serve(hub.clone(), server, 4));
     }

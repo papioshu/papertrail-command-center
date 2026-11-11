@@ -53,6 +53,9 @@ async function pdfPreview(file: File): Promise<Blob> {
   pdf.destroy();
   return new Promise((ok, no) => cv.toBlob((b) => (b ? ok(b) : no(new Error("Couldn't draw that PDF page."))), "image/png"));
 }
+// Excalidraw colors a cursor by hashing the collaborator's id (it ignores `color`), so each person on the board gets one
+// of these ids, picked to hash to well-spaced hues: violet, teal, green, amber, coral, pink, blue, lime.
+const CURSOR_IDS = ["ptcc-5", "ptcc-11", "ptcc-18", "ptcc-52", "ptcc-55", "ptcc-44", "ptcc-9", "ptcc-64"];
 const stamp = () => new Date().toISOString().slice(0, 16).replace("T", " ").replace(":", "");
 
 export default function BoardCanvas({ ws, board, b, canDraw, onBack, onErr, reload }: { ws: string; board: Row; b: Row; canDraw: boolean; onBack: () => void; onErr: (e: string) => void; reload: () => void }) {
@@ -158,6 +161,28 @@ export default function BoardCanvas({ ws, board, b, canDraw, onBack, onErr, relo
     }).catch((e) => { setStatus(""); fail(e); window.clearTimeout(timer.current); timer.current = window.setTimeout(() => push(), 3000); });
   }, [xapi, canDraw, ws, project, board.id, fail]); // eslint-disable-line react-hooks/exhaustive-deps
   const onChange = useCallback(() => { window.clearTimeout(timer.current); timer.current = window.setTimeout(push, 250); }, [push]);
+
+  // Presence (B3): who else has this board open, with their cursor and selection. Twice a second while visible.
+  const pointer = useRef<{ x: number; y: number } | null>(null);
+  useEffect(() => {
+    if (!xapi) return;
+    const tick = async () => {
+      if (document.hidden) return;
+      const p = pointer.current;
+      const sel = Object.keys(xapi.getAppState().selectedElementIds ?? {});
+      const r = await api.hubPresence(ws, board.id, p ? { x: p.x, y: p.y, sel } : {}).catch(() => null);
+      if (!r) return;
+      // Ordered by user id, so everyone on the board gets a different color (up to 8).
+      const people = [...r.people].sort((a: Row, c: Row) => String(a.user).localeCompare(String(c.user)));
+      const collaborators = new Map(people.map((u: Row, i: number) => [String(u.user), {
+        id: CURSOR_IDS[i % CURSOR_IDS.length], username: String(u.name),
+        pointer: { x: u.x, y: u.y, tool: "pointer" }, selectedElementIds: Object.fromEntries((u.sel ?? []).map((id: string) => [id, true])),
+      }]));
+      xapi.updateScene({ collaborators: collaborators as never, captureUpdate: CaptureUpdateAction.NEVER });
+    };
+    const t = window.setInterval(tick, 500);
+    return () => { window.clearInterval(t); api.hubPresence(ws, board.id, { leave: true }).catch(() => {}); };
+  }, [xapi, ws, board.id]);
   useEffect(() => () => { window.clearTimeout(timer.current); push(); }, [push]);
 
   // Pasted / dropped images become workspace media first; the element then names the media record.
@@ -352,6 +377,8 @@ export default function BoardCanvas({ ws, board, b, canDraw, onBack, onErr, relo
           theme="dark"
           viewModeEnabled={!canDraw}
           onChange={onChange}
+          onPointerUpdate={({ pointer: p }) => { pointer.current = { x: p.x, y: p.y }; }}
+          isCollaborating
           generateIdForFile={generateIdForFile}
           onLinkOpen={openDoc}
           UIOptions={{ canvasActions: { changeViewBackgroundColor: false, toggleTheme: false, loadScene: false, saveToActiveFile: false, export: false } }}

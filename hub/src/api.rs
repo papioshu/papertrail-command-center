@@ -15,6 +15,8 @@ pub struct Hub {
     /// Content-addressed media files (sha256 names); None = media uploads off.
     pub media: Option<std::path::PathBuf>,
     denials: Mutex<HashMap<String, Instant>>,
+    /// Board presence (B3): board id -> user id -> (cursor, last seen). Memory only; gone when the hub restarts.
+    pub(crate) presence: Mutex<HashMap<String, HashMap<String, (Value, Instant)>>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -51,7 +53,7 @@ pub(crate) struct Caller {
 
 impl Hub {
     pub fn new(c: Connection, media: Option<std::path::PathBuf>) -> Hub {
-        Hub { db: Mutex::new(c), media, denials: Mutex::new(HashMap::new()) }
+        Hub { db: Mutex::new(c), media, denials: Mutex::new(HashMap::new()), presence: Mutex::new(HashMap::new()) }
     }
 }
 
@@ -339,6 +341,7 @@ impl Hub {
             ("DELETE", ["workspaces", ws, "roles"]) => self.delete_role(&c, &who, ws, &b),
             ("POST", ["workspaces", ws, "ops"]) => self.op(&mut c, &who, ws, &b),
             ("POST", ["voice"]) => self.voice(&mut c, &who, &b),
+            ("POST", ["workspaces", ws, "boards", board, "presence"]) => self.presence(&c, &who, ws, board, &b),
             ("GET", ["workspaces", ws, "changes"]) => self.changes(&c, &who, ws, query),
             ("GET", ["workspaces", ws, "media", id]) => self.get_media(&c, &who, ws, id),
             _ => Err(not_found()),
