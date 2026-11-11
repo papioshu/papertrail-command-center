@@ -1,5 +1,6 @@
 import { lazy, Suspense, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { api, PHONE, type Row } from "../api";
+import GhostButton from "../Ghost";
 import { ago, AgentChip, Barcode, brand, day, Empty, ErrBox, orderDiscoveries, ProjectActions, RadarOrderControl, sessionState, short, Spark, StatusBar, useAsync, useDragScroll, useNav, type RadarOrder } from "../ui";
 
 export const counts = (p: Row) => ({ done: p.done_tasks, active: p.active_tasks, pending: p.pending_tasks, blocked: p.blocked_tasks, deferred: p.deferred_tasks });
@@ -248,6 +249,12 @@ function Week() {
   );
 }
 
+// The phone view is read-only, so Ghost (which can add and finish tasks) lives on the team page, signed in as you.
+function GhostLink() {
+  const url = useAsync(() => api.settings().then((s) => s.ghost_url as string | null), []).data;
+  return url ? <a className="btn" href={url} target="_blank" rel="noreferrer">🎙 Ask Ghost</a> : null;
+}
+
 export default function Overview() {
   const projects = useAsync(() => api.projects(), [], REFRESH);
   const brief = useAsync(() => api.briefing(), [], REFRESH);
@@ -309,6 +316,7 @@ export default function Overview() {
               </div>
             ))}
           </div>
+          {PHONE ? <GhostLink /> : <GhostButton big />}
           <div className="row" style={{ marginTop: "auto", gap: 10, color: "var(--dim)" }}><Barcode value={String(b?.since ?? "pt")} width={120} height={16} /><span className="label" style={{ fontSize: 8.5 }}>PT-SPHERE · BOOK OF SECRETS</span></div>
         </div>
         <Suspense fallback={<div className="sphere" />}>

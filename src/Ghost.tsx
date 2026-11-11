@@ -40,7 +40,7 @@ export function wav(chunks: Float32Array[], rate = 16000): string {
   return btoa(bin);
 }
 
-export default function GhostButton() {
+export default function GhostButton({ big = false }: { big?: boolean }) {
   const { nav } = useNav();
   const [state, setState] = useState<"idle" | "rec" | "think">("idle");
   const [card, setCard] = useState<{ heard: string; answer: string } | null>(null);
@@ -102,17 +102,18 @@ export default function GhostButton() {
     } catch (e) { show("Ghost", String(e)); } finally { setState("idle"); }
   }, [answer]);
 
-  // Hold Ctrl+Space anywhere in the app.
+  // Hold Ctrl+Space anywhere in the app (only the top-bar button listens, so one press records once).
   useEffect(() => {
+    if (big) return;
     const down = (e: KeyboardEvent) => { if (e.ctrlKey && e.code === "Space" && !e.repeat) { e.preventDefault(); begin(); } };
     const up = (e: KeyboardEvent) => { if (e.code === "Space" || e.key === "Control") end(); };
     window.addEventListener("keydown", down); window.addEventListener("keyup", up);
     return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
-  }, [begin, end]);
+  }, [begin, end, big]);
 
   return (
     <>
-      <button className={`btn sm ghost-btn ${state}`} onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); begin(); }} onPointerUp={end} onPointerCancel={end}
+      <button className={`btn ${big ? "" : "sm"} ghost-btn ${state}`} onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); begin(); }} onPointerUp={end} onPointerCancel={end}
         title="Hold to talk to Ghost (or hold Ctrl+Space)" aria-label="Hold to talk to Ghost">
         {state === "rec" ? "● Listening" : state === "think" ? "Ghost…" : "🎙 Ghost"}
       </button>

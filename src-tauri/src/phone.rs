@@ -288,7 +288,9 @@ fn call(app: &AppHandle, cmd: &str, a: &Value) -> R<Value> {
         // Only what read views use; paths and launch presets stay on the PC.
         "get_settings" => {
             let c = st.db.lock().map_err(|_| "database lock poisoned")?;
-            Ok(json!({"workstream_aliases": crate::registry::settings(&c)["workstream_aliases"]}))
+            let aliases = crate::registry::settings(&c)["workstream_aliases"].clone();
+            drop(c);
+            Ok(json!({"workstream_aliases": aliases, "ghost_url": tailscale_https()}))
         }
         _ => Err("unknown command".into()),
     }
