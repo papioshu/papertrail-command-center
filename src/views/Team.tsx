@@ -782,6 +782,7 @@ function WorkspacePage({ w, me, onBack, onErr }: { w: Row; me: string; onBack: (
 export default function Team() {
   const status = useAsync(() => api.hubStatus(), [], ["hub-changed"]);
   const host = useAsync(() => api.hubHostStatus(), []);
+  const [tsBusy, setTsBusy] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [leaving, setLeaving] = useState(false);
@@ -803,6 +804,12 @@ export default function Team() {
             <div className="row" style={{ gap: 8, marginLeft: "auto", alignItems: "center" }}>
               <span className="small"><span className={`dot ${s.online === false ? "busy" : ""}`} /> {s.online === false ? "Hub offline · showing last sync" : s.online ? "Hub online" : "Connecting…"}</span>
               {host.data && !host.data.tailscale && <span className="small" style={{ color: "var(--gold)" }} title="Teammates reach the hub over Tailscale">Tailscale off: only this PC can reach the hub</span>}
+              {host.data?.tailscale_state != null && (
+                <button className="btn sm" disabled={tsBusy} title="Phones, teammates and the https address reach this PC over Tailscale"
+                  onClick={() => { setTsBusy(true); setErr(null); api.tailscaleSet(!host.data?.tailscale).then(() => host.reload(), (e) => setErr(String(e))).finally(() => setTsBusy(false)); }}>
+                  {tsBusy ? "Switching…" : host.data.tailscale ? "Turn Tailscale off" : "Turn Tailscale on"}
+                </button>
+              )}
               <button className="btn sm" onClick={() => api.hubSyncNow()}>Sync now</button>
               <button className="btn sm" onClick={() => api.hubDeviceLink().then(setDevice, (e) => setErr(String(e)))} title="Sign your phone, tablet or another PC in as you">Add another device</button>
               {leaving

@@ -72,29 +72,47 @@ pub(crate) fn device_for(devs: &[Value], authorization: Option<&str>) -> Option<
     devs.iter().find(|d| d["hash"].as_str() == Some(h.as_str())).and_then(|d| d["id"].as_str().map(String::from))
 }
 
-pub(crate) fn tailscale_ip() -> Option<String> {
-    for exe in ["tailscale", r"C:\Program Files\Tailscale\tailscale.exe"] {
-        if let Ok(o) = crate::util::run(exe, &["ip", "-4"], None, Duration::from_secs(5)) {
-            if let Some(ip) = o.stdout.lines().map(str::trim).find(|l| l.starts_with("100.")) {
-                return Some(ip.to_string());
-            }
-        }
+const TS: [&str; 2] = ["tailscale", r"C:\Program Files\Tailscale\tailscale.exe"];
+
+/// `tailscale status --json`, or None when Tailscale isn't installed.
+pub(crate) fn tailscale_status() -> Option<serde_json::Value> {
+    TS.iter().find_map(|exe| crate::util::run(exe, &["status", "--json"], None, Duration::from_secs(5)).ok())
+        .and_then(|o| serde_json::from_str(&o.stdout).ok())
+}
+
+/// This PC's 100.x address, only while Tailscale is connected (switched off, it still reports the old address).
+pub(crate) fn running_ip(v: &serde_json::Value) -> Option<String> {
+    if v["BackendState"] != "Running" {
+        return None;
     }
-    None
+    v["Self"]["TailscaleIPs"].as_array()?.iter().filter_map(|i| i.as_str()).find(|i| i.starts_with("100.")).map(String::from)
+}
+
+pub(crate) fn tailscale_ip() -> Option<String> {
+    running_ip(&tailscale_status()?)
 }
 
 /// This PC's tailnet HTTPS address (https://name.tailnet.ts.net) when the tailnet has HTTPS certificates turned on.
 /// Phones need HTTPS for the microphone (Ghost voice, D052).
 pub(crate) fn tailscale_https() -> Option<String> {
-    for exe in ["tailscale", r"C:\Program Files\Tailscale\tailscale.exe"] {
-        if let Ok(o) = crate::util::run(exe, &["status", "--json"], None, Duration::from_secs(5)) {
-            let v: serde_json::Value = serde_json::from_str(&o.stdout).ok()?;
-            let name = v["Self"]["DNSName"].as_str()?.trim_end_matches('.').to_string();
-            let certs = v["CertDomains"].as_array().is_some_and(|c| c.iter().any(|d| d == name.as_str()));
-            return (certs && name.ends_with(".ts.net")).then(|| format!("https://{name}"));
+    let v = tailscale_status()?;
+    let name = v["Self"]["DNSName"].as_str()?.trim_end_matches('.').to_string();
+    let certs = v["CertDomains"].as_array().is_some_and(|c| c.iter().any(|d| d == name.as_str()));
+    (certs && name.ends_with(".ts.net")).then(|| format!("https://{name}"))
+}
+
+/// Switches Tailscale on (`tailscale up`, same settings as before) or off (`tailscale down`) on this PC.
+#[tauri::command(async)]
+pub fn tailscale_set(on: bool) -> Result<(), String> {
+    let arg = if on { "up" } else { "down" };
+    for exe in TS {
+        match crate::util::run(exe, &[arg], None, Duration::from_secs(20)) {
+            Ok(o) if o.ok => return Ok(()),
+            Ok(_) => return Err(format!("Tailscale didn't switch {}. Open Tailscale from the taskbar tray{}.", if on { "on" } else { "off" }, if on { " and sign in" } else { "" })),
+            Err(_) => continue,
         }
     }
-    None
+    Err("Tailscale isn't installed on this PC (or didn't answer in 20 s).".into())
 }
 
 fn enabled(app: &AppHandle) -> bool {

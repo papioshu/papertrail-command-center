@@ -1474,7 +1474,9 @@ fn share_dir() -> Option<PathBuf> {
 pub fn hub_host_status() -> Value {
     let up = ureq::AgentBuilder::new().timeout(Duration::from_secs(2)).build().get("http://127.0.0.1:8770/v1/health").call().is_ok();
     let installer = share_dir().and_then(|d| std::fs::read_dir(d).ok()).into_iter().flatten().filter_map(|e| e.ok()).any(|e| e.file_name().to_string_lossy().ends_with(".exe"));
-    json!({ "installed": local_hub_exe().is_some(), "running": up, "tailscale": crate::phone::tailscale_ip(), "installer": installer })
+    let ts = crate::phone::tailscale_status();
+    json!({ "installed": local_hub_exe().is_some(), "running": up, "tailscale": ts.as_ref().and_then(crate::phone::running_ip),
+            "tailscale_state": ts.as_ref().map(|v| v["BackendState"].clone()), "installer": installer })
 }
 
 /// Opens the folder holding the teammate installer (fixed path; nothing else can be opened this way).
