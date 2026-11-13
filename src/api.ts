@@ -146,7 +146,7 @@ export const api = {
   updateInstall: () => call<void>("app_update_install"),
   hubSyncNow: () => call<void>("hub_sync_now"),
   hubBoard: (workspace: string) => call<Row>("hub_board", { workspace }),
-  hubEdit: (workspace: string, action: "create" | "update" | "delete", kind: "task" | "milestone" | "board" | "board_el" | "proposal", projectId: string, fields: Row | null, recordId?: string) =>
+  hubEdit: (workspace: string, action: "create" | "update" | "delete", kind: "task" | "milestone" | "board" | "board_el" | "board_note" | "proposal", projectId: string, fields: Row | null, recordId?: string) =>
     call<string>("hub_edit", { workspace, action, kind, recordId, projectId, fields }),
   hubBoardEls: (workspace: string, board: string) => call<{ id: string; data: string | null }[]>("hub_board_els", { workspace, board }),
   hubLive: (on: boolean) => call<void>("hub_live", { on }),

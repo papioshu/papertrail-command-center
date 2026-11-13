@@ -259,6 +259,8 @@ pub enum Publishable {
     /// A creative board in a workspace project and its canvas elements (D044).
     Board,
     BoardElement,
+    /// A pinned comment on a board, or a reply to one (B4).
+    BoardNote,
     /// A file of a linked project, sent only after the owner approves the share (D048; git-tracked, no secrets), and
     /// a teammate's proposed change to one, which changes nothing until the owner accepts it.
     ProjectFile,
@@ -280,6 +282,7 @@ pub fn publishable(kind: &str) -> Option<Publishable> {
         "snapshot" => Publishable::Snapshot,
         "board" => Publishable::Board,
         "board_el" => Publishable::BoardElement,
+        "board_note" => Publishable::BoardNote,
         "file" => Publishable::ProjectFile,
         "proposal" => Publishable::Proposal,
         _ => return None,

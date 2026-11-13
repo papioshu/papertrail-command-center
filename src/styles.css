@@ -526,3 +526,11 @@ body.phone .desk-only { display: none !important; }
 .board-open:focus-visible { outline: 1px solid var(--violet-glow); outline-offset: 4px; }
 .board-title { font-family: var(--font-display); letter-spacing: 0.2em; text-transform: uppercase; font-size: 14px; }
 .file-pane { flex: 1; min-width: 0; max-height: 50vh; overflow: auto; margin: 0; padding: 10px; font-size: 12px; background: var(--ink); border: 1px solid var(--line); white-space: pre-wrap; overflow-wrap: anywhere; }
+/* --- board comments (B4) --- */
+.pin { position: absolute; z-index: 4; width: 26px; height: 26px; margin-top: -26px; padding: 0; border: 2px solid #fff; border-radius: 50% 50% 50% 0;
+  background: var(--violet, #8b5cf6); color: #fff; font: 700 12px var(--font-body); cursor: pointer; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5); }
+.pin.done { background: #3a3550; color: #b9b3d1; border-color: #6d6690; }
+.pin.open, .pin:focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
+.pin-catch { position: absolute; inset: 0; z-index: 6; cursor: crosshair; }
+.pin-thread { position: absolute; z-index: 7; width: 320px; max-height: 60%; overflow: auto; display: flex; flex-direction: column; gap: 8px; padding: 12px; background: var(--ink); }
+.mention { color: var(--lime); font-weight: 600; }

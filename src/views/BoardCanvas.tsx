@@ -58,7 +58,10 @@ async function pdfPreview(file: File): Promise<Blob> {
 const CURSOR_IDS = ["ptcc-5", "ptcc-11", "ptcc-18", "ptcc-52", "ptcc-55", "ptcc-44", "ptcc-9", "ptcc-64"];
 const stamp = () => new Date().toISOString().slice(0, 16).replace("T", " ").replace(":", "");
 
-export default function BoardCanvas({ ws, board, b, canDraw, onBack, onErr, reload }: { ws: string; board: Row; b: Row; canDraw: boolean; onBack: () => void; onErr: (e: string) => void; reload: () => void }) {
+// "@Profit" in a comment notifies Profit (desktop); shown highlighted.
+const withMentions = (t: string) => t.split(/(@[\w.-]+)/).map((part, i) => (i % 2 ? <b key={i} className="mention">{part}</b> : part));
+
+export default function BoardCanvas({ ws, board, b, me, canDraw, onBack, onErr, reload }: { ws: string; board: Row; b: Row; me: string; canDraw: boolean; onBack: () => void; onErr: (e: string) => void; reload: () => void }) {
   const [xapi, setXapi] = useState<ExcalidrawImperativeAPI | null>(null);
   const [status, setStatus] = useState("");
   const [versionsOpen, setVersionsOpen] = useState(false);
@@ -334,6 +337,32 @@ export default function BoardCanvas({ ws, board, b, canDraw, onBack, onErr, relo
     } catch (e) { setStatus(""); fail(e); }
   };
 
+  // Comments (B4): a pin is a board_note at a spot on the board; replies name their pin. Each is its own record, so
+  // two people commenting at once never overwrite each other. Drawn over the canvas, following its scroll and zoom.
+  const notes: Row[] = (b.records ?? []).filter((r: Row) => r.kind === "board_note" && r.fields?.board === board.id);
+  const byTime = (x: Row, y: Row) => String(x.updated_at).localeCompare(String(y.updated_at));
+  const pins = notes.filter((n) => !n.fields?.reply_to && typeof n.fields?.x === "number").sort(byTime);
+  const open = pins.filter((p) => !p.fields?.done).length;
+  const nameOf = (id: string) => String((b.members ?? []).find((m: Row) => m.user_id === id)?.name ?? (id === me ? "You" : "Someone"));
+  const [view, setView] = useState({ x: 0, y: 0, z: 1 });
+  const [placing, setPlacing] = useState(false);
+  const [thread, setThread] = useState<{ id: string } | { x: number; y: number } | null>(null);
+  const [text, setText] = useState("");
+  useEffect(() => { if (xapi) { const st = xapi.getAppState(); setView({ x: st.scrollX, y: st.scrollY, z: st.zoom.value }); } }, [xapi]);
+  const at = (x: number, y: number) => ({ left: (x + view.x) * view.z, top: (y + view.y) * view.z });
+  const openPin = thread && "id" in thread ? pins.find((p) => p.id === thread.id) : undefined;
+  const spot = openPin ? { x: Number(openPin.fields.x), y: Number(openPin.fields.y) } : thread && "x" in thread ? thread : null;
+  const shown = openPin ? [openPin, ...notes.filter((n) => n.fields?.reply_to === openPin.id).sort(byTime)] : [];
+  const note = (action: "create" | "update" | "delete", fields: Row | null, id?: string) =>
+    api.hubEdit(ws, action, "board_note", project, fields, id).then((nid) => { reload(); return nid; }, (e) => { fail(e); throw e; });
+  const send = async () => {
+    const t = text.trim();
+    if (!t || !thread) return;
+    if ("id" in thread) await note("create", { board: board.id, reply_to: thread.id, text: t });
+    else setThread({ id: String(await note("create", { board: board.id, x: thread.x, y: thread.y, text: t })) });
+    setText("");
+  };
+
   return (
     <div className={`board-shell ${bg}`}>
       <div className="board-bar">
@@ -344,6 +373,7 @@ export default function BoardCanvas({ ws, board, b, canDraw, onBack, onErr, relo
         {!canDraw && <span className="chip">view only</span>}
         <span className="dim small">{status}</span>
         <span style={{ flex: 1 }} />
+        {canDraw && <button className={`btn sm ${placing ? "primary" : ""}`} onClick={() => { setPlacing(!placing); setThread(null); }} title="Click a spot on the board to pin a comment there. @name notifies them.">{placing ? "Click the board…" : `💬 Comment${open ? ` (${open})` : ""}`}</button>}
         {canDraw && <button className="btn sm" onClick={addNote}>+ Note</button>}
         {canDraw && <label className="btn sm" style={{ cursor: "pointer" }} title="PDF, Word, text or Markdown; or drop them on the board">+ Doc<input type="file" multiple accept=".pdf,.doc,.docx,.odt,.rtf,.pages,.md,.markdown,.txt" hidden onChange={(e) => { addDocs([...(e.target.files ?? [])]); e.target.value = ""; }} /></label>}
         {canDraw && <label className="btn sm" style={{ cursor: "pointer" }}>Import<input type="file" accept=".excalidraw,application/json" hidden onChange={(e) => { importBoard(e.target.files?.[0]); e.target.value = ""; }} /></label>}
@@ -381,6 +411,7 @@ export default function BoardCanvas({ ws, board, b, canDraw, onBack, onErr, relo
           isCollaborating
           generateIdForFile={generateIdForFile}
           onLinkOpen={openDoc}
+          onScrollChange={(x, y, zoom) => setView({ x, y, z: zoom.value })}
           UIOptions={{ canvasActions: { changeViewBackgroundColor: false, toggleTheme: false, loadScene: false, saveToActiveFile: false, export: false } }}
         >
           <MainMenu>
@@ -389,6 +420,38 @@ export default function BoardCanvas({ ws, board, b, canDraw, onBack, onErr, relo
             <MainMenu.DefaultItems.Help />
           </MainMenu>
         </Excalidraw>
+        {pins.map((p) => (
+          <button key={p.id} className={`pin ${p.fields?.done ? "done" : ""} ${openPin?.id === p.id ? "open" : ""}`} style={at(Number(p.fields.x), Number(p.fields.y))}
+            title={`${nameOf(p.created_by)}: ${p.fields?.text}`} aria-label={`Comment by ${nameOf(p.created_by)}`}
+            onClick={() => { setThread(openPin?.id === p.id ? null : { id: p.id }); setText(""); }}>
+            {p.fields?.done ? "✓" : nameOf(p.created_by).slice(0, 1).toUpperCase()}
+          </button>
+        ))}
+        {placing && xapi && (
+          <div className="pin-catch" onPointerDown={(e) => {
+            const pt = viewportCoordsToSceneCoords({ clientX: e.clientX, clientY: e.clientY }, xapi.getAppState());
+            setPlacing(false); setThread({ x: pt.x, y: pt.y }); setText("");
+          }} />
+        )}
+        {spot && (
+          <div className="card pin-thread" style={{ left: Math.max(8, Math.min(at(spot.x, spot.y).left + 22, window.innerWidth - 340)), top: Math.max(8, at(spot.x, spot.y).top - 10) }}>
+            {shown.map((n) => (
+              <div key={n.id} className="col" style={{ gap: 2 }}>
+                <div className="small"><b>{nameOf(n.created_by)}</b> <span className="dim">{String(n.updated_at ?? "").slice(0, 16).replace("T", " ")}</span>
+                  {n.created_by === me && <button className="btn sm ghost" style={{ marginLeft: 6 }} onClick={() => note("delete", null, n.id).then(() => n === openPin && setThread(null), () => {})}>Delete</button>}</div>
+                <div className="small" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{withMentions(String(n.fields?.text ?? ""))}</div>
+              </div>
+            ))}
+            {canDraw && <textarea className="input" rows={2} autoFocus maxLength={2000} value={text} aria-label={openPin ? "Reply" : "Comment"}
+              placeholder={openPin ? "Reply… (@name to notify)" : "Comment… (@name to notify)"} onChange={(e) => setText(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send().catch(() => {}); } if (e.key === "Escape") setThread(null); }} />}
+            <div className="row" style={{ gap: 6 }}>
+              {canDraw && <button className="btn sm primary" disabled={!text.trim()} onClick={() => send().catch(() => {})}>{openPin ? "Reply" : "Pin it"}</button>}
+              {canDraw && openPin && <button className="btn sm" onClick={() => note("update", { done: !openPin.fields?.done }, openPin.id).catch(() => {})}>{openPin.fields?.done ? "Reopen" : "Resolve"}</button>}
+              <button className="btn sm ghost" style={{ marginLeft: "auto" }} onClick={() => setThread(null)}>Close</button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

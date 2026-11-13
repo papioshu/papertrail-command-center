@@ -10,7 +10,7 @@ use serde_json::{json, Map, Value};
 
 pub const MAX_BLOB: usize = 25 * 1024 * 1024;
 /// Must stay a subset of `ptcc_access::publishable` (checked in `op`).
-const KINDS: [&str; 8] = ["task", "milestone", "media", "snapshot", "board", "board_el", "file", "proposal"];
+const KINDS: [&str; 9] = ["task", "milestone", "media", "snapshot", "board", "board_el", "board_note", "file", "proposal"];
 /// One canvas element (D044) is about this size at most: a long freehand stroke or a big text block.
 const BOARD_EL_MAX: usize = 256 * 1024;
 /// Kinds whose content is an uploaded file named by `sha256`.
@@ -122,7 +122,15 @@ fn validate(c: &Connection, ws: &str, project: &str, kind: &str, f: &Map<String,
             ("proposal", "note") => text(v, 0, 1000),
             ("proposal", "status") => matches!(v.as_str(), Some("open" | "accepted" | "declined")),
             // A board's exports (its thumbnail and saved versions) name the board, so renames don't orphan them.
-            ("board_el" | "media", "board") => {
+            // Comments (B4): a pin sits at a spot on the board; a reply names its pin. Anyone who may draw resolves one.
+            ("board_note", "text") => text(v, 1, 2000),
+            ("board_note", "x" | "y") => v.as_f64().is_some_and(|n| n.is_finite() && n.abs() <= 1e7),
+            ("board_note", "done") => v.is_boolean(),
+            ("board_note", "reply_to") => {
+                create
+                    && v.as_str().is_some_and(|n| load(c, n).ok().flatten().is_some_and(|r| r.kind == "board_note" && r.ws == ws && r.project == project && !r.deleted))
+            }
+            ("board_el" | "media" | "board_note", "board") => {
                 create
                     && v.as_str().is_some_and(|b| load(c, b).ok().flatten().is_some_and(|r| r.kind == "board" && r.ws == ws && r.project == project && !r.deleted))
             }
@@ -137,6 +145,7 @@ fn validate(c: &Connection, ws: &str, project: &str, kind: &str, f: &Map<String,
         ("media", true) => &["sha256", "name"],
         ("snapshot", true) => &["sha256", "files", "dirs"],
         ("board_el", true) => &["board", "data"],
+        ("board_note", true) => &["board", "text"],
         ("file" | "proposal", true) => &["sha256", "path"],
         (_, true) => &["title"],
         _ => &[],
@@ -169,6 +178,7 @@ impl Hub {
             ("proposal", Some(_)) => ck(Perm::DocPublish, proj, "file.decide")?,
             // Anyone who may add media to the project draws on its boards, on anyone's elements: a shared canvas.
             ("board_el", _) => ck(Perm::MediaUpload, proj, "board.draw")?,
+            ("board_note", Some(_)) if f.len() == 1 && f.contains_key("done") => ck(Perm::MediaUpload, proj, "board.resolve")?,
             ("task", None) => ck(Perm::TaskCreate, proj, "task.create")?,
             (_, None) => ck(Perm::MediaUpload, proj, "media.upload")?,
             (_, Some(by)) => {
@@ -259,7 +269,7 @@ impl Hub {
                     (if row.deleted { Write::Nothing } else { Write::Tombstone(row.project) }, None)
                 } else if row.deleted {
                     (Write::Nothing, Some(json!({ "error": "deleted" })))
-                } else if kind == "board_el"
+                } else if (kind == "board_el" || kind == "board_note")
                     && !row.fields.get("board").and_then(Value::as_str).is_some_and(|b| load(c, b).ok().flatten().is_some_and(|p| p.kind == "board" && !p.deleted))
                 {
                     // Its board was deleted: the element is gone too (and its tombstone is on the way).
@@ -328,11 +338,15 @@ impl Hub {
                     params![who.user, t, seq, id],
                 ))?;
                 log(&tx, Some(ws), who, "record.deleted", Some(id), json!({ "kind": kind, "project": project }))?;
-                // A deleted board takes its canvas elements with it: none of their content stays readable.
-                if kind == "board" {
-                    let els: Vec<String> = db(tx
-                        .prepare("SELECT id FROM records WHERE kind = 'board_el' AND deleted = 0 AND json_extract(fields, '$.board') = ?1")
-                        .and_then(|mut st| st.query_map([id], |r| r.get(0))?.collect()))?;
+                // A deleted board takes its canvas elements and comments with it, a deleted pin its replies: none of
+                // their content stays readable.
+                let children = match kind {
+                    "board" => Some("SELECT id FROM records WHERE kind IN ('board_el', 'board_note') AND deleted = 0 AND json_extract(fields, '$.board') = ?1"),
+                    "board_note" => Some("SELECT id FROM records WHERE kind = 'board_note' AND deleted = 0 AND json_extract(fields, '$.reply_to') = ?1"),
+                    _ => None,
+                };
+                if let Some(q) = children {
+                    let els: Vec<String> = db(tx.prepare(q).and_then(|mut st| st.query_map([id], |r| r.get(0))?.collect()))?;
                     for (i, el) in els.iter().enumerate() {
                         db(tx.execute(
                             "UPDATE records SET fields = '{}', field_versions = '{}', deleted = 1, version = version + 1, updated_by = ?1, updated_at = ?2, seq = ?3 WHERE id = ?4",
@@ -375,7 +389,7 @@ impl Hub {
             kinds.extend(["task", "milestone"]);
         }
         if m.has(Perm::ProjectRead) && m.has(Perm::MediaRead) {
-            kinds.extend(["media", "board", "board_el"]);
+            kinds.extend(["media", "board", "board_el", "board_note"]);
         }
         if m.has(Perm::ProjectRead) && m.has(Perm::DocRead) {
             kinds.extend(["snapshot", "file", "proposal"]);

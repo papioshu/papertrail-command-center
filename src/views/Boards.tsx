@@ -40,7 +40,7 @@ export default function Boards({ ws, b, project, me, onErr, reload }: { ws: stri
   if (opened) {
     return (
       <Suspense fallback={<div className="board-shell" />}>
-        <BoardCanvas ws={ws} board={opened} b={b} canDraw={editor} onBack={() => setOpenId("")} onErr={onErr} reload={reload} />
+        <BoardCanvas ws={ws} board={opened} b={b} me={me} canDraw={editor} onBack={() => setOpenId("")} onErr={onErr} reload={reload} />
       </Suspense>
     );
   }

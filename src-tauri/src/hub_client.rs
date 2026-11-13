@@ -442,10 +442,41 @@ impl Client {
         Ok(())
     }
 
+    /// Board comments (B4) that @mention me or reply to my pins, arrived since the last call: (title, body) for a
+    /// desktop notification. The first call per workspace only sets the baseline, so joining doesn't flood.
+    pub fn mentions(&self) -> Vec<(String, String)> {
+        let Some(cfg) = self.config() else { return vec![] };
+        let (me, name) = (cfg["user_id"].as_str().unwrap_or("").to_string(), cfg["name"].as_str().unwrap_or("").to_string());
+        let mut out = vec![];
+        for ws in self.workspaces() {
+            let Ok(c) = self.open_ws(&ws) else { continue };
+            let top: i64 = c.query_row("SELECT coalesce(max(seq), 0) FROM records", [], |r| r.get(0)).unwrap_or(0);
+            if let Some(seen) = meta(&c, "mention_seq").and_then(|v| v.as_i64()) {
+                let rows: Vec<(String, String, String)> = c
+                    .prepare(
+                        "SELECT coalesce((SELECT json_extract(b.fields, '$.title') FROM records b WHERE b.id = json_extract(n.fields, '$.board')), 'a board'),
+                                json_extract(n.fields, '$.text'), coalesce(n.created_by, '')
+                         FROM records n WHERE n.kind = 'board_note' AND n.deleted = 0 AND n.seq > ?1 AND n.version = 1 AND n.created_by <> ?2
+                           AND ((?3 <> '' AND json_extract(n.fields, '$.text') LIKE '%@' || ?3 || '%')
+                                OR json_extract(n.fields, '$.reply_to') IN (SELECT id FROM records WHERE created_by = ?2))",
+                    )
+                    .and_then(|mut st| st.query_map(params![seen, me, name], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect())
+                    .unwrap_or_default();
+                let members = meta(&c, "members").unwrap_or_default();
+                for (board, text, by) in rows {
+                    let who = members.as_array().into_iter().flatten().find(|m| m["user_id"] == by.as_str()).and_then(|m| m["name"].as_str()).unwrap_or("A teammate");
+                    out.push((format!("{who} on {board}"), crate::util::truncate(&text, 200)));
+                }
+            }
+            let _ = set_meta(&c, "mention_seq", &json!(top));
+        }
+        out
+    }
+
     /* ----- local edits: cache + outbox in one transaction (§7.2) ----- */
 
     pub fn edit(&self, ws: &str, action: &str, kind: &str, record_id: Option<&str>, project: &str, fields: &Value) -> R<String> {
-        if !matches!(action, "create" | "update" | "delete") || !matches!(kind, "task" | "milestone" | "media" | "snapshot" | "board" | "board_el" | "file" | "proposal") {
+        if !matches!(action, "create" | "update" | "delete") || !matches!(kind, "task" | "milestone" | "media" | "snapshot" | "board" | "board_el" | "board_note" | "file" | "proposal") {
             return Err("unsupported edit".into());
         }
         let mut c = self.open_ws(ws)?;
@@ -1227,6 +1258,12 @@ pub fn start(app: &tauri::AppHandle) {
             if result.as_ref().is_ok_and(|c| *c) || online != was_online {
                 was_online = online;
                 let _ = app.emit("hub-changed", ());
+                use tauri_plugin_notification::NotificationExt;
+                for (title, body) in st.client.mentions() {
+                    if let Err(err) = app.notification().builder().title(&title).body(&body).show() {
+                        crate::util::log("warn", format!("notification failed: {err}"));
+                    }
+                }
             }
             // §9: 60 s while the window is visible, 10 min in the tray; offline retries back off 5 s → 15 min.
             let visible = app.get_window("main").and_then(|w| w.is_visible().ok()).unwrap_or(false); // not get_webview_window: see lib.rs show_main
@@ -1913,6 +1950,36 @@ mod tests {
         a.admin(&ws, "member_remove", &json!({ "user_id": uid })).unwrap();
         b.sync_all().unwrap();
         assert_eq!(b.workspaces(), std::slice::from_ref(&ws2), "out of the first, still in the second");
+        for d in [ad, bd] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn board_mentions_and_replies_notify_once() {
+        let h = hub();
+        let (ws, link) = owner_invite(&h);
+        let (ad, bd) = (tmp("a"), tmp("b"));
+        let a = Client::new(&ad);
+        a.join(&link, "Paper", "PC").unwrap();
+        let p = a.new_project(&ws, "merch").unwrap()["id"].as_str().unwrap().to_string();
+        let b = Client::new(&bd);
+        b.join(&a.invite(&ws, "editor", None).unwrap(), "Profit", "Laptop").unwrap();
+        let board = a.edit(&ws, "create", "board", None, &p, &json!({ "title": "Tees", "bg": "grid" })).unwrap();
+        let pin = a.edit(&ws, "create", "board_note", None, &p, &json!({ "board": board, "x": 1, "y": 2, "text": "colors?" })).unwrap();
+        a.sync_all().unwrap();
+        b.sync_all().unwrap();
+        assert!(a.mentions().is_empty() && b.mentions().is_empty(), "first call is the baseline");
+        b.edit(&ws, "create", "board_note", None, &p, &json!({ "board": board, "reply_to": pin, "text": "darker" })).unwrap();
+        b.edit(&ws, "create", "board_note", None, &p, &json!({ "board": board, "x": 5, "y": 5, "text": "@paper look here" })).unwrap();
+        b.edit(&ws, "create", "board_note", None, &p, &json!({ "board": board, "x": 9, "y": 9, "text": "note to self" })).unwrap();
+        b.sync_all().unwrap();
+        a.sync_all().unwrap();
+        let got = a.mentions();
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(got.iter().all(|(t, _)| t == "Profit on Tees"));
+        assert!(a.mentions().is_empty(), "each comment notifies once");
+        assert!(b.mentions().is_empty(), "never for your own comments");
         for d in [ad, bd] {
             let _ = std::fs::remove_dir_all(d);
         }

@@ -565,6 +565,49 @@ fn boards_share_elements_last_writer_wins_and_only_contributors_draw() {
 }
 
 #[test]
+fn board_comments_pin_reply_resolve_and_go_with_their_pin() {
+    let fx = fixture();
+    let mut a = Client::new(&fx, "editor");
+    let mut b = Client::new(&fx, "contributor");
+    let mut v = Client::new(&fx, "viewer");
+    let board = a.create("board", &fx.p1, json!({ "title": "Moodboard", "bg": "grid" }));
+    a.sync();
+    let pin = a.create("board_note", &fx.p1, json!({ "board": board, "x": 120.5, "y": -40, "text": "@Profit can we go darker here?" }));
+    a.sync();
+    let reply = b.create("board_note", &fx.p1, json!({ "board": board, "reply_to": pin, "text": "On it" }));
+    b.sync();
+    v.sync();
+    assert_eq!((v.field(&pin, "x"), v.field(&reply, "reply_to")), (json!(120.5), json!(pin)), "readers see pins and replies");
+    // Anyone who may draw resolves a pin; only its author (or a manager) rewrites it; viewers only read.
+    let n = (b.rejected.len(), v.rejected.len());
+    b.queue("update", "board_note", &pin, &fx.p1, json!({ "done": true }));
+    b.queue("update", "board_note", &pin, &fx.p1, json!({ "text": "changed" }));
+    b.sync();
+    v.create("board_note", &fx.p1, json!({ "board": board, "text": "hi" }));
+    v.sync();
+    a.sync();
+    assert_eq!((a.field(&pin, "done"), a.field(&pin, "text")), (json!(true), json!("@Profit can we go darker here?")));
+    assert_eq!((b.rejected.len(), v.rejected.len()), (n.0 + 1, n.1 + 1));
+    // Bad fields: no text, a position that isn't a number, a reply to something that isn't a comment.
+    let n = a.rejected.len();
+    a.create("board_note", &fx.p1, json!({ "board": board, "text": " " }));
+    a.create("board_note", &fx.p1, json!({ "board": board, "text": "x", "x": "far" }));
+    a.create("board_note", &fx.p1, json!({ "board": board, "text": "x", "reply_to": board }));
+    a.sync();
+    assert_eq!(a.rejected.len(), n + 3);
+    // Deleting the pin takes its replies; deleting the board takes every comment on it.
+    a.queue("delete", "board_note", &pin, &fx.p1, json!(null));
+    let other = a.create("board_note", &fx.p1, json!({ "board": board, "text": "second pin" }));
+    a.sync();
+    b.sync();
+    assert_eq!((b.field(&reply, "text"), b.field(&other, "text")), (Value::Null, json!("second pin")));
+    a.queue("delete", "board", &board, &fx.p1, json!(null));
+    a.sync();
+    b.sync();
+    assert_eq!(b.field(&other, "text"), Value::Null);
+}
+
+#[test]
 fn project_files_are_published_by_owners_and_changed_only_through_accepted_proposals() {
     let fx = fixture();
     let put = |actor: &str, body: &[u8]| {
