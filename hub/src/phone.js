@@ -293,8 +293,9 @@ function addDevice() {
     const r = await api("POST", "/v1/devices/link");
     const link = `${location.origin}/#dev-${r.token}`;
     const box = el("input", { value: link, readOnly: true, className: "grow", on: { focus: (e) => e.target.select() } });
-    show(el("h1", {}, "ADD ANOTHER DEVICE"), el("p", { className: "dim" }, "Open this link on your other device within 15 minutes (it works once). Tailscale must be on there too."),
-      el("div", { className: "row" }, box), el("p"), el("button", { on: { click: run(load) } }, "Done"));
+    const copy = el("button", { className: "primary", on: { click: () => navigator.clipboard.writeText(link).then(() => { copy.textContent = "Copied"; }, () => box.focus()) } }, "Copy");
+    show(el("h1", {}, "ADD ANOTHER DEVICE"), el("p", { className: "dim" }, "Open this link on your other device within 15 minutes (it works once). On a PC, paste it into the Command Center app under TEAM. Tailscale must be on there too."),
+      el("div", { className: "row" }, box, copy), el("p"), el("button", { on: { click: run(load) } }, "Done"));
     box.focus();
   });
 }

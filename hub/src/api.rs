@@ -337,6 +337,7 @@ impl Hub {
             ("GET", ["workspaces", ws, "roles"]) => self.roles(&c, &who, ws),
             ("POST", ["workspaces", ws, "members"]) => self.add_member(&c, &who, ws, &b),
             ("GET", ["people"]) => self.people(&c, &who),
+            ("POST", ["people", u, "signin-link"]) => self.signin_link(&c, &who, u),
             ("POST", ["workspaces", ws, "roles"]) => self.save_role(&c, &who, ws, &b),
             ("DELETE", ["workspaces", ws, "roles"]) => self.delete_role(&c, &who, ws, &b),
             ("POST", ["workspaces", ws, "ops"]) => self.op(&mut c, &who, ws, &b),
@@ -447,6 +448,30 @@ impl Hub {
             params![id, hash(&token), who.user, expires, now(), who.device],
         ))?;
         log(c, None, who, "device.link_created", Some(&id), json!({}))?;
+        Ok(ok(json!({ "token": token, "expires_at": expires })))
+    }
+
+    /// A one-time sign-in link for a teammate's existing account, made by the owner of a workspace they're in (so a
+    /// lost or new phone never needs a second account or another invite). 24 h, single use; not for other owners.
+    fn signin_link(&self, c: &Connection, who: &Caller, user: &str) -> Res {
+        let shared: bool = db(c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM memberships o JOIN memberships m ON m.workspace_id = o.workspace_id
+               JOIN workspaces w ON w.id = o.workspace_id AND w.deleted = 0 JOIN users u ON u.id = m.user_id AND u.revoked = 0
+             WHERE o.user_id = ?1 AND o.role = 'owner' AND o.revoked = 0 AND m.user_id = ?2 AND m.revoked = 0 AND m.role != 'owner')",
+            params![who.user, user],
+            |r| r.get(0),
+        ))?;
+        if !shared || user == who.user {
+            return Err(fail(403, "forbidden"));
+        }
+        let id = new_id("l").map_err(internal)?;
+        let token = random_hex(32).map_err(internal)?;
+        let expires = (chrono::Utc::now() + chrono::Duration::hours(24)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        db(c.execute(
+            "INSERT INTO device_links(id, token_hash, user_id, expires_at, created_at, created_by_device) VALUES(?1,?2,?3,?4,?5,?6)",
+            params![id, hash(&token), user, expires, now(), who.device],
+        ))?;
+        log(c, None, who, "device.signin_link_issued", Some(&id), json!({ "for": user }))?;
         Ok(ok(json!({ "token": token, "expires_at": expires })))
     }
 

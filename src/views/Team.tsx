@@ -97,6 +97,21 @@ function JoinMore({ me, onDone, onErr }: { me: string; onDone: () => void; onErr
   );
 }
 
+/** A one-time sign-in link: QR for phones, the link (with Copy) for texting it or pasting into the app on a PC. */
+function LinkBox({ link, qr, note }: { link: string; qr: string; note: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="col" style={{ gap: 10, alignItems: "center" }}>
+      <div className="small">{note}</div>
+      <img alt="QR code for the sign-in link" style={{ width: 220, height: 220, background: "#fff", padding: 8, borderRadius: 8 }} src={`data:image/svg+xml;utf8,${encodeURIComponent(qr)}`} />
+      <div className="row" style={{ gap: 6, width: "100%" }}>
+        <input className="input mono" readOnly value={link} onFocus={(e) => e.target.select()} style={{ flex: 1 }} aria-label="Sign-in link" />
+        <button className="btn sm primary" onClick={() => navigator.clipboard.writeText(link).then(() => setCopied(true))}>{copied ? "Copied" : "Copy"}</button>
+      </div>
+    </div>
+  );
+}
+
 /* ---------- people × workspaces (owner only, D037) ---------- */
 
 function People({ onErr }: { onErr: (e: string) => void }) {
@@ -105,6 +120,7 @@ function People({ onErr }: { onErr: (e: string) => void }) {
   const roles = useAsync(() => Promise.all(owned.map((w) => api.hubAdmin(w.id, "roles"))), [owned.map((w) => w.id).join()]);
   const [confirm, setConfirm] = useState<string | null>(null);
   const [addAs, setAddAs] = useState<Record<string, string>>({});
+  const [signin, setSignin] = useState<{ name: string; link: string; qr_svg: string } | null>(null);
   if (!owned.length) return null;
   const people: Row[] = data.data?.people ?? [];
   const choices = (i: number) => [...((roles.data?.[i]?.roles ?? []) as Row[]).map((r) => ({ v: `t:${r.name}`, label: r.name })), ...["admin", "editor", "contributor", "viewer"].map((r) => ({ v: `r:${r}`, label: r }))];
@@ -119,7 +135,9 @@ function People({ onErr }: { onErr: (e: string) => void }) {
             <tbody>
               {people.map((p) => (
                 <tr key={p.user_id}>
-                  <td><b>{p.name}</b></td>
+                  <td><b>{p.name}</b>
+                    <button className="btn sm ghost" style={{ marginLeft: 8 }} title={`A one-time link that signs ${p.name}'s phone, iPad or PC app into their account`}
+                      onClick={() => api.hubSigninLink(p.user_id).then((r) => setSignin({ name: p.name, link: String(r.link), qr_svg: String(r.qr_svg) }), (e) => onErr(String(e)))}>Sign-in link</button></td>
                   {owned.map((w, i) => {
                     const m = p.workspaces?.[w.id];
                     const key = `${p.user_id}|${w.id}`;
@@ -157,7 +175,12 @@ function People({ onErr }: { onErr: (e: string) => void }) {
           </table>
         </div>
       )}
-      <div className="dim small" style={{ marginTop: 8 }}>Only you, as owner, can put people into your workspaces or take them out. Admins can change roles but not who's in.</div>
+      <div className="dim small" style={{ marginTop: 8 }}>Only you, as owner, can put people into your workspaces or take them out. Admins can change roles but not who's in. Sign-in link: for a new or signed-out device of someone already in; it opens their existing account (no new invite).</div>
+      {signin && (
+        <Modal title={`Sign-in link for ${signin.name}`} onClose={() => setSignin(null)} foot={<button className="btn primary" onClick={() => setSignin(null)}>Done</button>}>
+          <LinkBox link={signin.link} qr={signin.qr_svg} note={`Send it to ${signin.name} privately: it signs whoever opens it in as ${signin.name}. iPhone/iPad: open it in Safari (or scan the QR). PC: paste it into the Command Center app under TEAM. Works once, for 24 hours. Tailscale must be on there.`} />
+        </Modal>
+      )}
     </Card>
   );
 }
@@ -841,11 +864,7 @@ export default function Team() {
       {s?.joined && !s.revoked && !current && <JoinMore me={s.name ?? ""} onDone={status.reload} onErr={setErr} />}
       {device && (
         <Modal title="Add another device" onClose={() => setDevice(null)} foot={<button className="btn primary" onClick={() => setDevice(null)}>Done</button>}>
-          <div className="col" style={{ gap: 10, alignItems: "center" }}>
-            <div className="small">Scan with your iPhone or iPad camera, or open the link on another PC (TEAM › paste it). Works once, for 15 minutes. Tailscale must be on there too.</div>
-            <img alt="QR code for the device link" style={{ width: 220, height: 220, background: "#fff", padding: 8, borderRadius: 8 }} src={`data:image/svg+xml;utf8,${encodeURIComponent(device.qr_svg)}`} />
-            <input className="input mono" readOnly value={device.link} onFocus={(e) => e.target.select()} style={{ width: "100%" }} aria-label="Device link" />
-          </div>
+          <LinkBox link={device.link} qr={device.qr_svg} note="Scan with your iPhone or iPad camera, or open the link on another PC (TEAM › paste it). Works once, for 15 minutes. Tailscale must be on there too." />
         </Modal>
       )}
       {current && s && <WorkspacePage key={current.id} w={current} me={s.user_id ?? ""} onBack={() => setOpen(null)} onErr={setErr} />}

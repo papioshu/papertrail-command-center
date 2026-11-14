@@ -287,6 +287,7 @@ pub fn run() {
             hub_client::hub_snapshot_preview,
             hub_client::hub_snapshot_publish,
             hub_client::hub_host_status,
+            hub_client::hub_signin_link,
             phone::tailscale_set,
             hub_client::hub_open_share_folder,
             hub_client::hub_host_create_workspace,

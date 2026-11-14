@@ -454,3 +454,21 @@ fn app_updates_come_from_the_share_folder_to_signed_in_devices_only() {
     assert_eq!(hub.handle("GET", "/v1/app/latest", Some("Bearer d_x.y"), b"").code, 401);
     let _ = std::fs::remove_dir_all(base);
 }
+
+#[test]
+fn the_owner_issues_a_signin_link_for_a_teammate_and_nobody_else_can() {
+    let fx = fixture();
+    let path = |a: &str| format!("/v1/people/{}/signin-link", fx.user(a));
+    let r = fx.call("POST", &path("viewer"), Some("owner"), json!({}));
+    assert_eq!(r.code, 200);
+    let token = r.body["token"].as_str().unwrap().to_string();
+    let claim = |t: &str| fx.hub.handle("POST", "/v1/devices/claim", None, json!({ "token": t, "device_name": "iPhone" }).to_string().as_bytes());
+    let c = claim(&token);
+    assert_eq!((c.code, c.body["user_id"].as_str()), (200, Some(fx.user("viewer"))), "signs into the teammate's existing account");
+    assert_eq!(claim(&token).code, 400, "once");
+    // Only an owner of a shared workspace, never for themselves, another owner or a stranger.
+    for (who, target) in [("admin", "viewer"), ("editor", "viewer"), ("outsider", "viewer"), ("owner", "owner"), ("owner", "outsider")] {
+        assert_eq!(fx.call("POST", &path(target), Some(who), json!({})).code, 403, "{who} for {target}");
+    }
+    assert_eq!(fx.hub.handle("POST", &path("viewer"), None, b"").code, 401);
+}

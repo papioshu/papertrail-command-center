@@ -335,6 +335,23 @@ impl Client {
         self.need("POST", "/v1/voice", Some(&json!({ "text": text, "workspace": workspace })))
     }
 
+    /// A one-time link (and QR) the owner sends a teammate to sign a phone or PC into the teammate's existing account
+    /// (lost sign-in, new phone, the app on a PC): no second account, no new invite. 24 h.
+    pub fn signin_link(&self, user: &str) -> R<Value> {
+        if user.is_empty() || !user.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            return Err("bad member id".into());
+        }
+        let v = match self.call("POST", &format!("/v1/people/{user}/signin-link"), Some(&json!({}))) {
+            Net::Reply(200, v) => v,
+            Net::Reply(403, _) => return Err("Only the workspace owner can make sign-in links, for people in their workspaces.".into()),
+            Net::Reply(code, v) => return Err(format!("The hub refused ({code}: {})", v["error"].as_str().unwrap_or("error"))),
+            Net::Down(d) => return Err(format!("Can't reach the hub ({d}).")),
+        };
+        let url = self.config().and_then(|c| c["url"].as_str().map(String::from)).unwrap_or_default();
+        let link = format!("{}#dev-{}", self.share_url(&url), v["token"].as_str().unwrap_or(""));
+        Ok(json!({ "link": link, "qr_svg": crate::phone::qr_svg(&link)?, "expires_at": v["expires_at"] }))
+    }
+
     /// A one-time link (and QR) that signs another of this person's devices in (D041).
     pub fn device_link(&self) -> R<Value> {
         let v = self.need("POST", "/v1/devices/link", None)?;
@@ -1338,6 +1355,11 @@ pub fn hub_device_link(h: State<HubState>) -> R<Value> {
 }
 
 #[tauri::command(async)]
+pub fn hub_signin_link(h: State<HubState>, user_id: String) -> R<Value> {
+    h.client.signin_link(&user_id)
+}
+
+#[tauri::command(async)]
 pub fn hub_leave(h: State<HubState>) -> R<()> {
     let r = h.client.leave();
     h.wake(); // the thread sees no config and exits
@@ -2041,6 +2063,28 @@ mod tests {
             if p.is_dir() { out.extend(walk(&p)) } else { out.push(p) }
         }
         out
+    }
+
+    #[test]
+    fn the_owner_signs_a_teammates_new_device_into_their_account() {
+        let h = hub();
+        let (ws, link) = owner_invite(&h);
+        let (ad, bd, cd) = (tmp("a"), tmp("b"), tmp("c"));
+        let a = Client::new(&ad);
+        a.join(&link, "Paper", "PC").unwrap();
+        let b = Client::new(&bd);
+        b.join(&a.invite(&ws, "editor", None).unwrap(), "Profit", "iPhone").unwrap();
+        let uid = b.config().unwrap()["user_id"].as_str().unwrap().to_string();
+        let l = a.signin_link(&uid).unwrap();
+        assert!(l["link"].as_str().unwrap().contains("#dev-") && l["qr_svg"].as_str().unwrap().starts_with("<svg"));
+        let c = Client::new(&cd);
+        c.join(l["link"].as_str().unwrap(), "", "PC").unwrap();
+        assert_eq!(c.config().unwrap()["user_id"].as_str(), Some(uid.as_str()), "same account, no new invite");
+        assert_eq!(c.workspaces(), std::slice::from_ref(&ws));
+        assert!(b.signin_link(&a.config().unwrap()["user_id"].as_str().unwrap().to_string()).is_err(), "teammates can't make them");
+        for d in [ad, bd, cd] {
+            let _ = std::fs::remove_dir_all(d);
+        }
     }
 
     #[test]
