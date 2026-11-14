@@ -534,3 +534,14 @@ body.phone .desk-only { display: none !important; }
 .pin-catch { position: absolute; inset: 0; z-index: 6; cursor: crosshair; }
 .pin-thread { position: absolute; z-index: 7; width: 320px; max-height: 60%; overflow: auto; display: flex; flex-direction: column; gap: 8px; padding: 12px; background: var(--ink); }
 .mention { color: var(--lime); font-weight: 600; }
+/* --- board storyboard + roadmap (B5) --- */
+.board-side { position: absolute; top: 8px; right: 8px; bottom: 8px; z-index: 5; width: min(420px, calc(100% - 16px)); overflow: auto; display: flex; flex-direction: column; gap: 10px; padding: 12px; background: var(--ink); }
+.board-side .input.sm { padding: 4px 6px; font-size: 12px; min-width: 0; }
+.shot { display: flex; gap: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+.shot-thumb { all: unset; cursor: pointer; flex: 0 0 120px; height: 68px; display: flex; align-items: center; justify-content: center; background: #0b0814; border: 1px solid var(--line); overflow: hidden; }
+.shot-thumb img { max-width: 100%; max-height: 100%; filter: invert(93%) hue-rotate(180deg); } /* the board's colors are stored pre-inverted (D045) */
+.shot-thumb:focus-visible { outline: 1px solid var(--violet-glow); }
+.road-task { display: flex; gap: 6px; align-items: center; padding: 4px 6px; border-left: 2px solid var(--line); background: rgba(139, 92, 246, 0.05); }
+.road-task.doing { border-left-color: var(--violet); }
+.road-task.blocked { border-left-color: var(--signal, #ff5a5a); }
+.road-task.done { opacity: 0.6; border-left-color: var(--lime); }

@@ -14,6 +14,7 @@ import {
 import type { BinaryFileData, ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 import "@excalidraw/excalidraw/index.css";
 import { api, on, type Row } from "../api";
+import { Roadmap, Storyboard } from "./BoardViews";
 
 /** One board's canvas (D044), loaded only when a board is opened. Every Excalidraw element is its own hub record
  *  (kind board_el, last writer wins), so edits merge per element and reach the other members live: while a board is
@@ -348,6 +349,7 @@ export default function BoardCanvas({ ws, board, b, me, canDraw, onBack, onErr, 
   const [placing, setPlacing] = useState(false);
   const [thread, setThread] = useState<{ id: string } | { x: number; y: number } | null>(null);
   const [text, setText] = useState("");
+  const [side, setSide] = useState<"" | "story" | "road">("");
   useEffect(() => { if (xapi) { const st = xapi.getAppState(); setView({ x: st.scrollX, y: st.scrollY, z: st.zoom.value }); } }, [xapi]);
   const at = (x: number, y: number) => ({ left: (x + view.x) * view.z, top: (y + view.y) * view.z });
   const openPin = thread && "id" in thread ? pins.find((p) => p.id === thread.id) : undefined;
@@ -363,6 +365,14 @@ export default function BoardCanvas({ ws, board, b, me, canDraw, onBack, onErr, 
     setText("");
   };
 
+  // Storyboard / roadmap (B5): side panels over this board's frames and the project's hub tasks.
+  const saveFile = async (name: string, blob: Blob) => {
+    await api.hubUpload(ws, project, name, `From board ${title}`, "Boards", await dataUrl(blob));
+    setStatus(`${name} saved to MEDIA › Boards`);
+    reload();
+  };
+  const sideProps = (x: ExcalidrawImperativeAPI) => ({ x, ws, project, title, b, canDraw, fail, reload, save: saveFile });
+
   return (
     <div className={`board-shell ${bg}`}>
       <div className="board-bar">
@@ -374,6 +384,8 @@ export default function BoardCanvas({ ws, board, b, me, canDraw, onBack, onErr, 
         <span className="dim small">{status}</span>
         <span style={{ flex: 1 }} />
         {canDraw && <button className={`btn sm ${placing ? "primary" : ""}`} onClick={() => { setPlacing(!placing); setThread(null); }} title="Click a spot on the board to pin a comment there. @name notifies them.">{placing ? "Click the board…" : `💬 Comment${open ? ` (${open})` : ""}`}</button>}
+        <button className={`btn sm ${side === "story" ? "primary" : ""}`} aria-pressed={side === "story"} onClick={() => setSide(side === "story" ? "" : "story")} title="Shots in order: each frame is a shot">🎬 Storyboard</button>
+        <button className={`btn sm ${side === "road" ? "primary" : ""}`} aria-pressed={side === "road"} onClick={() => setSide(side === "road" ? "" : "road")} title="This project's tasks and milestones, linked to the board">🗺 Roadmap</button>
         {canDraw && <button className="btn sm" onClick={addNote}>+ Note</button>}
         {canDraw && <label className="btn sm" style={{ cursor: "pointer" }} title="PDF, Word, text or Markdown; or drop them on the board">+ Doc<input type="file" multiple accept=".pdf,.doc,.docx,.odt,.rtf,.pages,.md,.markdown,.txt" hidden onChange={(e) => { addDocs([...(e.target.files ?? [])]); e.target.value = ""; }} /></label>}
         {canDraw && <label className="btn sm" style={{ cursor: "pointer" }}>Import<input type="file" accept=".excalidraw,application/json" hidden onChange={(e) => { importBoard(e.target.files?.[0]); e.target.value = ""; }} /></label>}
@@ -420,6 +432,7 @@ export default function BoardCanvas({ ws, board, b, me, canDraw, onBack, onErr, 
             <MainMenu.DefaultItems.Help />
           </MainMenu>
         </Excalidraw>
+        {xapi && side && (side === "story" ? <Storyboard {...sideProps(xapi)} /> : <Roadmap {...sideProps(xapi)} />)}
         {pins.map((p) => (
           <button key={p.id} className={`pin ${p.fields?.done ? "done" : ""} ${openPin?.id === p.id ? "open" : ""}`} style={at(Number(p.fields.x), Number(p.fields.y))}
             title={`${nameOf(p.created_by)}: ${p.fields?.text}`} aria-label={`Comment by ${nameOf(p.created_by)}`}
