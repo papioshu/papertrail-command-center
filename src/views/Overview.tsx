@@ -1,4 +1,4 @@
-import { lazy, Suspense, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { api, PHONE, type Row } from "../api";
 import GhostButton from "../Ghost";
 import { ago, AgentChip, Barcode, brand, day, Empty, ErrBox, orderDiscoveries, ProjectActions, RadarOrderControl, sessionState, short, Spark, StatusBar, useAsync, useDragScroll, useNav, type RadarOrder } from "../ui";
@@ -250,6 +250,49 @@ function Week() {
 }
 
 // The phone view is read-only, so Ghost (which can add and finish tasks) lives on the team page, signed in as you.
+/** First thing a teammate's PC shows (D057): not signed in → join right here; signed in to someone else's hub → open
+ *  that person's Command Center (read-only, live from their PC). Nothing on the owner's own PC. */
+function TeamBar() {
+  const s = useAsync(() => api.hubStatus(), [], ["hub-changed"]);
+  const [link, setLink] = useState("");
+  const [name, setName] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const { nav } = useNav();
+  const st = s.data;
+  const local = /:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/.test(String(st?.url ?? ""));
+  const remote = !!st?.joined && !local && !st?.revoked;
+  // A teammate's app starts in Paper's Overview; "Team tools ↩" there comes back here with ?stay=1.
+  const open = () => api.hubOwnerView().then((u) => { location.href = u; }, (e) => setErr(String(e)));
+  useEffect(() => { if (remote && !new URLSearchParams(location.search).has("stay")) open(); }, [remote]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!st) return null;
+  if (st.joined && (local || st.revoked)) return null;
+  if (!st.joined) {
+    const dev = link.includes("#dev-");
+    const join = () => { setBusy(true); setErr(""); api.hubJoin(link.trim(), name.trim()).then(() => s.reload(), (e) => setErr(String(e))).finally(() => setBusy(false)); };
+    return (
+      <div className="card" style={{ margin: "0 0 14px", padding: 14, display: "flex", flexDirection: "column", gap: 8 }}>
+        <b className="label" style={{ fontSize: 12 }}>Join your team</b>
+        <div className="small">Paste the link Paper sent you (an invite, or a sign-in link for your account). Tailscale must be on.</div>
+        <div className="row wrap" style={{ gap: 8 }}>
+          <input className="input" style={{ flex: 2, minWidth: 260 }} placeholder="Link from Paper" aria-label="Link from Paper" value={link} onChange={(e) => setLink(e.target.value)} />
+          {!dev && <input className="input" style={{ flex: 1, minWidth: 160 }} placeholder="Your name, as your team will see it" aria-label="Your name" value={name} onChange={(e) => setName(e.target.value)} />}
+          <button className="btn primary" disabled={busy || !link.trim() || (!dev && !name.trim())} onClick={join}>{busy ? "Joining…" : "Join"}</button>
+        </div>
+        {err && <div className="small" style={{ color: "var(--signal)" }}>{err}</div>}
+      </div>
+    );
+  }
+  return (
+    <div className="card" style={{ margin: "0 0 14px", padding: 12, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+      <span className="small">Signed in to your team as <b>{st.name}</b>.</span>
+      <button className="btn primary" onClick={open}>🖥 Open Paper's Command Center</button>
+      <button className="btn sm" onClick={() => nav("team")}>Team workspaces</button>
+      {err && <span className="small" style={{ color: "var(--signal)" }}>{err}</span>}
+    </div>
+  );
+}
+
 function GhostLink() {
   const url = useAsync(() => api.settings().then((s) => s.ghost_url as string | null), []).data;
   return url ? <a className="btn" href={url} target="_blank" rel="noreferrer">🎙 Ask Ghost</a> : null;
@@ -296,6 +339,7 @@ export default function Overview() {
   if (projects.error) return <ErrBox error={projects.error} />;
   return (
     <div>
+      {!PHONE && <TeamBar />}
       <div className="home">
         <div className="side">
           <div>

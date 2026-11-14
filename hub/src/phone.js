@@ -308,6 +308,13 @@ async function start() {
   if (!token) return show(el("h1", {}, "PAPERTRAIL // TEAM"), el("p", { className: "dim" }, "Open the invite link Paper sent you on this phone (with Tailscale on) to join."));
   me = await api("GET", "/v1/me");
   $("who").textContent = me.name;
+  // Paper's whole Command Center, read-only, from the same PC (D057); the sign-in rides in the #fragment. It's where the
+  // team starts; its "Team tools ↩" comes back here with ?stay=1.
+  const cc = await api("GET", "/v1/cc").catch(() => ({ up: false }));
+  if (cc.up) {
+    $("cc").href = `http://${location.hostname}:8765/#team=${encodeURIComponent(token)}`; $("cc").hidden = false;
+    if (!new URLSearchParams(location.search).has("stay") && !sessionStorage.getItem("ptcc-stay")) { sessionStorage.setItem("ptcc-stay", "1"); location.href = $("cc").href; return; }
+  }
   // Offered in Safari only: an opened Home Screen app is already standalone.
   if (IOS && !navigator.standalone) { $("install").hidden = false; $("install").onclick = run(installFlow); }
   if (!me.workspaces.length) return show(el("p", { className: "dim" }, "You're not in any workspace right now."));

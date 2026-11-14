@@ -4,12 +4,14 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 /** Rows come straight from SQLite as JSON objects. */
 export type Row = Record<string, any>;
 
-/** Opened in a phone browser over Tailscale (D027): read-only, data over HTTP with the paired key. */
-export const PHONE = !("__TAURI_INTERNALS__" in window);
+/** Opened in a phone browser over Tailscale (D027): read-only, data over HTTP with the paired key. Also when a
+ *  teammate's app shows Paper's Command Center (D057): served from Paper's PC on the phone port, inside their window. */
+export const PHONE = !("__TAURI_INTERNALS__" in window) || location.port === "8765";
 const KEY = "pt-phone-key";
 // The pairing link carries the key in the #fragment, which never reaches a server or its logs.
+// A teammate arrives with their team sign-in (#team=d_…, D057) instead of a pairing key; it's used the same way.
 function takePairKey() {
-  const m = location.hash.match(/pair=([0-9a-f]{64})/);
+  const m = location.hash.match(/pair=([0-9a-f]{64})/) ?? location.hash.match(/team=(d_[0-9a-f]{8,64}\.[0-9a-f]{64})/);
   if (m) { localStorage.setItem(KEY, m[1]); history.replaceState(null, "", location.pathname); }
   return !!m;
 }
@@ -21,6 +23,10 @@ if (PHONE) {
   navigator.storage?.persist?.().catch(() => {});
 }
 export const phonePaired = () => !!localStorage.getItem(KEY);
+/** Signed in with a team sign-in rather than a paired phone: one of Paper's teammates (chats stay private). */
+export const TEAMMATE = PHONE && (localStorage.getItem(KEY) ?? "").startsWith("d_");
+/** Where a teammate's own team tools are: back in their app, or the team page on Paper's PC in a browser. */
+export const teamTools = () => ("__TAURI_INTERNALS__" in window ? "http://tauri.localhost/?stay=1" : `https://${location.hostname}/?stay=1`);
 
 /** The PC couldn't be reached (Tailscale off, network switch, PC asleep or restarting), as opposed to a real error. */
 class Unreachable extends Error {}
@@ -140,6 +146,7 @@ export const api = {
   // Workspace hub (D030–D034): shared team tasks. Every edit is checked again by the hub.
   hubStatus: () => call<Row>("hub_status"),
   hubJoin: (link: string, name: string) => call<Row>("hub_join", { link, name }),
+  hubOwnerView: () => call<string>("hub_owner_view"),
   hubLeave: () => call<void>("hub_leave"),
   hubDeviceLink: () => call<Row>("hub_device_link"),
   updateCheck: () => call<Row>("app_update_check"),

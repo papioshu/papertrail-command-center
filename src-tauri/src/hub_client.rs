@@ -216,6 +216,26 @@ impl Client {
         String::from_utf8(dpapi::unprotect(&b).ok()?).ok()
     }
 
+    /// Teammates (D057): the hub owner's Command Center, read-only, served by the owner's PC next to the hub. The
+    /// sign-in rides in the #fragment, which the browser never sends anywhere.
+    pub fn owner_view(&self) -> R<String> {
+        let cfg = self.config().ok_or("Join your team first.")?;
+        let url = cfg["url"].as_str().unwrap_or("");
+        let host = url.split_once("://").map(|(_, r)| r).unwrap_or(url).split(['/', ':']).next().unwrap_or("");
+        if host.is_empty() || host == "127.0.0.1" || host == "localhost" {
+            return Err("The hub runs on this PC: your own Command Center is this app.".into());
+        }
+        if !host.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-') {
+            return Err("odd hub address".into());
+        }
+        let token = self.token().ok_or("This PC isn't signed in to the team.")?;
+        let base = format!("http://{host}:{}/", crate::phone::PORT);
+        if ureq::AgentBuilder::new().timeout(Duration::from_secs(4)).build().get(&base).call().is_err() {
+            return Err("Paper's Command Center isn't open right now (his PC, the app or Tailscale is off). Your team tools still work.".into());
+        }
+        Ok(format!("{base}#team={token}"))
+    }
+
     fn workspaces(&self) -> Vec<String> {
         let cfg = self.config().unwrap_or_default();
         cfg["workspaces"].as_array().into_iter().flatten().filter_map(|w| w["id"].as_str().map(String::from)).collect()
@@ -1352,6 +1372,11 @@ pub fn hub_join(app: AppHandle, h: State<HubState>, link: String, name: String) 
 #[tauri::command(async)]
 pub fn hub_device_link(h: State<HubState>) -> R<Value> {
     h.client.device_link()
+}
+
+#[tauri::command(async)]
+pub fn hub_owner_view(h: State<HubState>) -> R<String> {
+    h.client.owner_view()
 }
 
 #[tauri::command(async)]

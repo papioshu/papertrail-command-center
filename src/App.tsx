@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useState } from "react";
-import { api, dashboardClosed, on, onConnection, openOnPc, PHONE, phonePaired, type LaunchReq, type Row } from "./api";
+import { api, dashboardClosed, on, onConnection, openOnPc, PHONE, phonePaired, TEAMMATE, teamTools, type LaunchReq, type Row } from "./api";
 import { ago, Barcode, Boundary, LaunchDialog, NavCtx, type View } from "./ui";
 import Overview from "./views/Overview";
 import Login from "./Login";
@@ -63,7 +63,7 @@ function Search({ go }: { go: (v: View, p: Row) => void }) {
 }
 
 // Phone (D027): read views only. Anything else stays on the PC.
-const PHONE_VIEWS: View[] = ["overview", "workspace", "projects", "chat", "agents", "timeline"];
+const PHONE_VIEWS: View[] = ["overview", "workspace", "projects", "timeline", ...(TEAMMATE ? [] : (["chat", "agents"] as View[]))];
 
 /** Top-bar update button (D042): checks the team hub at launch and every 30 min, lights up when a build is waiting. */
 function UpdateButton() {
@@ -238,6 +238,7 @@ export default function App() {
               <button className="btn sm ghost" onClick={() => api.logout().then(() => { setMe(null); setGate(true); })}>Lock</button>
             </span>
           ) : <button className="btn sm" onClick={() => setGate(true)}>Sign in</button>}
+          {TEAMMATE && <a className="btn sm" href={teamTools()} title="Your workspaces, boards and tasks">Team tools ↩</a>}
           {PHONE ? null : <UpdateButton />}
           {PHONE ? null : <GhostButton />}
           {PHONE ? null : <ChatButton />}

@@ -337,6 +337,8 @@ impl Hub {
             ("GET", ["workspaces", ws, "roles"]) => self.roles(&c, &who, ws),
             ("POST", ["workspaces", ws, "members"]) => self.add_member(&c, &who, ws, &b),
             ("GET", ["people"]) => self.people(&c, &who),
+            // D057: Paper's Command Center (the app's phone port on this PC) is up, so the team page can open it.
+            ("GET", ["cc"]) => Ok(ok(json!({ "up": std::net::TcpStream::connect_timeout(&([127, 0, 0, 1], 8765).into(), std::time::Duration::from_millis(400)).is_ok() }))),
             ("POST", ["people", u, "signin-link"]) => self.signin_link(&c, &who, u),
             ("POST", ["workspaces", ws, "roles"]) => self.save_role(&c, &who, ws, &b),
             ("DELETE", ["workspaces", ws, "roles"]) => self.delete_role(&c, &who, ws, &b),

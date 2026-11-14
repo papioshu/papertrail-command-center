@@ -1,6 +1,8 @@
 //! Phone access (D027): the same UI, read-only, served to paired phones over Tailscale.
 //! Off until switched on in Settings. Binds 127.0.0.1 and this PC's Tailscale address only, never 0.0.0.0.
 //! Every /api call needs a paired device's bearer key and may only run the read commands in `call`.
+//! Teammates (D057): anyone in a workspace on this PC's hub may open the same view with their team sign-in; it's
+//! checked against the hub (so removing someone ends it within a minute) and never includes chat transcripts.
 use crate::{commands, db, AppState};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
@@ -61,6 +63,36 @@ fn random_hex(n: usize) -> R<String> {
 fn devices(c: &rusqlite::Connection) -> Vec<Value> {
     db::setting(c, "phone_devices").and_then(|v| v.as_array().cloned()).unwrap_or_default()
 }
+
+/// A teammate's hub sign-in (bearer `d_…`) checked against the hub on this PC: Some(user id) while they're in a
+/// workspace there. Answers are kept for a minute so a page's burst of calls doesn't ask the hub each time.
+fn teammate(authorization: Option<&str>) -> Option<String> {
+    static SEEN: Mutex<Option<HashMap<String, (Option<String>, std::time::Instant)>>> = Mutex::new(None);
+    let token = authorization?.strip_prefix("Bearer ")?.trim();
+    if !token.starts_with("d_") || token.len() < 32 || token.len() > 200 {
+        return None;
+    }
+    let key = hash(token);
+    if let Some((who, at)) = SEEN.lock().ok()?.get_or_insert_with(HashMap::new).get(&key) {
+        if at.elapsed() < Duration::from_secs(60) {
+            return who.clone();
+        }
+    }
+    let me: Option<Value> = ureq::AgentBuilder::new().timeout(Duration::from_secs(3)).build()
+        .get("http://127.0.0.1:8770/v1/me").set("Authorization", &format!("Bearer {token}")).call().ok()
+        .and_then(|r| r.into_json().ok());
+    let who = me.filter(|m| m["workspaces"].as_array().is_some_and(|w| !w.is_empty())).and_then(|m| m["user_id"].as_str().map(String::from));
+    let mut seen = SEEN.lock().ok()?;
+    let map = seen.get_or_insert_with(HashMap::new);
+    if map.len() > 500 {
+        map.clear();
+    }
+    map.insert(key, (who.clone(), std::time::Instant::now()));
+    who
+}
+
+/// Chats are full Claude/Codex transcripts, where pasted secrets can sit: the owner's phone only, never teammates.
+const NOT_FOR_TEAMMATES: &[&str] = &["get_sessions", "get_session_files", "chat_projects", "chat_list", "chat_page", "chat_tail", "chat_entry"];
 
 /// The paired device a bearer header belongs to, if any.
 pub(crate) fn device_for(devs: &[Value], authorization: Option<&str>) -> Option<String> {
@@ -244,9 +276,17 @@ fn handle(app: &AppHandle, mut req: tiny_http::Request) {
         let Ok(devs) = st.db.lock().map(|c| devices(&c)) else {
             return json_reply(req, 503, json!({"error": "busy, try again"}));
         };
-        let Some(device) = device_for(&devs, header(&req, "Authorization").as_deref()) else {
-            return json_reply(req, 401, json!({"error": "This phone isn't paired. Pair it from Settings on the PC."}));
+        let authz = header(&req, "Authorization");
+        let (device, team) = match device_for(&devs, authz.as_deref()) {
+            Some(d) => (d, false),
+            None => match teammate(authz.as_deref()) {
+                Some(u) => (format!("team:{u}"), true),
+                None => return json_reply(req, 401, json!({"error": "This phone isn't paired. Pair it from Settings on the PC."})),
+            },
         };
+        if team && NOT_FOR_TEAMMATES.contains(&cmd) {
+            return json_reply(req, 403, json!({"error": "Chats stay private to Paper."}));
+        }
         let mut body = String::new();
         if req.as_reader().take(MAX_BODY + 1).read_to_string(&mut body).is_err() || body.len() as u64 > MAX_BODY {
             return json_reply(req, 413, json!({"error": "request too large"}));
