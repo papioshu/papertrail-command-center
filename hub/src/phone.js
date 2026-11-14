@@ -69,7 +69,7 @@ function joinScreen(code, anyway) {
     ws = r.workspace_id;
     await start();
   });
-  show(el("h1", {}, "JOIN YOUR TEAM"), el("p", { className: "dim" }, token ? "Add this workspace to your account." : "This invite works once. After joining, add this page to your Home Screen (Share › Add to Home Screen)."),
+  show(el("h1", {}, "JOIN YOUR TEAM"), el("p", { className: "dim" }, token ? "Add this workspace to your account." : "This invite works once. After joining, tap 📲 Add to Home Screen at the top to get an app icon that stays signed in."),
     el("div", { className: "row" }, name), el("p"), el("button", { className: "primary", on: { click: go } }, "Join"));
 }
 
@@ -274,6 +274,20 @@ async function deviceScreen(code) {
       el("button", { on: { click: () => { clear(); start(); } } }, "Cancel")));
 }
 
+// iPhone/iPad keep Safari's sign-in and a Home Screen app's sign-in apart, so an icon added from a signed-in page opens
+// signed out. Fix: put a fresh one-time device link in this page's address first; the icon opens it and signs itself in.
+const IOS = deviceName() === "iPhone" || deviceName() === "iPad";
+async function installFlow() {
+  const r = await api("POST", "/v1/devices/link");
+  history.replaceState(null, "", `/#dev-${r.token}`); // no hashchange: this page doesn't use the link itself
+  show(el("h1", {}, "ADD TO HOME SCREEN"),
+    el("p", {}, "1. Tap Share (the square with the arrow) in Safari."),
+    el("p", {}, "2. Tap Add to Home Screen, then Add."),
+    el("p", {}, "3. Open Paper Team from your Home Screen and tap Yes. It stays signed in from then on: no more links."),
+    el("p", { className: "dim" }, "Do it within 15 minutes. Needed once per phone or iPad."),
+    el("button", { on: { click: run(async () => { history.replaceState(null, "", "/"); await load(); }) } }, "Done"));
+}
+
 function addDevice() {
   return run(async () => {
     const r = await api("POST", "/v1/devices/link");
@@ -293,6 +307,8 @@ async function start() {
   if (!token) return show(el("h1", {}, "PAPERTRAIL // TEAM"), el("p", { className: "dim" }, "Open the invite link Paper sent you on this phone (with Tailscale on) to join."));
   me = await api("GET", "/v1/me");
   $("who").textContent = me.name;
+  // Offered in Safari only: an opened Home Screen app is already standalone.
+  if (IOS && !navigator.standalone) { $("install").hidden = false; $("install").onclick = run(installFlow); }
   if (!me.workspaces.length) return show(el("p", { className: "dim" }, "You're not in any workspace right now."));
   if (!me.workspaces.some((w) => w.id === ws)) ws = me.workspaces[0].id;
   await load();
