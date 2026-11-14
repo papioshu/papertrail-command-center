@@ -48,10 +48,21 @@ const run = (f) => async (...a) => { say(""); try { await f(...a); } catch (e) {
 
 /* ---------- joining ---------- */
 
-function joinScreen(code) {
+// Names this device in the account's device list.
+const deviceName = () => (/iPad|Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1 ? "iPad" : /iPhone/.test(navigator.userAgent) ? "iPhone" : /Android/.test(navigator.userAgent) ? "Android" : "PC browser");
+
+function joinScreen(code, anyway) {
+  // On a computer the invite belongs in the Command Center app (it works once, so don't spend it here by accident).
+  if (deviceName() === "PC browser" && !anyway) {
+    const copy = el("button", { className: "primary", on: { click: () => navigator.clipboard.writeText(location.href).then(() => { copy.textContent = "Copied"; }, () => { box.focus(); }) } }, "Copy link");
+    const box = el("input", { value: location.href, readOnly: true, className: "grow", on: { focus: (e) => e.target.select() } });
+    return show(el("h1", {}, "ON A PC? USE THE APP"), el("p", { className: "dim" }, "Open the Papertrail Command Center app, go to TEAM, paste this link and press Join. The app shows all your workspaces, boards and files. This link works once, so don't join here first."),
+      el("div", { className: "row" }, box, copy), el("p"),
+      el("button", { on: { click: () => joinScreen(code, true) } }, "No app on this PC: join in this browser"));
+  }
   const name = el("input", { placeholder: "Your name, as your team will see it", className: "grow", value: localStorage.getItem("ptcc-team-name") || "" });
   const go = run(async () => {
-    const r = await api("POST", "/v1/redeem", { token: code, name: name.value.trim(), device_name: "iPhone" });
+    const r = await api("POST", "/v1/redeem", { token: code, name: name.value.trim(), device_name: deviceName() });
     if (r.device && r.device.token) { token = r.device.token; localStorage.setItem(KEY, token); }
     localStorage.setItem("ptcc-team-name", name.value.trim());
     history.replaceState(null, "", "/");
@@ -257,7 +268,7 @@ async function deviceScreen(code) {
     el("p", { className: "dim" }, "Only continue if you made this link yourself on your other device."),
     el("div", { className: "row" },
       el("button", { className: "primary", on: { click: run(async () => {
-        const r = await api("POST", "/v1/devices/claim", { token: code, device_name: /iPad/.test(navigator.userAgent) ? "iPad" : "iPhone" });
+        const r = await api("POST", "/v1/devices/claim", { token: code, device_name: deviceName() });
         token = r.device.token; localStorage.setItem(KEY, token); clear(); await start();
       }) } }, `Yes, I'm ${who.name}`),
       el("button", { on: { click: () => { clear(); start(); } } }, "Cancel")));

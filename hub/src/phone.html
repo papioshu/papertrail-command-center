@@ -12,6 +12,7 @@
   :root { --bg:#0b0714; --card:#171026; --line:#2c2142; --fg:#ece7f7; --dim:#9a90b4; --violet:#8b5cf6; --soft:#b8a4e3; --gold:#d8b04a; --lime:#aef044; --red:#ff6b6b; }
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.45 -apple-system, system-ui, sans-serif; padding: env(safe-area-inset-top) 12px calc(env(safe-area-inset-bottom) + 16px); }
+  @media (min-width: 900px) { body { max-width: 760px; margin: 0 auto; } }
   header { display:flex; align-items:center; gap:8px; padding:12px 0; border-bottom:1px solid var(--line); margin-bottom:10px; }
   header b { letter-spacing:.18em; font-size:12px; }
   select, input, button { font:inherit; color:var(--fg); background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 12px; }
