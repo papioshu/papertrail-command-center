@@ -88,6 +88,21 @@ pub(crate) fn running_ip(v: &serde_json::Value) -> Option<String> {
     v["Self"]["TailscaleIPs"].as_array()?.iter().filter_map(|i| i.as_str()).find(|i| i.starts_with("100.")).map(String::from)
 }
 
+/// Other people's devices that can reach this PC over Tailscale (invited users or devices this PC is shared to):
+/// [{name, online}]. Your own other devices are left out.
+pub(crate) fn teammates(v: &serde_json::Value) -> Vec<serde_json::Value> {
+    let me = &v["Self"]["UserID"];
+    let mut out: Vec<serde_json::Value> = v["Peer"].as_object().into_iter().flat_map(|p| p.values())
+        .filter(|p| &p["UserID"] != me)
+        .map(|p| {
+            let user = v["User"][p["UserID"].to_string()]["DisplayName"].as_str().filter(|s| !s.is_empty());
+            serde_json::json!({ "name": user.unwrap_or("someone you shared this PC with"), "online": p["Online"] == true })
+        })
+        .collect();
+    out.sort_by_key(|t| (t["online"] != true, t["name"].to_string()));
+    out
+}
+
 pub(crate) fn tailscale_ip() -> Option<String> {
     running_ip(&tailscale_status()?)
 }
@@ -430,5 +445,19 @@ mod tests {
     fn qr_is_an_svg() {
         let s = qr_svg("http://100.64.0.1:8765/#pair=abc").unwrap();
         assert!(s.starts_with("<svg") && s.contains("<path d=\"M"));
+    }
+}
+
+#[cfg(test)]
+mod teammates_test {
+    #[test]
+    fn lists_other_peoples_devices_not_mine() {
+        let v = serde_json::json!({
+            "Self": { "UserID": 1 },
+            "User": { "1": { "DisplayName": "Tevin" }, "2": { "DisplayName": "Richard Enriquez" } },
+            "Peer": { "a": { "UserID": 1, "Online": true }, "b": { "UserID": 2, "Online": false }, "c": { "UserID": 3, "Online": true } }
+        });
+        let t = super::teammates(&v);
+        assert_eq!(t, vec![serde_json::json!({ "name": "someone you shared this PC with", "online": true }), serde_json::json!({ "name": "Richard Enriquez", "online": false })]);
     }
 }

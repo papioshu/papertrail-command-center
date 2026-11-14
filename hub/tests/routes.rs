@@ -471,4 +471,13 @@ fn the_owner_issues_a_signin_link_for_a_teammate_and_nobody_else_can() {
         assert_eq!(fx.call("POST", &path(target), Some(who), json!({})).code, 403, "{who} for {target}");
     }
     assert_eq!(fx.hub.handle("POST", &path("viewer"), None, b"").code, 401);
+    // Someone who is also in a workspace another person owns can't be signed in by this owner.
+    let inv = fx.call("POST", &format!("/v1/workspaces/{}/invitations", fx.other_ws), Some("outsider"), json!({ "role": "viewer" }));
+    let join = fx.call("POST", "/v1/redeem", Some("editor"), json!({ "token": inv.body["token"], "name": "editor", "device_name": "pc" }));
+    assert_eq!(join.code, 200, "{join:?}");
+    assert_eq!(fx.call("POST", &path("editor"), Some("owner"), json!({})).code, 403, "rights elsewhere");
+    // A link stops working once the person is taken out before using it.
+    let unused = fx.call("POST", &path("contributor"), Some("owner"), json!({})).body["token"].as_str().unwrap().to_string();
+    assert_eq!(fx.call("DELETE", &format!("/v1/workspaces/{}/members/{}", fx.ws, fx.user("contributor")), Some("owner"), json!({})).code, 200);
+    assert_eq!(claim(&unused).code, 400);
 }

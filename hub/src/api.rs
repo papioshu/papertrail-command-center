@@ -452,16 +452,9 @@ impl Hub {
     }
 
     /// A one-time sign-in link for a teammate's existing account, made by the owner of a workspace they're in (so a
-    /// lost or new phone never needs a second account or another invite). 24 h, single use; not for other owners.
+    /// lost or new phone never needs a second account or another invite). 24 h, single use.
     fn signin_link(&self, c: &Connection, who: &Caller, user: &str) -> Res {
-        let shared: bool = db(c.query_row(
-            "SELECT EXISTS(SELECT 1 FROM memberships o JOIN memberships m ON m.workspace_id = o.workspace_id
-               JOIN workspaces w ON w.id = o.workspace_id AND w.deleted = 0 JOIN users u ON u.id = m.user_id AND u.revoked = 0
-             WHERE o.user_id = ?1 AND o.role = 'owner' AND o.revoked = 0 AND m.user_id = ?2 AND m.revoked = 0 AND m.role != 'owner')",
-            params![who.user, user],
-            |r| r.get(0),
-        ))?;
-        if !shared || user == who.user {
+        if user == who.user || !may_sign_in(c, &who.user, user)? {
             return Err(fail(403, "forbidden"));
         }
         let id = new_id("l").map_err(internal)?;
@@ -491,6 +484,11 @@ impl Hub {
             )
             .optional())?;
         let (link, user, name) = row.ok_or_else(invalid)?;
+        // A link the owner made for a teammate holds only while that's still allowed (removed, re-roled: it's dead).
+        let maker: String = db(tx.query_row("SELECT d.user_id FROM device_links l JOIN devices d ON d.id = l.created_by_device WHERE l.id = ?1", [&link], |r| r.get(0)))?;
+        if maker != user && !may_sign_in(&tx, &maker, &user)? {
+            return Err(invalid());
+        }
         if b["preview"] == true {
             return Ok(ok(json!({ "name": name })));
         }
@@ -865,4 +863,19 @@ impl Hub {
             .and_then(Iterator::collect))?;
         Ok(ok(json!({ "entries": list })))
     }
+}
+
+/// Whether `owner` may sign devices in as `user`: `user` is in at least one workspace and every workspace they're in is
+/// owned by `owner`, where `user` is not an owner. So no owner can reach rights that someone else granted.
+fn may_sign_in(c: &Connection, owner: &str, user: &str) -> Result<bool, Reply> {
+    db(c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM users WHERE id = ?2 AND revoked = 0)
+           AND EXISTS(SELECT 1 FROM memberships m JOIN workspaces w ON w.id = m.workspace_id AND w.deleted = 0 WHERE m.user_id = ?2 AND m.revoked = 0)
+           AND NOT EXISTS(SELECT 1 FROM memberships m JOIN workspaces w ON w.id = m.workspace_id AND w.deleted = 0
+                          WHERE m.user_id = ?2 AND m.revoked = 0
+                            AND (m.role = 'owner' OR NOT EXISTS(SELECT 1 FROM memberships o WHERE o.workspace_id = m.workspace_id
+                                                                 AND o.user_id = ?1 AND o.role = 'owner' AND o.revoked = 0)))",
+        params![owner, user],
+        |r| r.get(0),
+    ))
 }

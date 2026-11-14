@@ -74,7 +74,9 @@ function ConnectGuide({ host, people, open, setOpen }: { host: Row | undefined; 
         <div className="col" style={{ gap: 10 }}>
           <div className="small">{ok(!!host?.running)}<b>Hub running on this PC</b> {host?.running ? "· starts with Windows" : "· not answering: restart the PC or run ptcc-hub serve"}</div>
           <div className="small">{ok(ts)}<b>This PC on Tailscale</b> {ts ? `· ${host?.tailscale}` : "· open Tailscale from the taskbar tray and sign in. The hub picks the address up within a minute."}</div>
-          <div className="small">{ok(false)}<b>Add Profit and Rich to your Tailscale network</b> · in Tailscale's admin page choose Users › Invite users and send each an invite. They install Tailscale on their PC and sign in with it.
+          <div className="small">{ok(!!host?.teammates?.length)}<b>Add Profit and Rich to your Tailscale network</b> · {host?.teammates?.length
+              ? `connected: ${(host.teammates as Row[]).map((t) => `${t.name} (${t.online ? "online" : "offline"})`).join(", ")}`
+              : "in Tailscale's admin page choose Users › Invite users and send each an invite. They install Tailscale on their PC and sign in with it."}
             <button className="btn sm ghost" style={{ marginLeft: 8 }} onClick={() => api.openUrl("https://login.tailscale.com/admin/users")}>Open Tailscale users</button></div>
           <div className="small">{ok(!!host?.installer)}<b>Send them the Command Center installer</b> · {host?.installer ? "it's in the share folder." : "the share folder is empty for now."}
             <button className="btn sm ghost" style={{ marginLeft: 8 }} onClick={() => api.hubOpenShareFolder()}>Open share folder</button></div>
