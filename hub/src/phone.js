@@ -35,14 +35,14 @@ async function api(method, path, body, raw) {
   if (token) headers.Authorization = "Bearer " + token;
   if (!raw) headers["Content-Type"] = "application/json";
   const r = await fetch(path, { method, headers, body: raw ?? (body ? JSON.stringify(body) : undefined) });
-  if (r.status === 401 && token) { localStorage.removeItem(KEY); token = null; start(); throw new Error("This phone was signed out. Open a new invite link."); }
+  if (r.status === 401 && token) { localStorage.removeItem(KEY); token = null; start(); throw new Error("This device was signed out. Sign in again with your name and password, or ask Paper for a sign-in link."); }
   const isJson = (r.headers.get("Content-Type") || "").includes("json");
   const v = isJson ? await r.json() : await r.blob();
   if (!r.ok) throw new Error(friendly(isJson ? v.error : String(r.status)));
   return v;
 }
 function friendly(e) {
-  return ({ forbidden: "Your role can't do that.", not_found: "That isn't there any more.", invalid_invitation: "That invite has expired or was already used. Ask Paper for a new one.", invalid_device_link: "That device link has expired or was already used. Make a new one with + Device on your other device.", conflict: "Someone changed that first. It's been refreshed.", deleted: "That task was deleted.", already_member: "You're already in that workspace." })[e] || e;
+  return ({ forbidden: "Your role can't do that.", not_found: "That isn't there any more.", invalid_invitation: "That invite has expired or was already used. Ask Paper for a new one.", invalid_device_link: "That device link has expired or was already used. Make a new one with + Device on your other device.", conflict: "Someone changed that first. It's been refreshed.", deleted: "That task was deleted.", already_member: "You're already in that workspace.", invalid_login: "Wrong sign-in name or password.", too_many_tries: "Too many wrong tries. Wait 15 minutes, or ask Paper for a sign-in link.", login_taken: "Someone already uses that sign-in name.", wrong_password: "Your current password isn't right." })[e] || e;
 }
 const run = (f) => async (...a) => { say(""); try { await f(...a); } catch (e) { say(e.message); await load().catch(() => {}); } };
 
@@ -71,6 +71,35 @@ function joinScreen(code, anyway) {
   });
   show(el("h1", {}, "JOIN YOUR TEAM"), el("p", { className: "dim" }, token ? "Add this workspace to your account." : "This invite works once. After joining, tap 📲 Add to Home Screen at the top to get an app icon that stays signed in."),
     el("div", { className: "row" }, name), el("p"), el("button", { className: "primary", on: { click: go } }, "Join"));
+}
+
+// Name + password (D058): any device signs in to the same account, no link needed.
+function signInScreen() {
+  const login = el("input", { placeholder: "Sign-in name", className: "grow", autocomplete: "username", autocapitalize: "none" });
+  const pw = el("input", { type: "password", placeholder: "Password", className: "grow", autocomplete: "current-password" });
+  const go = run(async () => {
+    const r = await api("POST", "/v1/login", { login: login.value.trim(), password: pw.value, device_name: deviceName() });
+    token = r.device.token; localStorage.setItem(KEY, token);
+    await start();
+  });
+  pw.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+  show(el("h1", {}, "SIGN IN"), el("p", { className: "dim" }, "Your team sign-in name and password. New to the team? Open the invite link Paper sent you instead."),
+    el("div", { className: "row" }, login), el("p"), el("div", { className: "row" }, pw), el("p"), el("button", { className: "primary", on: { click: go } }, "Sign in"));
+}
+
+function accountScreen() {
+  const has = !!me.login;
+  const login = el("input", { placeholder: "Sign-in name (letters, digits, . - _)", className: "grow", value: me.login || "", autocomplete: "username", autocapitalize: "none" });
+  const cur = el("input", { type: "password", placeholder: "Current password", className: "grow", autocomplete: "current-password" });
+  const pw = el("input", { type: "password", placeholder: "New password (8+ characters)", className: "grow", autocomplete: "new-password" });
+  const save = run(async () => {
+    const r = await api("POST", "/v1/account", { login: login.value.trim(), password: pw.value, current: cur.value });
+    me.login = r.login;
+    show(el("h1", {}, "SAVED"), el("p", {}, `Sign in on any phone, iPad or PC as "${r.login}" with that password. Your workspaces come along.`), el("button", { on: { click: run(load) } }, "Done"));
+  });
+  show(el("h1", {}, "YOUR SIGN-IN"), el("p", { className: "dim" }, has ? `Signed in as ${me.name} (sign-in name ${me.login}).` : `Signed in as ${me.name}. Set a sign-in name and password to sign in on other devices without a link.`),
+    el("div", { className: "row" }, login), el("p"), has ? el("div", { className: "row" }, cur) : null, has ? el("p") : null, el("div", { className: "row" }, pw), el("p"),
+    el("div", { className: "row" }, el("button", { className: "primary", on: { click: save } }, has ? "Change" : "Set"), el("button", { on: { click: run(load) } }, "Cancel")));
 }
 
 /* ---------- data ---------- */
@@ -136,20 +165,27 @@ function media() {
   const list = feed.records.filter((r) => r.kind === "media" && r.project_id === project);
   const folder = el("input", { placeholder: "Folder (e.g. Renders)", className: "grow", value: localStorage.getItem("ptcc-team-folder") || "" });
   const file = el("input", { type: "file", accept: "image/*,video/*,audio/*,application/pdf", style: "display:none" });
+  // Optional project (D059): "No project" files it under the workspace's built-in General project.
+  const general = (feed.projects.find((p) => p.name === "General") || {}).id;
+  const into = el("select", { className: "grow", ariaLabel: "Project (optional)" },
+    general ? el("option", { value: general, selected: true }, "No project (General)") : null,
+    feed.projects.filter((p) => p.id !== general).map((p) => el("option", { value: p.id, selected: !general && p.id === project }, p.name)));
   const pick = el("button", { className: "primary", on: { click: () => file.click() } }, "Upload");
   file.addEventListener("change", run(async () => {
     const fl = file.files[0]; if (!fl) return;
     if (fl.size > 25 * 1024 * 1024) throw new Error("Files can be at most 25 MB.");
     pick.textContent = "Uploading…"; pick.disabled = true;
+    const target = into.value || project;
     // The hub fingerprints the file itself (no crypto.subtle over http).
-    const up = await api("PUT", `/v1/workspaces/${ws}/projects/${project}/blobs/auto`, null, await fl.arrayBuffer());
+    const up = await api("PUT", `/v1/workspaces/${ws}/projects/${target}/blobs/auto`, null, await fl.arrayBuffer());
     const fields = { sha256: up.sha256, name: fl.name };
     if (folder.value.trim()) fields.folder = folder.value.trim();
     localStorage.setItem("ptcc-team-folder", folder.value.trim());
+    project = target; // show the upload where it landed
     await op("create", "media", null, fields);
     await load();
   }));
-  return [el("div", { className: "row", style: "margin-top:10px" }, folder, pick, file),
+  return [el("div", { className: "row", style: "margin-top:10px" }, into), el("div", { className: "row", style: "margin-top:6px" }, folder, pick, file),
     list.length ? el("div", { className: "grid", style: "margin-top:10px" }, list.map(thumb)) : el("p", { className: "dim" }, "No media here yet.")];
 }
 
@@ -305,9 +341,10 @@ async function start() {
   if (dev) return deviceScreen(dev);
   const code = (location.hash.match(/^#([0-9a-f]{64})$/) || [])[1];
   if (code) return joinScreen(code);
-  if (!token) return show(el("h1", {}, "PAPERTRAIL // TEAM"), el("p", { className: "dim" }, "Open the invite link Paper sent you on this phone (with Tailscale on) to join."));
+  if (!token) return signInScreen();
   me = await api("GET", "/v1/me");
   $("who").textContent = me.name;
+  $("who").style.cursor = "pointer"; $("who").title = "Your sign-in"; $("who").onclick = run(accountScreen);
   // Paper's whole Command Center, read-only, from the same PC (D057); the sign-in rides in the #fragment. It's where the
   // team starts; its "Team tools ↩" comes back here with ?stay=1.
   const cc = await api("GET", "/v1/cc").catch(() => ({ up: false }));

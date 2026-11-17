@@ -46,3 +46,10 @@ lto = true
 opt-level = "s"
 panic = "unwind"
 strip = true
+
+# Hub password hashing (600k PBKDF2 rounds) is unbearably slow unoptimised; the hub tests sign in.
+[profile.dev.package.ptcc-hub]
+opt-level = 2
+
+[profile.dev.package.sha2]
+opt-level = 3

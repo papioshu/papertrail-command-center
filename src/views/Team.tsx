@@ -99,6 +99,29 @@ function JoinMore({ me, onDone, onErr }: { me: string; onDone: () => void; onErr
   );
 }
 
+/** Your sign-in name + password (D058): lets any of your devices sign in without a link. */
+function AccountCard({ onErr }: { onErr: (e: string) => void }) {
+  const me = useAsync(() => api.hubAdmin("", "me").catch(() => null), []);
+  const has = !!me.data?.login;
+  const [login, setLogin] = useState("");
+  const [pw, setPw] = useState("");
+  const [cur, setCur] = useState("");
+  const [done, setDone] = useState("");
+  const save = () => api.hubSetAccount((login || me.data?.login || "").trim(), pw, cur).then((r) => { setDone(`Saved. Sign in anywhere as "${r.login}".`); setPw(""); setCur(""); me.reload(); }, (e) => onErr(String(e)));
+  return (
+    <Card title="Your sign-in">
+      <div className="small dim">{has ? `Sign-in name: ${me.data?.login}. ` : ""}Use it on any new phone, iPad or PC (Overview › Sign in to your team) instead of a link. Your workspaces come along.</div>
+      <form className="row wrap" style={{ gap: 8, marginTop: 8 }} onSubmit={(e) => { e.preventDefault(); save(); }}>
+        <input className="input" placeholder={has ? String(me.data?.login) : "Sign-in name (letters, digits, . - _)"} aria-label="Sign-in name" autoComplete="username" value={login} onChange={(e) => setLogin(e.target.value)} />
+        {has && <input className="input" type="password" placeholder="Current password" aria-label="Current password" autoComplete="current-password" value={cur} onChange={(e) => setCur(e.target.value)} />}
+        <input className="input" type="password" placeholder={has ? "New password (8+)" : "Password (8+ characters)"} aria-label="Password" autoComplete="new-password" value={pw} onChange={(e) => setPw(e.target.value)} />
+        <button className="btn sm primary" type="submit" disabled={pw.length < 8 || (!has && !login.trim())}>{has ? "Change" : "Set"}</button>
+      </form>
+      {done && <div className="small" style={{ color: "var(--lime)", marginTop: 6 }}>{done}</div>}
+    </Card>
+  );
+}
+
 /** A one-time sign-in link: QR for phones, the link (with Copy) for texting it or pasting into the app on a PC. */
 function LinkBox({ link, qr, note }: { link: string; qr: string; note: string }) {
   const [copied, setCopied] = useState(false);
@@ -370,7 +393,11 @@ function Media({ ws, b, project, onErr, reload }: { ws: string; b: Row; project:
   const [busy, setBusy] = useState(false);
   const [caption, setCaption] = useState("");
   const [folder, setFolder] = useState("");
-  const target = project || b.projects?.[0]?.id || "";
+  // Optional project (D059): "No project" files it under the workspace's built-in General project.
+  const projects: Row[] = b.projects ?? [];
+  const general = projects.find((p) => p.name === "General")?.id ?? "";
+  const [pick, setPick] = useState("");
+  const target = pick || project || general || projects[0]?.id || "";
   const folders = [...new Set(items.map((r) => r.fields?.folder).filter(Boolean))] as string[];
   const upload = (file: File | undefined) => {
     if (!file || !target) return;
@@ -385,10 +412,14 @@ function Media({ ws, b, project, onErr, reload }: { ws: string; b: Row; project:
     <div className="col" style={{ gap: 12 }}>
       {can(b.role, "contributor") && target && (
         <div className="row wrap" style={{ gap: 8, alignItems: "center" }}>
+          <select className="input" value={target} onChange={(e) => setPick(e.target.value)} aria-label="Project (optional)">
+            {general && <option value={general}>No project (General)</option>}
+            {projects.filter((p) => p.id !== general).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
           <input className="input" list="media-folders" placeholder="Folder (e.g. Renders)" value={folder} onChange={(e) => setFolder(e.target.value)} aria-label="Folder" />
           <datalist id="media-folders">{folders.map((f) => <option key={f} value={f} />)}</datalist>
           <input className="input" placeholder="Caption (optional)" value={caption} onChange={(e) => setCaption(e.target.value)} aria-label="Caption" />
-          <label className="btn sm primary" style={{ cursor: busy ? "wait" : "pointer" }}>{busy ? "Uploading…" : `Upload to ${b.projects?.find((p: Row) => p.id === target)?.name ?? "project"}`}
+          <label className="btn sm primary" style={{ cursor: busy ? "wait" : "pointer" }}>{busy ? "Uploading…" : "Upload"}
             <input type="file" hidden disabled={busy} onChange={(e) => upload(e.target.files?.[0])} /></label>
           <span className="dim small">Images, video, audio, PDFs, up to 25 MB. The hub needs to be reachable.</span>
         </div>
@@ -863,6 +894,7 @@ export default function Team() {
           Save team media into my Book of Secrets (66 MEDIA ARCHIVE › project › WORKING › folder)
         </label>
       )}
+      {s?.joined && !s.revoked && !current && <AccountCard onErr={setErr} />}
       {s?.joined && !s.revoked && !current && <JoinMore me={s.name ?? ""} onDone={status.reload} onErr={setErr} />}
       {device && (
         <Modal title="Add another device" onClose={() => setDevice(null)} foot={<button className="btn primary" onClick={() => setDevice(null)}>Done</button>}>

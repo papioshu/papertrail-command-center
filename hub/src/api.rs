@@ -1,7 +1,7 @@
 //! Hub HTTP API (ARCHITECTURE.md §4, §5, §11; records and sync in sync.rs): accounts by invitation, device sessions, workspaces, projects,
 //! members, invitations and the audit log. Every route except health and redeem needs a device bearer, and every
 //! workspace route asks `access::decide` before touching data. NotFound and "doesn't exist" give the same reply.
-use crate::store::{err, hash, new_id, now, random_hex, R};
+use crate::store::{check_password, err, hash, hash_password, new_id, now, random_hex, R};
 use ptcc_access::{decide, Decision, Membership, Perm, Role, Target};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
@@ -17,6 +17,8 @@ pub struct Hub {
     denials: Mutex<HashMap<String, Instant>>,
     /// Board presence (B3): board id -> user id -> (cursor, last seen). Memory only; gone when the hub restarts.
     pub(crate) presence: Mutex<HashMap<String, HashMap<String, (Value, Instant)>>>,
+    /// Failed password tries (D058): key -> (count, first try). Memory only.
+    logins: Mutex<HashMap<String, (u32, Instant)>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -53,7 +55,7 @@ pub(crate) struct Caller {
 
 impl Hub {
     pub fn new(c: Connection, media: Option<std::path::PathBuf>) -> Hub {
-        Hub { db: Mutex::new(c), media, denials: Mutex::new(HashMap::new()), presence: Mutex::new(HashMap::new()) }
+        Hub { db: Mutex::new(c), media, denials: Mutex::new(HashMap::new()), presence: Mutex::new(HashMap::new()), logins: Mutex::new(HashMap::new()) }
     }
 }
 
@@ -244,6 +246,8 @@ fn role_name_arg(b: &Value) -> Result<String, Reply> {
 pub fn new_workspace(c: &Connection, name: &str) -> R<(String, String)> {
     let ws = new_id("w")?;
     c.execute("INSERT INTO workspaces(id, name, created_at) VALUES(?1,?2,?3)", params![ws, name, now()]).map_err(err)?;
+    // Media uploaded without a project goes here (D059).
+    c.execute("INSERT INTO projects(id, workspace_id, name, created_by, created_at) VALUES(?1,?2,'General','hub',?3)", params![new_id("p")?, ws, now()]).map_err(err)?;
     for (role, base, grants) in STARTER_ROLES {
         c.execute("INSERT INTO roles(workspace_id, name, base, grants, created_at) VALUES(?1,?2,?3,?4,?5)", params![ws, role, base, grants, now()]).map_err(err)?;
     }
@@ -305,6 +309,7 @@ impl Hub {
         match (method, seg) {
             ("GET", ["health"]) => return ok(json!({ "ok": true })),
             ("POST", ["devices", "claim"]) => return self.claim_device(&mut c, &b).unwrap_or_else(|r| r),
+            ("POST", ["login"]) => return self.login(&c, &b).unwrap_or_else(|r| r),
             ("POST", ["redeem"]) => {
                 let who = authenticate(&c, auth);
                 return self.redeem(&mut c, who, &b).unwrap_or_else(|r| r);
@@ -314,6 +319,7 @@ impl Hub {
         let Some(who) = authenticate(&c, auth) else { return fail(401, "unauthorized") };
         let r = match (method, seg) {
             ("GET", ["me"]) => self.me(&c, &who),
+            ("POST", ["account"]) => self.set_account(&c, &who, &b),
             ("GET", ["app", "latest"]) => self.app_latest(),
             ("GET", ["app", "installer"]) => self.app_installer(),
             ("GET", ["devices"]) => self.devices(&c, &who),
@@ -417,7 +423,7 @@ impl Hub {
     }
 
     pub(crate) fn me(&self, c: &Connection, who: &Caller) -> Res {
-        let name: String = db(c.query_row("SELECT name FROM users WHERE id = ?1", [&who.user], |r| r.get(0)))?;
+        let (name, login): (String, Option<String>) = db(c.query_row("SELECT name, login FROM users WHERE id = ?1", [&who.user], |r| Ok((r.get(0)?, r.get(1)?))))?;
         let mut st = db(c.prepare(
             "SELECT w.id, w.name, m.role, m.scope IS NOT NULL, m.title FROM memberships m JOIN workspaces w ON w.id = m.workspace_id AND w.deleted = 0
              WHERE m.user_id = ?1 AND m.revoked = 0 ORDER BY w.name",
@@ -425,7 +431,74 @@ impl Hub {
         let ws: Vec<Value> = db(st
             .query_map([&who.user], |r| Ok(json!({ "id": r.get::<_, String>(0)?, "name": r.get::<_, String>(1)?, "role": r.get::<_, String>(2)?, "scoped": r.get::<_, bool>(3)?, "title": r.get::<_, Option<String>>(4)? })))
             .and_then(Iterator::collect))?;
-        Ok(ok(json!({ "user_id": who.user, "name": name, "device_id": who.device, "workspaces": ws })))
+        Ok(ok(json!({ "user_id": who.user, "name": name, "login": login, "device_id": who.device, "workspaces": ws })))
+    }
+
+    /// 5 wrong tries per name (or account) in 15 minutes, 50 across the hub, then 429 until the window passes.
+    fn throttled(&self, key: &str) -> bool {
+        let mut m = self.logins.lock().unwrap_or_else(|p| p.into_inner());
+        m.retain(|_, (_, at)| at.elapsed() < std::time::Duration::from_secs(900));
+        m.get(key).is_some_and(|(n, _)| *n >= 5) || m.values().map(|(n, _)| n).sum::<u32>() >= 50
+    }
+    fn failed(&self, key: &str) {
+        let mut m = self.logins.lock().unwrap_or_else(|p| p.into_inner());
+        m.entry(key.to_string()).or_insert((0, Instant::now())).0 += 1;
+    }
+
+    /// Name + password sign-in (D058): a new device on the same account, so every workspace comes along.
+    fn login(&self, c: &Connection, b: &Value) -> Res {
+        let login = b["login"].as_str().unwrap_or("").trim().to_lowercase();
+        let pw = b["password"].as_str().unwrap_or("");
+        let key = format!("login:{login}");
+        if self.throttled(&key) {
+            return Err(fail(429, "too_many_tries"));
+        }
+        let row: Option<(String, String)> = db(c
+            .query_row("SELECT id, pass_hash FROM users WHERE login = ?1 AND revoked = 0 AND pass_hash IS NOT NULL", [&login], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional())?;
+        // Unknown names cost the same as wrong passwords, so the answer doesn't tell which it was.
+        const DUMMY: &str = "pbkdf2-sha256$600000$00000000000000000000000000000000$0000000000000000000000000000000000000000000000000000000000000000";
+        let good = check_password(pw, row.as_ref().map_or(DUMMY, |r| r.1.as_str())) && row.is_some();
+        let Some((user, _)) = row.filter(|_| good) else {
+            self.failed(&key);
+            return Err(fail(401, "invalid_login"));
+        };
+        self.logins.lock().unwrap_or_else(|p| p.into_inner()).remove(&key);
+        let dev_name: String = b["device_name"].as_str().map(str::trim).filter(|s| !s.is_empty()).unwrap_or("device").chars().take(MAX_NAME).collect();
+        let (id, token) = new_device(c, &user, &dev_name).map_err(internal)?;
+        log(c, None, &Caller { user: user.clone(), device: id.clone() }, "device.login", Some(&id), json!({}))?;
+        Ok(ok(json!({ "user_id": user, "device": { "id": id, "token": token } })))
+    }
+
+    /// Sets this account's sign-in name and password. Changing an existing password needs the current one.
+    fn set_account(&self, c: &Connection, who: &Caller, b: &Value) -> Res {
+        let login = b["login"].as_str().unwrap_or("").trim().to_lowercase();
+        if !(3..=32).contains(&login.len()) || !login.bytes().all(|x| x.is_ascii_lowercase() || x.is_ascii_digit() || b"._-".contains(&x)) {
+            return Err(bad("Sign-in names are 3–32 letters, digits, dots, dashes or underscores."));
+        }
+        let pw = b["password"].as_str().unwrap_or("");
+        if !(8..=200).contains(&pw.chars().count()) {
+            return Err(bad("Passwords are at least 8 characters."));
+        }
+        let current: Option<String> = db(c.query_row("SELECT pass_hash FROM users WHERE id = ?1", [&who.user], |r| r.get(0)))?;
+        if let Some(h) = current {
+            let key = format!("account:{}", who.user);
+            if self.throttled(&key) {
+                return Err(fail(429, "too_many_tries"));
+            }
+            if !check_password(b["current"].as_str().unwrap_or(""), &h) {
+                self.failed(&key);
+                return Err(fail(403, "wrong_password"));
+            }
+        }
+        let taken: bool = db(c.query_row("SELECT EXISTS(SELECT 1 FROM users WHERE login = ?1 AND id != ?2)", params![login, who.user], |r| r.get(0)))?;
+        if taken {
+            return Err(fail(409, "login_taken"));
+        }
+        let h = hash_password(pw).map_err(internal)?;
+        db(c.execute("UPDATE users SET login = ?1, pass_hash = ?2 WHERE id = ?3", params![login, h, who.user]))?;
+        log(c, None, who, "account.password_set", None, json!({ "login": login }))?;
+        Ok(ok(json!({ "login": login })))
     }
 
     fn devices(&self, c: &Connection, who: &Caller) -> Res {

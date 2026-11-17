@@ -83,7 +83,7 @@ fn scoped_member_lists_only_their_projects_and_hidden_looks_like_missing() {
     let list = fx.call("GET", &format!("/v1/workspaces/{}/projects", fx.ws), Some("scoped"), json!({}));
     let ids: Vec<&str> = list.body["projects"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect();
     assert_eq!(ids, [fx.p1.as_str()]);
-    assert_eq!(fx.call("GET", &format!("/v1/workspaces/{}/projects", fx.ws), Some("viewer"), json!({})).body["projects"].as_array().unwrap().len(), 2);
+    assert_eq!(fx.call("GET", &format!("/v1/workspaces/{}/projects", fx.ws), Some("viewer"), json!({})).body["projects"].as_array().unwrap().len(), 3, "p1, p2 + General (D059)");
     let hidden = fx.call("GET", &format!("/v1/workspaces/{}/projects/{}", fx.ws, fx.p2), Some("scoped"), json!({}));
     let missing = fx.call("GET", &format!("/v1/workspaces/{}/projects/p_nope", fx.ws), Some("scoped"), json!({}));
     assert_eq!((hidden.code, &hidden.body), (404, &missing.body), "a hidden project is indistinguishable from a missing one");
@@ -480,4 +480,31 @@ fn the_owner_issues_a_signin_link_for_a_teammate_and_nobody_else_can() {
     let unused = fx.call("POST", &path("contributor"), Some("owner"), json!({})).body["token"].as_str().unwrap().to_string();
     assert_eq!(fx.call("DELETE", &format!("/v1/workspaces/{}/members/{}", fx.ws, fx.user("contributor")), Some("owner"), json!({})).code, 200);
     assert_eq!(claim(&unused).code, 400);
+}
+
+#[test]
+fn name_and_password_sign_a_new_device_into_the_same_account() {
+    let fx = fixture();
+    let set = |as_: &str, b: Value| fx.call("POST", "/v1/account", Some(as_), b).code;
+    let login = |l: &str, p: &str| fx.hub.handle("POST", "/v1/login", None, json!({ "login": l, "password": p, "device_name": "Rich's PC" }).to_string().as_bytes());
+    assert_eq!(set("editor", json!({ "login": "OneShotF0x", "password": "short" })), 400, "too short");
+    assert_eq!(set("editor", json!({ "login": "a b", "password": "longenough" })), 400, "bad name");
+    assert_eq!(set("editor", json!({ "login": "OneShotF0x", "password": "pencil-pusher" })), 200);
+    assert_eq!(set("viewer", json!({ "login": "oneshotf0x", "password": "whatever123" })), 409, "names are unique, any case");
+    let r = login("ONESHOTF0X", "pencil-pusher");
+    assert_eq!((r.code, r.body["user_id"].as_str()), (200, Some(fx.user("editor"))), "same account");
+    let me = fx.hub.handle("GET", "/v1/me", Some(&format!("Bearer {}", r.body["device"]["token"].as_str().unwrap())), b"");
+    assert_eq!((me.body["login"].as_str(), me.body["workspaces"][0]["role"].as_str()), (Some("oneshotf0x"), Some("editor")), "workspaces come along");
+    // Wrong password and unknown name answer the same; changing the password needs the current one.
+    assert_eq!(login("oneshotf0x", "nope").body, login("nobody", "nope").body);
+    assert_eq!(set("editor", json!({ "login": "oneshotf0x", "password": "new-password", "current": "wrong" })), 403);
+    assert_eq!(set("editor", json!({ "login": "oneshotf0x", "password": "new-password", "current": "pencil-pusher" })), 200);
+    assert_eq!(login("oneshotf0x", "pencil-pusher").code, 401);
+    // Five wrong tries lock that name for 15 minutes, even with the right password.
+    for _ in 0..5 { assert!(matches!(login("oneshotf0x", "guess").code, 401 | 429)); } // 2 wrong tries were made above
+    assert_eq!(login("oneshotf0x", "new-password").code, 429);
+    // A revoked account can't sign in.
+    ptcc_hub::api::revoke_user(&fx.hub.db.lock().unwrap(), fx.user("viewer")).unwrap();
+    assert_eq!(set("admin", json!({ "login": "adm", "password": "admin-pass-1" })), 200);
+    assert_eq!(login("adm", "admin-pass-1").code, 200);
 }

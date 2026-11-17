@@ -429,10 +429,17 @@ fn migrating_a_v1_hub_backs_it_up_first() {
     {
         let c = store::open(Some(&data)).unwrap();
         ptcc_hub::api::new_workspace(&c, "Old").unwrap();
-        c.execute_batch("DROP TABLE records; DROP TABLE applied_ops; DROP TABLE blobs; DROP TABLE roles; DROP TABLE device_links; ALTER TABLE memberships DROP COLUMN title; ALTER TABLE invitations DROP COLUMN title; PRAGMA user_version = 1;").unwrap();
+        c.execute_batch("DROP TABLE records; DROP TABLE applied_ops; DROP TABLE blobs; DROP TABLE roles; DROP TABLE device_links; ALTER TABLE memberships DROP COLUMN title; ALTER TABLE invitations DROP COLUMN title; DROP INDEX users_login; ALTER TABLE users DROP COLUMN login; ALTER TABLE users DROP COLUMN pass_hash; PRAGMA user_version = 1;").unwrap();
     }
     let c = store::open(Some(&data)).unwrap();
     assert_eq!(c.query_row("SELECT COUNT(*) FROM records", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    // D059: an old workspace gets exactly one General project (new_workspace made one; the migration doesn't add a second).
+    assert_eq!(c.query_row("SELECT COUNT(*) FROM projects WHERE name = 'General'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    c.execute("DELETE FROM projects", []).unwrap();
+    c.execute_batch("PRAGMA user_version = 7;").unwrap();
+    drop(c);
+    let c = store::open(Some(&data)).unwrap();
+    assert_eq!(c.query_row("SELECT COUNT(*) FROM projects WHERE name = 'General'", [], |r| r.get::<_, i64>(0)).unwrap(), 1, "migration adds General");
     let backups: Vec<String> = std::fs::read_dir(store::backups_dir(&data)).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
     assert!(backups.iter().any(|b| b.starts_with("pre-migrate-v1-")), "{backups:?}");
     drop(c);

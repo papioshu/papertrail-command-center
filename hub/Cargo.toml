@@ -21,3 +21,7 @@ sha2 = "0.10"
 getrandom = "0.2"
 serde_json = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+# Password hashing (600k PBKDF2 rounds) is unbearably slow unoptimised; tests sign in.
+[profile.dev]
+opt-level = 2

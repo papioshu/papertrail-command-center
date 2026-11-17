@@ -69,6 +69,16 @@ CREATE TABLE device_links(id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, 
 -- A device link dies with the device that made it (revoked device → its unused links stop working).
 ALTER TABLE device_links ADD COLUMN created_by_device TEXT;
 UPDATE device_links SET used = 1 WHERE created_by_device IS NULL;
+"#, r#"
+-- Name + password sign-in (D058): optional per account; the password only ever stored as a PBKDF2 hash.
+ALTER TABLE users ADD COLUMN login TEXT;
+ALTER TABLE users ADD COLUMN pass_hash TEXT;
+CREATE UNIQUE INDEX users_login ON users(login) WHERE login IS NOT NULL;
+"#, r#"
+-- Every workspace has a "General" project (D059): media uploaded without a project lands there, so it keeps per-project access.
+INSERT INTO projects(id, workspace_id, name, created_by, created_at)
+  SELECT 'p_' || lower(hex(randomblob(16))), w.id, 'General', 'hub', strftime('%Y-%m-%dT%H:%M:%SZ', 'now') FROM workspaces w
+  WHERE w.deleted = 0 AND NOT EXISTS (SELECT 1 FROM projects p WHERE p.workspace_id = w.id AND p.name = 'General' AND p.deleted = 0);
 "#];
 
 pub fn now() -> String {
@@ -77,6 +87,64 @@ pub fn now() -> String {
 
 pub fn hash(s: &str) -> String {
     Sha256::digest(s.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/* ---------- passwords (D058): PBKDF2-HMAC-SHA256, built on sha2 (no new crates) ---------- */
+
+/// OWASP's figure for PBKDF2-HMAC-SHA256.
+pub const PW_ROUNDS: u32 = 600_000;
+
+fn pbkdf2(pw: &[u8], salt: &[u8], rounds: u32) -> [u8; 32] {
+    use sha2::Digest;
+    let mut key = [0u8; 64];
+    if pw.len() > 64 {
+        key[..32].copy_from_slice(&Sha256::digest(pw));
+    } else {
+        key[..pw.len()].copy_from_slice(pw);
+    }
+    // HMAC with the pads hashed once; each round clones the two prepared states.
+    let (inner, outer) = (Sha256::new().chain_update(key.map(|b| b ^ 0x36)), Sha256::new().chain_update(key.map(|b| b ^ 0x5c)));
+    let mac = |m: &[u8]| -> [u8; 32] { outer.clone().chain_update(inner.clone().chain_update(m).finalize()).finalize().into() };
+    let mut u = mac(&[salt, &1u32.to_be_bytes()].concat());
+    let mut t = u;
+    for _ in 1..rounds {
+        u = mac(&u);
+        t.iter_mut().zip(u).for_each(|(a, b)| *a ^= b);
+    }
+    t
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+pub fn hash_password(pw: &str) -> R<String> {
+    let salt = random_hex(16)?;
+    Ok(format!("pbkdf2-sha256${PW_ROUNDS}${salt}${}", hex(&pbkdf2(pw.as_bytes(), salt.as_bytes(), PW_ROUNDS))))
+}
+
+pub fn check_password(pw: &str, stored: &str) -> bool {
+    let p: Vec<&str> = stored.split('$').collect();
+    let [kind, rounds, salt, want] = p[..] else { return false };
+    let Ok(rounds) = rounds.parse::<u32>() else { return false };
+    if kind != "pbkdf2-sha256" || !(1..=10_000_000).contains(&rounds) {
+        return false;
+    }
+    let got = hex(&pbkdf2(pw.as_bytes(), salt.as_bytes(), rounds));
+    got.len() == want.len() && got.bytes().zip(want.bytes()).fold(0u8, |a, (x, y)| a | (x ^ y)) == 0
+}
+
+#[cfg(test)]
+mod pw_tests {
+    #[test]
+    fn pbkdf2_matches_the_published_vectors_and_passwords_check() {
+        // RFC 7914 §11 / widely published PBKDF2-HMAC-SHA256 vectors ("password", "salt").
+        assert_eq!(super::hex(&super::pbkdf2(b"password", b"salt", 1)), "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b");
+        assert_eq!(super::hex(&super::pbkdf2(b"password", b"salt", 2)), "ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43");
+        let h = super::hash_password("correct horse").unwrap();
+        assert!(super::check_password("correct horse", &h) && !super::check_password("correct hors", &h));
+        assert!(!super::check_password("x", "pbkdf2-sha256$0$aa$bb") && !super::check_password("x", "garbage"));
+    }
 }
 
 pub fn hash_bytes(b: &[u8]) -> String {

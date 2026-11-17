@@ -326,6 +326,46 @@ impl Client {
         Ok(json!({ "workspace_id": r["workspace_id"], "role": r["role"] }))
     }
 
+    /// Name + password sign-in (D058): this PC becomes another device on that account, every workspace included.
+    pub fn login(&self, url: &str, login: &str, password: &str, device_name: &str) -> R<Value> {
+        let url = check_url(url.trim().trim_end_matches('/'))?;
+        if self.config().is_some() {
+            return Err("This PC is already signed in to a hub. Leave it first.".into());
+        }
+        self.save_config(&json!({ "url": url, "workspaces": [], "links": {} }))?;
+        let r = match self.call("POST", "/v1/login", Some(&json!({ "login": login.trim(), "password": password, "device_name": device_name }))) {
+            Net::Reply(200, v) => v,
+            other => {
+                let _ = std::fs::remove_file(self.config_path());
+                return Err(match other {
+                    Net::Reply(401, _) => "Wrong sign-in name or password.".into(),
+                    Net::Reply(429, _) => "Too many wrong tries. Wait 15 minutes, or ask Paper for a sign-in link.".into(),
+                    Net::Reply(code, v) => format!("The hub refused ({code}: {})", v["error"].as_str().unwrap_or("error")),
+                    Net::Down(d) => format!("Can't reach the hub ({d}). Is Tailscale on?"),
+                });
+            }
+        };
+        let t = r["device"]["token"].as_str().ok_or("hub gave no device")?;
+        write_atomic(&self.dir.join("device.key"), &dpapi::protect(t.as_bytes())?)?;
+        let mut cfg = self.config().unwrap_or_default();
+        cfg["user_id"] = r["user_id"].clone();
+        self.save_config(&cfg)?;
+        self.refresh_me()?;
+        Ok(json!({ "user_id": r["user_id"] }))
+    }
+
+    /// Sets (or changes, with the current one) this account's sign-in name and password.
+    pub fn set_account(&self, login: &str, password: &str, current: &str) -> R<Value> {
+        match self.call("POST", "/v1/account", Some(&json!({ "login": login, "password": password, "current": current }))) {
+            Net::Reply(200, v) => Ok(v),
+            Net::Reply(409, _) => Err("Someone already uses that sign-in name.".into()),
+            Net::Reply(403, _) => Err("Your current password isn't right.".into()),
+            Net::Reply(429, _) => Err("Too many wrong tries. Wait 15 minutes.".into()),
+            Net::Reply(_, v) => Err(v["error"].as_str().unwrap_or("The hub refused.").to_string()),
+            Net::Down(d) => Err(format!("Can't reach the hub ({d}).")),
+        }
+    }
+
     /// The address to put in links for other devices: the Tailscale one, but only once the hub answers there
     /// (it picks the address up within a minute of Tailscale signing in); otherwise the address we use.
     fn share_url(&self, url: &str) -> String {
@@ -763,7 +803,7 @@ impl Client {
 
     /// Role and member administration (D036). Only these fixed calls; the hub checks every one.
     pub fn admin(&self, ws: &str, action: &str, body: &Value) -> R<Value> {
-        if action != "people" {
+        if action != "people" && action != "me" {
             self.ws_path(ws)?;
         }
         let user = || -> R<String> {
@@ -776,6 +816,7 @@ impl Client {
         let (method, path, send) = match action {
             "roles" => ("GET", format!("/v1/workspaces/{ws}/roles"), None),
             "people" => ("GET", "/v1/people".to_string(), None),
+            "me" => ("GET", "/v1/me".to_string(), None),
             "member_add" => {
                 let b = if body["title"].is_string() { json!({ "user_id": user()?, "title": body["title"] }) } else { json!({ "user_id": user()?, "role": body["role"] }) };
                 ("POST", format!("/v1/workspaces/{ws}/members"), Some(b))
@@ -1367,6 +1408,20 @@ pub fn hub_join(app: AppHandle, h: State<HubState>, link: String, name: String) 
     start(&app);
     h.wake();
     Ok(r)
+}
+
+#[tauri::command(async)]
+pub fn hub_login(app: AppHandle, h: State<HubState>, url: String, login: String, password: String) -> R<Value> {
+    let device = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "PC".into());
+    let r = h.client.login(&url, &login, &password, &device)?;
+    start(&app);
+    h.wake();
+    Ok(r)
+}
+
+#[tauri::command(async)]
+pub fn hub_set_account(h: State<HubState>, login: String, password: String, current: String) -> R<Value> {
+    h.client.set_account(&login, &password, &current)
 }
 
 #[tauri::command(async)]
@@ -2109,6 +2164,27 @@ mod tests {
         assert_eq!(c.workspaces(), std::slice::from_ref(&ws));
         assert!(b.signin_link(&a.config().unwrap()["user_id"].as_str().unwrap().to_string()).is_err(), "teammates can't make them");
         for d in [ad, bd, cd] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn a_password_signs_a_new_pc_into_the_same_account() {
+        let h = hub();
+        let (ws, link) = owner_invite(&h);
+        let (ad, bd) = (tmp("a"), tmp("b"));
+        let a = Client::new(&ad);
+        a.join(&link, "Rich", "PC").unwrap();
+        assert!(a.set_account("oneshot", "short", "").is_err());
+        a.set_account("OneShot", "pencil-pusher", "").unwrap();
+        let b = Client::new(&bd);
+        assert!(b.login(&h.url, "oneshot", "wrong-password", "Laptop").unwrap_err().contains("Wrong"));
+        assert!(b.config().is_none(), "a failed sign-in leaves nothing behind");
+        b.login(&h.url, "oneshot", "pencil-pusher", "Laptop").unwrap();
+        assert_eq!(b.config().unwrap()["user_id"], a.config().unwrap()["user_id"]);
+        assert_eq!(b.workspaces(), std::slice::from_ref(&ws));
+        assert!(b.login(&h.url, "oneshot", "pencil-pusher", "Laptop").is_err(), "already signed in");
+        for d in [ad, bd] {
             let _ = std::fs::remove_dir_all(d);
         }
     }

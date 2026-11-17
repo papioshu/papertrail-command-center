@@ -250,6 +250,9 @@ function Week() {
 }
 
 // The phone view is read-only, so Ghost (which can add and finish tasks) lives on the team page, signed in as you.
+// The team's hub (Paper's PC, behind Tailscale HTTPS). Editable in the form for anyone else's team.
+const TEAM_HUB = "https://paper.tail644a44.ts.net";
+
 /** First thing a teammate's PC shows (D057): not signed in → join right here; signed in to someone else's hub → open
  *  that person's Command Center (read-only, live from their PC). Nothing on the owner's own PC. */
 function TeamBar() {
@@ -257,6 +260,10 @@ function TeamBar() {
   const [link, setLink] = useState("");
   const [name, setName] = useState("");
   const [err, setErr] = useState("");
+  const [mode, setMode] = useState<"signin" | "link">("signin");
+  const [hubUrl, setHubUrl] = useState(TEAM_HUB);
+  const [login, setLogin] = useState("");
+  const [pw, setPw] = useState("");
   const [busy, setBusy] = useState(false);
   const { nav } = useNav();
   const st = s.data;
@@ -270,15 +277,30 @@ function TeamBar() {
   if (!st.joined) {
     const dev = link.includes("#dev-");
     const join = () => { setBusy(true); setErr(""); api.hubJoin(link.trim(), name.trim()).then(() => s.reload(), (e) => setErr(String(e))).finally(() => setBusy(false)); };
+    const signIn = () => { setBusy(true); setErr(""); api.hubLogin(hubUrl.trim(), login.trim(), pw).then(() => { setPw(""); s.reload(); }, (e) => setErr(String(e))).finally(() => setBusy(false)); };
     return (
       <div className="card" style={{ margin: "0 0 14px", padding: 14, display: "flex", flexDirection: "column", gap: 8 }}>
-        <b className="label" style={{ fontSize: 12 }}>Join your team</b>
+        <div className="row" style={{ gap: 8, alignItems: "center" }}>
+          <b className="label" style={{ fontSize: 12, flex: 1 }}>Sign in to your team</b>
+          <button className={`btn sm ${mode === "signin" ? "primary" : "ghost"}`} onClick={() => setMode("signin")}>Name + password</button>
+          <button className={`btn sm ${mode === "link" ? "primary" : "ghost"}`} onClick={() => setMode("link")}>I have a link</button>
+        </div>
+        {mode === "signin" ? (<>
+          <div className="small">Your sign-in name and password (set them once on any device you're already signed in on: TEAM › Your sign-in, or the team page). Tailscale must be on.</div>
+          <form className="row wrap" style={{ gap: 8 }} onSubmit={(e) => { e.preventDefault(); signIn(); }}>
+            <input className="input" style={{ flex: 1, minWidth: 160 }} placeholder="Sign-in name" aria-label="Sign-in name" autoComplete="username" value={login} onChange={(e) => setLogin(e.target.value)} />
+            <input className="input" style={{ flex: 1, minWidth: 160 }} type="password" placeholder="Password" aria-label="Password" autoComplete="current-password" value={pw} onChange={(e) => setPw(e.target.value)} />
+            <button className="btn primary" type="submit" disabled={busy || !login.trim() || !pw}>{busy ? "Signing in…" : "Sign in"}</button>
+          </form>
+          <details className="small dim"><summary>Team address</summary><input className="input" style={{ width: "100%", marginTop: 6 }} aria-label="Team address" value={hubUrl} onChange={(e) => setHubUrl(e.target.value)} /></details>
+        </>) : (<>
         <div className="small">Paste the link Paper sent you (an invite, or a sign-in link for your account). Tailscale must be on.</div>
         <div className="row wrap" style={{ gap: 8 }}>
           <input className="input" style={{ flex: 2, minWidth: 260 }} placeholder="Link from Paper" aria-label="Link from Paper" value={link} onChange={(e) => setLink(e.target.value)} />
           {!dev && <input className="input" style={{ flex: 1, minWidth: 160 }} placeholder="Your name, as your team will see it" aria-label="Your name" value={name} onChange={(e) => setName(e.target.value)} />}
           <button className="btn primary" disabled={busy || !link.trim() || (!dev && !name.trim())} onClick={join}>{busy ? "Joining…" : "Join"}</button>
         </div>
+        </>)}
         {err && <div className="small" style={{ color: "var(--signal)" }}>{err}</div>}
       </div>
     );
