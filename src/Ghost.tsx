@@ -9,9 +9,17 @@ import { useNav, type View } from "./ui";
 const squash = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 const PAGES: [RegExp, View][] = [[/calendar/, "calendar"], [/settings/, "settings"], [/team|workspace/, "team"], [/overview|home/, "overview"], [/agents?|sessions?/, "agents"]];
 
-function speak(t: string) {
-  try { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(t)); } catch { /* the text still shows */ }
+// Stop (button or Esc) bumps this so an answer still on its way is never spoken.
+let turn = 0;
+function speak(t: string, onEnd: () => void) {
+  try {
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(t);
+    u.onend = u.onerror = onEnd;
+    speechSynthesis.speak(u);
+  } catch { onEnd(); /* the text still shows */ }
 }
+function hush() { turn++; try { speechSynthesis.cancel(); } catch { /* nothing playing */ } }
 
 // Microphone → 16 kHz mono samples (the browser resamples) → WAV, base64 for the backend.
 type Rec = { ctx: AudioContext; stream: MediaStream; node: ScriptProcessorNode; chunks: Float32Array[] };
@@ -44,6 +52,8 @@ export default function GhostButton({ big = false }: { big?: boolean }) {
   const { nav } = useNav();
   const [state, setState] = useState<"idle" | "rec" | "think">("idle");
   const [card, setCard] = useState<{ heard: string; answer: string } | null>(null);
+  const [talking, setTalking] = useState(false);
+  const stop = useCallback(() => { hush(); setTalking(false); setState((s) => (s === "think" ? "idle" : s)); }, []);
   const rec = useRef<Rec | null>(null);
   const hide = useRef<number | undefined>(undefined);
   const show = (heard: string, answer: string) => { setCard({ heard, answer }); window.clearTimeout(hide.current); hide.current = window.setTimeout(() => setCard(null), 12000); };
@@ -90,6 +100,7 @@ export default function GhostButton({ big = false }: { big?: boolean }) {
     r.node.disconnect(); r.stream.getTracks().forEach((t) => t.stop()); r.ctx.close().catch(() => {});
     if (r.chunks.reduce((a, c) => a + c.length, 0) < 16000 * 0.4) { setState("idle"); show("Too short.", "Hold the button (or Ctrl+Space) while you speak."); return; }
     setState("think");
+    const mine = ++turn;
     try {
       const hub = await api.hubStatus().catch(() => null);
       const ps = ((await api.projects().catch(() => [])) as Row[]).slice(0, 30).map((p) => String(p.name).match(/\((.+)\)/)?.[1] ?? p.name);
@@ -98,18 +109,19 @@ export default function GhostButton({ big = false }: { big?: boolean }) {
       if (!text) { show("I didn't catch that.", ""); return; }
       show(`"${text}"`, "…");
       const a = await answer(text);
-      show(`"${text}"`, a); speak(a);
-    } catch (e) { show("Ghost", String(e)); } finally { setState("idle"); }
+      if (mine !== turn) return; // stopped while thinking
+      show(`"${text}"`, a); setTalking(true); speak(a, () => setTalking(false));
+    } catch (e) { if (mine === turn) show("Ghost", String(e)); } finally { setState("idle"); }
   }, [answer]);
 
   // Hold Ctrl+Space anywhere in the app (only the top-bar button listens, so one press records once).
   useEffect(() => {
     if (big) return;
     const down = (e: KeyboardEvent) => { if (e.ctrlKey && e.code === "Space" && !e.repeat) { e.preventDefault(); begin(); } };
-    const up = (e: KeyboardEvent) => { if (e.code === "Space" || e.key === "Control") end(); };
+    const up = (e: KeyboardEvent) => { if (e.code === "Space" || e.key === "Control") end(); if (e.key === "Escape") stop(); };
     window.addEventListener("keydown", down); window.addEventListener("keyup", up);
     return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
-  }, [begin, end, big]);
+  }, [begin, end, stop, big]);
 
   return (
     <>
@@ -117,7 +129,8 @@ export default function GhostButton({ big = false }: { big?: boolean }) {
         title="Hold to talk to Ghost (or hold Ctrl+Space)" aria-label="Hold to talk to Ghost">
         {state === "rec" ? "● Listening" : state === "think" ? "Ghost…" : "🎙 Ghost"}
       </button>
-      {card && <div className="ghost-card" onClick={() => setCard(null)}><div className="dim small">{card.heard}</div>{card.answer && <div>{card.answer}</div>}</div>}
+      {(talking || state === "think") && <button className={`btn ${big ? "" : "sm"}`} onClick={stop} title="Stop Ghost talking (Esc)" aria-label="Stop Ghost talking">🔇 Stop</button>}
+      {card && <div className="ghost-card" onClick={() => { setCard(null); stop(); }}><div className="dim small">{card.heard}</div>{card.answer && <div>{card.answer}</div>}</div>}
     </>
   );
 }

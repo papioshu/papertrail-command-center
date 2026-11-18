@@ -204,7 +204,22 @@ function boards() {
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let wake = null, armed = 0, ghostLog = [];
 const voiceOk = () => SR && window.isSecureContext;
-function speak(t) { try { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(t)); } catch { /* no voice: the text still shows */ } }
+// 🔇 Stop: cuts the voice, drops an answer still on its way (turn), and ends an accidental "Ask Ghost".
+let turn = 0, once = null;
+const stopShown = (on) => { const b = $("ghost-stop"); if (b) b.hidden = !on; };
+function speak(t) {
+  try {
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(t);
+    u.onend = u.onerror = () => stopShown(false);
+    stopShown(true); speechSynthesis.speak(u);
+  } catch { stopShown(false); /* no voice: the text still shows */ }
+}
+function hush() {
+  turn++; stopShown(false);
+  try { speechSynthesis.cancel(); } catch { /* nothing playing */ }
+  if (once) { const r = once; once = null; r.abort(); }
+}
 function beep() {
   try { const a = new (window.AudioContext || window.webkitAudioContext)(), o = a.createOscillator(), g = a.createGain(); o.frequency.value = 880; g.gain.value = 0.08; o.connect(g); g.connect(a.destination); o.start(); o.stop(a.currentTime + 0.12); } catch { /* silent */ }
 }
@@ -215,20 +230,25 @@ function ghostShow(heard, answer) {
 }
 async function ask(text) {
   ghostShow(`"${text}"`, "…");
+  const mine = ++turn; stopShown(true);
   try {
     const r = await api("POST", "/v1/voice", { text, workspace: ws });
-    ghostLog[0].answer = r.say; ghostShow(ghostLog.shift().heard, r.say); speak(r.say);
+    // Stopped while thinking: shown, not spoken (the hub may already have acted on it; the reload shows that).
+    ghostShow(ghostLog.shift().heard, r.say);
+    if (mine === turn) speak(r.say);
     load().catch(() => {});
-  } catch (e) { ghostLog[0].answer = e.message; ghostShow(ghostLog.shift().heard, e.message); }
+  } catch (e) { ghostShow(ghostLog.shift().heard, e.message); if (mine === turn) stopShown(false); }
 }
 function listenOnce() {
   if (!voiceOk()) return say(SR ? "Voice needs the secure link (https://). Ask Paper for a new device link." : "This browser can't listen. Use Safari or Chrome.");
   const rec = new SR();
   rec.lang = "en-US"; rec.interimResults = false; rec.maxAlternatives = 1;
-  rec.onresult = (e) => ask(e.results[0][0].transcript);
+  let heard = false;
+  rec.onresult = (e) => { if (once === rec) { heard = true; ask(e.results[0][0].transcript); } };
   rec.onerror = (e) => { if (e.error !== "no-speech" && e.error !== "aborted") say("Voice: " + e.error); };
   if (wake) wake.abort();
-  rec.onend = () => { if (localStorage.getItem("ptcc-ghost-wake") === "1") startWake(); };
+  rec.onend = () => { if (once === rec) { once = null; if (!heard) stopShown(false); } if (localStorage.getItem("ptcc-ghost-wake") === "1") startWake(); };
+  once = rec; stopShown(true);
   beep(); ghostShow("Listening…", ""); rec.start();
 }
 // "Hey Ghost": listens while this page is open and on screen (phones never let a web page listen in the background).
@@ -275,6 +295,7 @@ function ghostBar() {
   const toggle = () => { localStorage.setItem("ptcc-ghost-wake", on ? "0" : "1"); if (on) stopWake(); else startWake(); render(); };
   return [el("div", { className: "row", style: "margin-top:8px" },
     el("button", { className: "primary", on: { click: listenOnce } }, "🎙 Ask Ghost"),
+    el("button", { id: "ghost-stop", hidden: !(once || window.speechSynthesis?.speaking || window.speechSynthesis?.pending), on: { click: hush }, title: "Stop Ghost talking" }, "🔇 Stop"),
     el("button", { className: on ? "on" : "", style: on ? "border-color:var(--lime);color:var(--lime)" : "", on: { click: toggle }, title: "Listens for \"Hey Ghost\" while this page is open" }, on ? "Hey Ghost: on" : "Hey Ghost: off"),
     /iPhone|iPad|Macintosh/.test(navigator.userAgent) ? el("button", { className: "small", on: { click: siriSetup() } }, "Siri") : null),
     el("div", { id: "ghost-out" }, ghostLog.map((x) => el("div", { className: "card" }, el("div", { className: "dim" }, x.heard), x.answer ? el("div", {}, x.answer) : null)))];
