@@ -107,8 +107,8 @@ export default function Calendar() {
     if (!st?.connected) return;
     const ids = ["", ...new Set([...(extraMains ? extraMains.split(" ") : []), ...Object.values(JSON.parse(teamKey) as Record<string, string>)])];
     Promise.all(ids.map((c) => api.gcalEvents(week.toISOString(), plus(week, 7).toISOString(), c)))
-      .then((x) => { setEvents(x.flat()); setErr(""); }, (e) => setErr(String(e)));
-  }, [st?.connected, week, teamKey, extraMains]);
+      .then((x) => { setEvents(x.flat()); setErr(""); }, (e) => { setErr(String(e)); status(); }); // status: an expired sign-in brings back Connect
+  }, [st?.connected, week, teamKey, extraMains, status]);
   const sync = useCallback(() => syncTeamCalendars().then((r) => { if (r && r.added + r.updated + r.removed) setMsg(`Team calendars: ${r.added} added, ${r.updated} updated, ${r.removed} removed.`); load(); }, (e) => setErr(String(e))), [load]);
   useEffect(() => { sync(); const t = setInterval(sync, 5 * 60 * 1000); return () => clearInterval(t); }, [sync]);
   const accountsKey = JSON.stringify(st?.accounts ?? []);
@@ -199,7 +199,7 @@ export default function Calendar() {
           {!events.length && !dues.length && <Empty>Nothing this week.</Empty>}
         </>
       )}
-      {edit && <Editor ev={edit} cals={cals} onClose={() => setEdit(null)} onSaved={() => { setEdit(null); load(); }} />}
+      {edit && <Editor ev={edit} cals={cals} onSaved={() => { setEdit(null); load(); }} onClose={() => { setEdit(null); status(); }} />}
     </div>
   );
 }

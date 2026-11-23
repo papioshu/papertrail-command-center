@@ -109,12 +109,33 @@ fn token(st: &State<AppState>, cal: &str) -> R<String> {
     if refresh.is_empty() {
         return Err("Connect Google Calendar first (CALENDAR › Connect).".into());
     }
-    let v: Value = agent()
+    let r = agent()
         .post(TOKEN)
-        .send_form(&[("client_id", &s(&c, "client_id")), ("client_secret", &s(&c, "client_secret")), ("refresh_token", &refresh), ("grant_type", "refresh_token")])
-        .map_err(gerr)?
-        .into_json()
-        .map_err(|e| e.to_string())?;
+        .send_form(&[("client_id", &s(&c, "client_id")), ("client_secret", &s(&c, "client_secret")), ("refresh_token", &refresh), ("grant_type", "refresh_token")]);
+    let r = match r {
+        Err(ureq::Error::Status(400, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            if !body.contains("invalid_grant") {
+                return Err(format!("Google refused the sign-in refresh (400): {}", serde_json::from_str::<Value>(&body).ok().and_then(|v| v["error_description"].as_str().map(String::from)).unwrap_or_default()));
+            }
+            Err(())
+        }
+        other => Ok(other),
+    };
+    let Ok(r) = r else {
+        // invalid_grant: Google ended this sign-in (expired or revoked). Drop it so CALENDAR offers Connect again.
+        let mut c = cfg(st)?; // fresh copy: other calendars may be failing at the same moment
+        if acct.is_empty() {
+            c.as_object_mut().map(|m| m.remove("refresh_token"));
+        } else if let Some(ex) = c["extra"].as_array_mut() {
+            ex.retain(|x| x["email"] != acct.as_str());
+        }
+        remember(&acct, None);
+        save_cfg(st, &c)?;
+        let who = if acct.is_empty() { "your main Google account".to_string() } else { acct.clone() };
+        return Err(format!("Google signed out {who} (the sign-in expired). Connect it again: CALENDAR › Connect with Google, or Settings › Google accounts. If this happens every 7 days, publish the app in Google Cloud › OAuth consent screen."));
+    };
+    let v: Value = r.map_err(gerr)?.into_json().map_err(|e| e.to_string())?;
     let t = s(&v, "access_token");
     remember(&acct, Some((t.clone(), now() + v["expires_in"].as_i64().unwrap_or(3600))));
     Ok(t)
