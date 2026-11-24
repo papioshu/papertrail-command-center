@@ -309,7 +309,62 @@ function TaskCard({ t, ws, me, role, members, color, onErr, reload }: { t: Row; 
   );
 }
 
-function Tasks({ ws, b, project, me, onErr, reload }: { ws: string; b: Row; project: string; me: string; onErr: (e: string) => void; reload: () => void }) {
+/** A TASKS.md line → shared task title: drops the author/date lead-in ("🟦 CLAUDE 2026-11-14 —", "Owner —") and markdown bold. */
+export const taskTitle = (text: string) =>
+  text.replace(/\*\*/g, "").replace(/^(?:(?:🟦|🟧)\s*(?:CLAUDE|CODEX)|\[[^\]]+\]|Owner)\s*(?:\d{4}-\d{2}-\d{2}\s*)?[—–-]\s*/u, "").trim();
+
+/** Import open TASKS.md items of the linked local project as shared tasks: preview, pick, skip ones already on the board. */
+function ImportTasks({ ws, b, project, local, onErr, reload }: { ws: string; b: Row; project: string; local: string; onErr: (e: string) => void; reload: () => void }) {
+  const [rows, setRows] = useState<(Row & { pick: boolean })[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const have = new Set((b.records ?? []).filter((r: Row) => r.kind === "task" && r.project_id === project).map((r: Row) => String(r.fields?.title ?? "").toLowerCase()));
+  const load = () => api.project(local).then((p) => {
+    const open = ((p.tasks ?? []) as Row[]).filter((t) => t.status !== "done").map((t): Row => ({ ...t, title: taskTitle(String(t.text)) }));
+    setRows(open.filter((t) => t.title && !have.has(t.title.slice(0, 200).toLowerCase())).map((t) => ({ ...t, pick: t.status !== "deferred" })));
+  }, (e) => onErr(String(e)));
+  const run = async () => {
+    setBusy(true);
+    try {
+      for (const t of rows!.filter((r) => r.pick)) {
+        const fields: Row = { title: t.title.slice(0, 200), status: t.status === "blocked" ? "blocked" : "todo", notes: `From TASKS.md › ${t.section || "tasks"}${t.title.length > 200 ? `\n\n${t.title}` : ""}` };
+        await api.hubEdit(ws, "create", "task", project, fields);
+      }
+      setRows(null);
+      reload();
+    } catch (e) { onErr(String(e)); } finally { setBusy(false); }
+  };
+  const n = rows?.filter((r) => r.pick).length ?? 0;
+  return (
+    <>
+      <button className="btn sm" onClick={load} title="Add this project's open TASKS.md items as shared tasks (you pick which)">Import from TASKS.md</button>
+      {rows && (
+        <Modal title="Import tasks from TASKS.md" onClose={() => setRows(null)}
+          foot={<><button className="btn ghost" onClick={() => setRows(null)}>Cancel</button>
+            <button className="btn primary" disabled={!n || busy} onClick={run}>{busy ? "Adding…" : `Add ${n} task${n === 1 ? "" : "s"}`}</button></>}>
+          {!rows.length ? <Empty>Nothing new: every open item is already on the board (or TASKS.md has none).</Empty> : (
+            <div className="col" style={{ gap: 6 }}>
+              <div className="dim small">Everyone in this workspace will see these. Only the text is shared; LATER/BACKLOG items start unticked. Already-imported titles are skipped.</div>
+              <div className="row small" style={{ gap: 10 }}>
+                <a href="#" onClick={(e) => { e.preventDefault(); setRows(rows.map((r) => ({ ...r, pick: true }))); }}>All</a>
+                <a href="#" onClick={(e) => { e.preventDefault(); setRows(rows.map((r) => ({ ...r, pick: false }))); }}>None</a>
+              </div>
+              <div className="col" style={{ gap: 4, maxHeight: 420, overflow: "auto" }}>
+                {rows.map((r, i) => (
+                  <label key={r.id} className="row small" style={{ gap: 8, alignItems: "flex-start" }}>
+                    <input type="checkbox" checked={r.pick} onChange={(e) => setRows(rows.map((x, j) => (j === i ? { ...x, pick: e.target.checked } : x)))} />
+                    <span><span className="mono dim">[{r.section || "—"}]</span> {r.title.length > 200 ? `${r.title.slice(0, 200)}…` : r.title}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+        </Modal>
+      )}
+    </>
+  );
+}
+
+function Tasks({ ws, b, project, local, me, onErr, reload }: { ws: string; b: Row; project: string; local?: string; me: string; onErr: (e: string) => void; reload: () => void }) {
   const role: string = b.role ?? "viewer";
   const members: Row[] = b.members ?? [];
   const [draft, setDraft] = useState({ title: "", assignee: "", due: "", project: "" });
@@ -341,7 +396,10 @@ function Tasks({ ws, b, project, me, onErr, reload }: { ws: string; b: Row; proj
           <button className="btn primary" disabled={!draft.title.trim()} onClick={add}>Add</button>
         </div>
       )}
-      <label className="row small dim" style={{ gap: 6 }}><input type="checkbox" checked={mineOnly} onChange={(e) => setMineOnly(e.target.checked)} /> Only tasks I've claimed</label>
+      <div className="row" style={{ gap: 10 }}>
+        <label className="row small dim" style={{ gap: 6 }}><input type="checkbox" checked={mineOnly} onChange={(e) => setMineOnly(e.target.checked)} /> Only tasks I've claimed</label>
+        {project && local && can(role, "editor") && <span style={{ marginLeft: "auto" }}><ImportTasks ws={ws} b={b} project={project} local={local} onErr={onErr} reload={reload} /></span>}
+      </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 14 }}>
         {COLS.map((c) => {
           const list = tasks.filter((t) => (t.fields?.status ?? "todo") === c.key);
@@ -822,7 +880,7 @@ function WorkspacePage({ w, me, onBack, onErr }: { w: Row; me: string; onBack: (
             {(b.projects ?? []).filter((p: Row) => !project || p.id === project).map((p: Row) => <ProjectTile key={p.id} p={p} b={b} local={links[p.id]} glow={br.glow} onOpen={() => open(p.id)} />)}
           </div>
         ) : <Empty>{can(b.role, "admin") ? "No shared projects yet. Open ADMIN to create one or share a project from this PC." : "No shared projects you can see yet."}</Empty>)}
-        {tab === "tasks" && <Tasks ws={w.id} b={b} project={project} me={me} onErr={onErr} reload={board.reload} />}
+        {tab === "tasks" && <Tasks ws={w.id} b={b} project={project} local={local} me={me} onErr={onErr} reload={board.reload} />}
         {tab === "boards" && <Boards ws={w.id} b={b} project={project} me={me} onErr={onErr} reload={board.reload} />}
         {tab === "media" && <Media ws={w.id} b={b} project={project} onErr={onErr} reload={board.reload} />}
         {(tab === "map" || tab === "files") && <Structure key={project + tab} ws={w.id} b={b} project={project} glow={br.glow} mode={tab} local={local} me={me} onErr={onErr} reload={board.reload} />}
