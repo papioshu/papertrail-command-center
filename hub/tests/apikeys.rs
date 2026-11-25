@@ -89,7 +89,18 @@ fn revoked_keys_and_removed_people_lose_access() {
     assert_eq!(with_key(&fx, &key, "GET", "/v1/me", json!({})).code, 401);
     let key2 = make(&fx, "owner", "contributor", "read", &[&ws]).body["token"].as_str().unwrap().to_string();
     assert_eq!(fx.call("DELETE", &format!("/v1/workspaces/{ws}/members/{}", fx.user("contributor")), Some("owner"), json!({})).code, 200);
-    assert_ne!(with_key(&fx, &key2, "GET", &format!("/v1/workspaces/{ws}"), json!({})).code, 200, "removal ends the key's reach");
+    assert_eq!(with_key(&fx, &key2, "GET", "/v1/me", json!({})).code, 401, "removal revokes the key");
+    // Added back later: the old key stays dead.
+    let inv = fx.call("POST", &format!("/v1/workspaces/{ws}/invitations"), Some("owner"), json!({ "role": "contributor" }));
+    assert_eq!(fx.call("POST", "/v1/redeem", Some("contributor"), json!({ "token": inv.body["token"] })).code, 200);
+    assert_eq!(with_key(&fx, &key2, "GET", "/v1/me", json!({})).code, 401);
+    // A key can't use invitations to grow the person's account.
+    let key3 = make(&fx, "owner", "viewer", "tasks", &[&ws]).body["token"].as_str().unwrap().to_string();
+    let inv = fx.call("POST", &format!("/v1/workspaces/{}/invitations", fx.other_ws), Some("outsider"), json!({ "role": "viewer" }));
+    assert_eq!(with_key(&fx, &key3, "POST", "/v1/redeem", json!({ "token": inv.body["token"] })).code, 403);
+    // Deleting a workspace ends its keys.
+    assert_eq!(fx.call("DELETE", &format!("/v1/workspaces/{ws}"), Some("owner"), json!({})).code, 200);
+    assert_eq!(with_key(&fx, &key3, "GET", "/v1/me", json!({})).code, 401);
 }
 
 #[test]

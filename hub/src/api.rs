@@ -106,6 +106,15 @@ pub(crate) fn log(c: &Connection, ws: Option<&str>, who: &Caller, action: &str, 
     audit(c, ws, Some((&who.user, &who.device)), action, target, detail).map_err(internal)
 }
 
+/// Revokes the API keys that reach `ws` (one person's, or everyone's), so being added back later never revives one.
+fn revoke_keys(c: &Connection, ws: &str, user: Option<&str>) -> Result<usize, Reply> {
+    db(c.execute(
+        "UPDATE devices SET revoked = 1 WHERE revoked = 0 AND api_access IS NOT NULL AND (?2 IS NULL OR user_id = ?2)
+           AND EXISTS(SELECT 1 FROM json_each(api_workspaces) WHERE value = ?1)",
+        params![ws, user],
+    ))
+}
+
 fn ct_eq(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
@@ -335,6 +344,9 @@ impl Hub {
             ("POST", ["login"]) => return self.login(&c, &b).unwrap_or_else(|r| r),
             ("POST", ["redeem"]) => {
                 let who = authenticate(&c, auth);
+                if who.as_ref().is_some_and(|w| w.key.is_some()) {
+                    return fail(403, "api_key_not_allowed");
+                }
                 return self.redeem(&mut c, who, &b).unwrap_or_else(|r| r);
             }
             _ => {}
@@ -712,6 +724,7 @@ impl Hub {
         let m = membership(c, ws, &who.user);
         self.check(c, who, m.as_ref(), Perm::WorkspaceDelete, Target::Workspace(ws), "workspace.delete")?;
         db(c.execute("UPDATE workspaces SET deleted = 1 WHERE id = ?1", [ws]))?;
+        revoke_keys(c, ws, None)?;
         db(c.execute("UPDATE invitations SET revoked = 1 WHERE workspace_id = ?1", [ws]))?;
         log(c, Some(ws), who, "workspace.deleted", Some(ws), json!({}))?;
         Ok(ok(json!({ "deleted": ws })))
@@ -829,6 +842,7 @@ impl Hub {
         // Taking someone out of a workspace is an access decision: owner only (D037).
         self.check(c, who, m.as_ref(), Perm::MembersInvite, Target::Member { workspace: ws, role: current, new_role: None }, "members.access")?;
         let n = db(c.execute("UPDATE memberships SET revoked = 1 WHERE workspace_id = ?1 AND user_id = ?2 AND revoked = 0", params![ws, user]))?;
+        revoke_keys(c, ws, Some(user))?;
         if n == 0 {
             return Err(not_found());
         }
