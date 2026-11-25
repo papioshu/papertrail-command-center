@@ -20,7 +20,14 @@ pub fn private_bind(ip: IpAddr) -> bool {
     }
 }
 
+/// Paths a dashboard in a browser may call cross-origin (D060): what API keys can reach. Login, invites and device
+/// links stay same-origin. Bearer tokens only (no cookies), so `*` lends a page no one's sign-in.
+fn cors_path(url: &str) -> bool {
+    url.starts_with("/v1/me") || url.starts_with("/v1/workspaces/")
+}
+
 fn respond(req: tiny_http::Request, r: api::Reply) {
+    let cors = cors_path(req.url());
     // Downloads are never rendered: a fixed binary type, attachment, nosniff.
     let (data, kind, disp) = match r.raw {
         Some(raw) => (raw, "application/octet-stream", "attachment"),
@@ -28,6 +35,26 @@ fn respond(req: tiny_http::Request, r: api::Reply) {
     };
     let mut resp = tiny_http::Response::from_data(data).with_status_code(r.code);
     for (k, v) in [("Content-Type", kind), ("Content-Disposition", disp), ("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff")] {
+        if let Ok(h) = tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()) {
+            resp.add_header(h);
+        }
+    }
+    if cors {
+        if let Ok(h) = tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]) {
+            resp.add_header(h);
+        }
+    }
+    let _ = req.respond(resp);
+}
+
+fn preflight(req: tiny_http::Request) {
+    let mut resp = tiny_http::Response::empty(204);
+    for (k, v) in [
+        ("Access-Control-Allow-Origin", "*"),
+        ("Access-Control-Allow-Methods", "GET, POST"),
+        ("Access-Control-Allow-Headers", "Authorization, Content-Type"),
+        ("Access-Control-Max-Age", "600"),
+    ] {
         if let Ok(h) = tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()) {
             resp.add_header(h);
         }
@@ -93,6 +120,9 @@ fn serve_board(req: tiny_http::Request) -> Result<(), tiny_http::Request> {
 }
 
 fn serve_one(hub: &api::Hub, mut req: tiny_http::Request) {
+    if *req.method() == tiny_http::Method::Options {
+        return if cors_path(req.url()) { preflight(req) } else { respond(req, api::fail(404, "not_found")) };
+    }
     if *req.method() == tiny_http::Method::Get && req.url().starts_with("/board") {
         match serve_board(req) {
             Ok(()) => return,

@@ -412,6 +412,36 @@ impl Client {
         Ok(json!({ "link": link, "qr_svg": crate::phone::qr_svg(&link)?, "expires_at": v["expires_at"] }))
     }
 
+    /// API keys for a person's own dashboard (D060): list, create (secret shown once, with the hub address to call) or
+    /// revoke. The hub decides who may: the person, or the owner of the workspaces the key reaches.
+    pub fn api_keys(&self, user: &str, action: &str, body: &Value) -> R<Value> {
+        let safe = |x: &str| !x.is_empty() && x.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+        if !safe(user) {
+            return Err("bad member id".into());
+        }
+        let base = format!("/v1/people/{user}/api-keys");
+        let r = match action {
+            "list" => self.call("GET", &base, None),
+            "create" => self.call("POST", &base, Some(body)),
+            "revoke" => {
+                let id = body["id"].as_str().filter(|i| safe(i)).ok_or("bad key id")?;
+                self.call("DELETE", &format!("{base}/{id}"), None)
+            }
+            _ => return Err("unknown action".into()),
+        };
+        let mut v = match r {
+            Net::Reply(200, v) => v,
+            Net::Reply(403, _) => return Err("Only that person, or the owner of the workspaces the key reaches, can manage their API keys.".into()),
+            Net::Reply(code, v) => return Err(format!("The hub refused ({code}: {})", v["error"].as_str().unwrap_or("error"))),
+            Net::Down(d) => return Err(format!("Can't reach the hub ({d}).")),
+        };
+        if action == "create" {
+            let url = self.config().and_then(|c| c["url"].as_str().map(String::from)).unwrap_or_default();
+            v["hub_url"] = json!(self.share_url(&url));
+        }
+        Ok(v)
+    }
+
     /// A one-time link (and QR) that signs another of this person's devices in (D041).
     pub fn device_link(&self) -> R<Value> {
         let v = self.need("POST", "/v1/devices/link", None)?;
@@ -1437,6 +1467,11 @@ pub fn hub_owner_view(h: State<HubState>) -> R<String> {
 #[tauri::command(async)]
 pub fn hub_signin_link(h: State<HubState>, user_id: String) -> R<Value> {
     h.client.signin_link(&user_id)
+}
+
+#[tauri::command(async)]
+pub fn hub_api_keys(h: State<HubState>, user_id: String, action: String, body: Option<Value>) -> R<Value> {
+    h.client.api_keys(&user_id, &action, &body.unwrap_or_else(|| json!({})))
 }
 
 #[tauri::command(async)]

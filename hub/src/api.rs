@@ -51,6 +51,25 @@ pub(crate) type Res = Result<Reply, Reply>;
 pub(crate) struct Caller {
     pub(crate) user: String,
     pub(crate) device: String,
+    /// Set when the bearer is an API key (D060): what it may do and where.
+    pub(crate) key: Option<ApiKey>,
+}
+
+pub(crate) struct ApiKey {
+    pub(crate) access: String,
+    pub(crate) workspaces: Vec<String>,
+}
+
+/// An API key's route allowlist (D060), checked before the person's own role. Read keys: workspace, projects,
+/// members, change feed, media downloads. Tasks keys also write tasks and milestones (the op checks the record's kind).
+fn key_allows(k: &ApiKey, method: &str, seg: &[&str], b: &Value) -> bool {
+    let here = |w: &str| k.workspaces.iter().any(|x| x == w);
+    match (method, seg) {
+        ("GET", ["me"]) => true,
+        ("GET", ["workspaces", w]) | ("GET", ["workspaces", w, "projects"]) | ("GET", ["workspaces", w, "projects", _]) | ("GET", ["workspaces", w, "members"]) | ("GET", ["workspaces", w, "changes"]) | ("GET", ["workspaces", w, "media", _]) => here(w),
+        ("POST", ["workspaces", w, "ops"]) => k.access == "tasks" && here(w) && matches!(b["kind"].as_str(), Some("task" | "milestone")),
+        _ => false,
+    }
 }
 
 impl Hub {
@@ -94,18 +113,19 @@ fn ct_eq(a: &str, b: &str) -> bool {
 /// Bearer `<device id>.<secret>`; revoked devices and revoked users get nothing.
 fn authenticate(c: &Connection, auth: Option<&str>) -> Option<Caller> {
     let (id, secret) = auth?.strip_prefix("Bearer ")?.trim().split_once('.')?;
-    let (user, stored): (String, String) = c
+    let (user, stored, access, wss): (String, String, Option<String>, Option<String>) = c
         .query_row(
-            "SELECT d.user_id, d.secret_hash FROM devices d JOIN users u ON u.id = d.user_id WHERE d.id = ?1 AND d.revoked = 0 AND u.revoked = 0",
+            "SELECT d.user_id, d.secret_hash, d.api_access, d.api_workspaces FROM devices d JOIN users u ON u.id = d.user_id WHERE d.id = ?1 AND d.revoked = 0 AND u.revoked = 0",
             [id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .ok()?;
     if !ct_eq(&hash(secret), &stored) {
         return None;
     }
     let _ = c.execute("UPDATE devices SET last_seen = ?1 WHERE id = ?2", params![now(), id]);
-    Some(Caller { user, device: id.to_string() })
+    let key = access.map(|access| ApiKey { access, workspaces: serde_json::from_str(wss.as_deref().unwrap_or("[]")).unwrap_or_default() });
+    Some(Caller { user, device: id.to_string(), key })
 }
 
 fn json_set<T, F: Fn(&str) -> Option<T>>(s: &str, parse: F) -> BTreeSet<T>
@@ -289,6 +309,9 @@ impl Hub {
             let seg: Vec<&str> = path.trim_matches('/').split('/').collect();
             if let ["v1", "workspaces", ws, "projects", p, "blobs", sha] = seg[..] {
                 let Some(who) = authenticate(&c, auth) else { return fail(401, "unauthorized") };
+                if who.key.is_some() {
+                    return fail(403, "api_key_not_allowed");
+                }
                 return self.put_blob(&c, &who, ws, p, sha, body).unwrap_or_else(|r| r);
             }
         }
@@ -317,7 +340,16 @@ impl Hub {
             _ => {}
         }
         let Some(who) = authenticate(&c, auth) else { return fail(401, "unauthorized") };
+        if let Some(k) = &who.key {
+            if !key_allows(k, method, seg, &b) {
+                let _ = log(&c, None, &who, "apikey.refused", None, json!({ "method": method, "path": path }));
+                return fail(403, "api_key_not_allowed");
+            }
+        }
         let r = match (method, seg) {
+            ("GET", ["people", u, "api-keys"]) => self.api_keys(&c, &who, u),
+            ("POST", ["people", u, "api-keys"]) => self.add_api_key(&c, &who, u, &b),
+            ("DELETE", ["people", u, "api-keys", id]) => self.revoke_api_key(&c, &who, u, id),
             ("GET", ["me"]) => self.me(&c, &who),
             ("POST", ["account"]) => self.set_account(&c, &who, &b),
             ("GET", ["app", "latest"]) => self.app_latest(),
@@ -431,7 +463,8 @@ impl Hub {
         let ws: Vec<Value> = db(st
             .query_map([&who.user], |r| Ok(json!({ "id": r.get::<_, String>(0)?, "name": r.get::<_, String>(1)?, "role": r.get::<_, String>(2)?, "scoped": r.get::<_, bool>(3)?, "title": r.get::<_, Option<String>>(4)? })))
             .and_then(Iterator::collect))?;
-        Ok(ok(json!({ "user_id": who.user, "name": name, "login": login, "device_id": who.device, "workspaces": ws })))
+        let ws: Vec<Value> = ws.into_iter().filter(|w| who.key.as_ref().is_none_or(|k| k.workspaces.iter().any(|x| w["id"] == x.as_str()))).collect();
+        Ok(ok(json!({ "user_id": who.user, "name": name, "login": login, "device_id": who.device, "workspaces": ws, "api_key": who.key.as_ref().map(|k| &k.access) })))
     }
 
     /// 5 wrong tries per name (or account) in 15 minutes, 50 across the hub, then 429 until the window passes.
@@ -466,7 +499,7 @@ impl Hub {
         self.logins.lock().unwrap_or_else(|p| p.into_inner()).remove(&key);
         let dev_name: String = b["device_name"].as_str().map(str::trim).filter(|s| !s.is_empty()).unwrap_or("device").chars().take(MAX_NAME).collect();
         let (id, token) = new_device(c, &user, &dev_name).map_err(internal)?;
-        log(c, None, &Caller { user: user.clone(), device: id.clone() }, "device.login", Some(&id), json!({}))?;
+        log(c, None, &Caller { user: user.clone(), device: id.clone(), key: None }, "device.login", Some(&id), json!({}))?;
         Ok(ok(json!({ "user_id": user, "device": { "id": id, "token": token } })))
     }
 
@@ -502,7 +535,7 @@ impl Hub {
     }
 
     fn devices(&self, c: &Connection, who: &Caller) -> Res {
-        let mut st = db(c.prepare("SELECT id, name, created_at, last_seen, revoked FROM devices WHERE user_id = ?1 ORDER BY created_at"))?;
+        let mut st = db(c.prepare("SELECT id, name, created_at, last_seen, revoked FROM devices WHERE user_id = ?1 AND api_access IS NULL ORDER BY created_at"))?;
         let list: Vec<Value> = db(st
             .query_map([&who.user], |r| {
                 let id: String = r.get(0)?;
@@ -541,6 +574,70 @@ impl Hub {
         ))?;
         log(c, None, who, "device.signin_link_issued", Some(&id), json!({ "for": user }))?;
         Ok(ok(json!({ "token": token, "expires_at": expires })))
+    }
+
+    /// Workspaces where `who` may manage `user`'s API keys (D060): the user's own (any role), or ones `who` owns.
+    fn key_spaces(&self, c: &Connection, who: &Caller, user: &str) -> Result<Vec<String>, Reply> {
+        let mut st = db(c.prepare(
+            "SELECT m.workspace_id FROM memberships m JOIN workspaces w ON w.id = m.workspace_id AND w.deleted = 0
+             WHERE m.user_id = ?2 AND m.revoked = 0
+               AND (?1 = ?2 OR EXISTS(SELECT 1 FROM memberships o WHERE o.workspace_id = m.workspace_id AND o.user_id = ?1 AND o.role = 'owner' AND o.revoked = 0))",
+        ))?;
+        db(st.query_map(params![who.user, user], |r| r.get(0)).and_then(Iterator::collect))
+    }
+
+    fn api_keys(&self, c: &Connection, who: &Caller, user: &str) -> Res {
+        let mine = self.key_spaces(c, who, user)?;
+        if mine.is_empty() {
+            return Err(fail(403, "forbidden"));
+        }
+        let mut st = db(c.prepare("SELECT id, name, api_access, api_workspaces, created_at, last_seen FROM devices WHERE user_id = ?1 AND api_access IS NOT NULL AND revoked = 0 ORDER BY created_at"))?;
+        let list: Vec<Value> = db(st
+            .query_map([user], |r| {
+                Ok(json!({ "id": r.get::<_, String>(0)?, "name": r.get::<_, String>(1)?, "access": r.get::<_, String>(2)?,
+                           "workspaces": serde_json::from_str::<Value>(&r.get::<_, String>(3)?).unwrap_or_default(),
+                           "created_at": r.get::<_, String>(4)?, "last_used": r.get::<_, Option<String>>(5)? }))
+            })
+            .and_then(Iterator::collect))?;
+        Ok(ok(json!({ "keys": list, "workspaces": mine })))
+    }
+
+    /// Makes a key for `user`, limited to `access` and to `workspaces` (each one the caller manages for them). The secret
+    /// is returned once, as `<id>.<secret>`, and only its hash is kept.
+    fn add_api_key(&self, c: &Connection, who: &Caller, user: &str, b: &Value) -> Res {
+        let name = name_arg(b, "name")?;
+        let access = b["access"].as_str().filter(|a| *a == "read" || *a == "tasks").ok_or_else(|| bad("access must be read or tasks"))?;
+        let want: Vec<String> = b["workspaces"].as_array().into_iter().flatten().filter_map(|w| w.as_str().map(String::from)).collect::<BTreeSet<_>>().into_iter().collect();
+        let mine = self.key_spaces(c, who, user)?;
+        if want.is_empty() || want.iter().any(|w| !mine.contains(w)) {
+            return Err(fail(403, "forbidden"));
+        }
+        let id = new_id("k").map_err(internal)?;
+        let secret = random_hex(32).map_err(internal)?;
+        db(c.execute(
+            "INSERT INTO devices(id, user_id, name, secret_hash, created_at, api_access, api_workspaces) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            params![id, user, name, hash(&secret), now(), access, json!(want).to_string()],
+        ))?;
+        for w in &want {
+            log(c, Some(w), who, "apikey.created", Some(&id), json!({ "for": user, "name": name, "access": access }))?;
+        }
+        Ok(ok(json!({ "id": id, "token": format!("{id}.{secret}"), "access": access, "workspaces": want })))
+    }
+
+    fn revoke_api_key(&self, c: &Connection, who: &Caller, user: &str, id: &str) -> Res {
+        let wss: Option<String> = db(c.query_row("SELECT api_workspaces FROM devices WHERE id = ?1 AND user_id = ?2 AND api_access IS NOT NULL AND revoked = 0", params![id, user], |r| r.get(0)).optional())?;
+        let Some(wss) = wss else { return Err(not_found()) };
+        let mine = self.key_spaces(c, who, user)?;
+        let wss: Vec<String> = serde_json::from_str(&wss).unwrap_or_default();
+        // The person themself, or an owner of every workspace the key reaches.
+        if who.user != user && !wss.iter().all(|w| mine.contains(w)) {
+            return Err(fail(403, "forbidden"));
+        }
+        db(c.execute("UPDATE devices SET revoked = 1 WHERE id = ?1", [id]))?;
+        for w in &wss {
+            log(c, Some(w), who, "apikey.revoked", Some(id), json!({ "for": user }))?;
+        }
+        Ok(ok(json!({ "revoked": id })))
     }
 
     /// Redeems a device link: atomic and single use; expired, used and unknown links, and links whose making device

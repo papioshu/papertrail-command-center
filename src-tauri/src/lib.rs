@@ -288,6 +288,7 @@ pub fn run() {
             hub_client::hub_snapshot_publish,
             hub_client::hub_host_status,
             hub_client::hub_signin_link,
+            hub_client::hub_api_keys,
             hub_client::hub_owner_view,
             hub_client::hub_login,
             hub_client::hub_set_account,

@@ -195,6 +195,7 @@ export const api = {
   hubSnapshotPublish: (project: string) => call<string>("hub_snapshot_publish", { project }),
   hubHostStatus: () => call<Row>("hub_host_status"),
   hubSigninLink: (userId: string) => call<Row>("hub_signin_link", { userId }),
+  hubApiKeys: (userId: string, action: "list" | "create" | "revoke", body?: Row) => call<Row>("hub_api_keys", { userId, action, body }),
   tailscaleSet: (on: boolean) => call<void>("tailscale_set", { on }),
   hubOpenShareFolder: () => call<void>("hub_open_share_folder"),
   hubHostCreate: (name: string, me: string) => call<Row>("hub_host_create_workspace", { name, me }),

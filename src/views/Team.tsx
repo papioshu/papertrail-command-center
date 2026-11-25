@@ -139,6 +139,72 @@ function LinkBox({ link, qr, note }: { link: string; qr: string; note: string })
 
 /* ---------- people × workspaces (owner only, D037) ---------- */
 
+/** API keys (D060) for one person's own dashboard: read only, or read + edit tasks, in chosen workspaces. */
+function ApiKeys({ person, owned, onClose, onErr }: { person: Row; owned: Row[]; onClose: () => void; onErr: (e: string) => void }) {
+  const list = useAsync(() => api.hubApiKeys(person.user_id, "list"), [person.user_id]);
+  const [name, setName] = useState("Dashboard");
+  const [access, setAccess] = useState<"read" | "tasks">("read");
+  const [pick, setPick] = useState<string[]>([]);
+  const [made, setMade] = useState<Row | null>(null);
+  const [confirm, setConfirm] = useState("");
+  const wsName = (id: string) => owned.find((w) => w.id === id)?.name ?? id;
+  const allowed: string[] = list.data?.workspaces ?? [];
+  const create = () => api.hubApiKeys(person.user_id, "create", { name: name.trim(), access, workspaces: pick }).then((r) => { setMade(r); setPick([]); list.reload(); }, (e) => onErr(String(e)));
+  const revoke = (id: string) => api.hubApiKeys(person.user_id, "revoke", { id }).then(() => { setConfirm(""); list.reload(); }, (e) => onErr(String(e)));
+  return (
+    <Modal title={`API keys for ${person.name}`} onClose={onClose} foot={<button className="btn primary" onClick={onClose}>Done</button>}>
+      <div className="col" style={{ gap: 12 }}>
+        <div className="dim small">For {person.name}'s own dashboard app. A key sees only the workspaces you tick, never more than {person.name} can, and only over your Tailscale network. Every use is logged; revoke any time.</div>
+        {made ? (
+          <div className="col" style={{ gap: 8 }}>
+            <b>Copy this key now. It won't be shown again.</b>
+            <div className="row" style={{ gap: 6 }}>
+              <input className="input mono" readOnly value={String(made.token)} onFocus={(e) => e.target.select()} aria-label="New API key" style={{ flex: 1 }} />
+              <button className="btn sm" onClick={() => navigator.clipboard.writeText(String(made.token))}>Copy</button>
+            </div>
+            <div className="small">Hub address: <span className="mono">{String(made.hub_url)}</span></div>
+            <div className="small dim">Send {person.name} the key privately, plus <span className="mono">docs/API.md</span> from the Command Center repo. Every request needs the header <span className="mono">Authorization: Bearer &lt;key&gt;</span>; start with <span className="mono">GET {String(made.hub_url)}/v1/me</span>.</div>
+            <button className="btn sm ghost" onClick={() => setMade(null)}>Make another</button>
+          </div>
+        ) : (
+          <div className="col" style={{ gap: 8 }}>
+            <div className="row wrap" style={{ gap: 8 }}>
+              <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Name, e.g. Profit's dashboard" aria-label="Key name" style={{ flex: 1, minWidth: 200 }} />
+              <select className="input" value={access} onChange={(e) => setAccess(e.target.value as "read" | "tasks")} aria-label="What the key can do">
+                <option value="read">Read only</option>
+                <option value="tasks">Read + edit tasks</option>
+              </select>
+            </div>
+            {!allowed.length ? <div className="dim small">{person.name} isn't in any workspace you own.</div> : (
+              <div className="row wrap" style={{ gap: 12 }}>
+                {allowed.map((id) => (
+                  <label key={id} className="row small" style={{ gap: 6 }}>
+                    <input type="checkbox" checked={pick.includes(id)} onChange={(e) => setPick(e.target.checked ? [...pick, id] : pick.filter((x) => x !== id))} /> {wsName(id)}
+                  </label>
+                ))}
+              </div>
+            )}
+            <div><button className="btn sm primary" disabled={!name.trim() || !pick.length} onClick={create}>Make key</button></div>
+          </div>
+        )}
+        <div className="col" style={{ gap: 6 }}>
+          <span className="label">Active keys</span>
+          {!(list.data?.keys ?? []).length ? <div className="dim small">None.</div> : (list.data!.keys as Row[]).map((k) => (
+            <div key={k.id} className="row small" style={{ gap: 8 }}>
+              <b>{k.name}</b>
+              <span className="dim">{k.access === "tasks" ? "read + tasks" : "read only"} · {(k.workspaces as string[]).map(wsName).join(", ")} · {k.last_used ? `used ${ago(k.last_used)}` : "never used"}</span>
+              <span style={{ marginLeft: "auto" }} />
+              {confirm === k.id
+                ? <button className="btn sm danger" onClick={() => revoke(k.id)}>Confirm revoke</button>
+                : <button className="btn sm ghost" onClick={() => setConfirm(k.id)}>Revoke</button>}
+            </div>
+          ))}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function People({ onErr }: { onErr: (e: string) => void }) {
   const data = useAsync(() => api.hubAdmin("", "people"), [], ["hub-changed"]);
   const owned: Row[] = data.data?.workspaces ?? [];
@@ -146,6 +212,7 @@ function People({ onErr }: { onErr: (e: string) => void }) {
   const [confirm, setConfirm] = useState<string | null>(null);
   const [addAs, setAddAs] = useState<Record<string, string>>({});
   const [signin, setSignin] = useState<{ name: string; link: string; qr_svg: string } | null>(null);
+  const [keysFor, setKeysFor] = useState<Row | null>(null);
   if (!owned.length) return null;
   const people: Row[] = data.data?.people ?? [];
   const choices = (i: number) => [...((roles.data?.[i]?.roles ?? []) as Row[]).map((r) => ({ v: `t:${r.name}`, label: r.name })), ...["admin", "editor", "contributor", "viewer"].map((r) => ({ v: `r:${r}`, label: r }))];
@@ -162,7 +229,8 @@ function People({ onErr }: { onErr: (e: string) => void }) {
                 <tr key={p.user_id}>
                   <td><b>{p.name}</b>
                     <button className="btn sm ghost" style={{ marginLeft: 8 }} title={`A one-time link that signs ${p.name}'s phone, iPad or PC app into their account`}
-                      onClick={() => api.hubSigninLink(p.user_id).then((r) => setSignin({ name: p.name, link: String(r.link), qr_svg: String(r.qr_svg) }), (e) => onErr(String(e)))}>Sign-in link</button></td>
+                      onClick={() => api.hubSigninLink(p.user_id).then((r) => setSignin({ name: p.name, link: String(r.link), qr_svg: String(r.qr_svg) }), (e) => onErr(String(e)))}>Sign-in link</button>
+                    <button className="btn sm ghost" title={`Keys that let ${p.name}'s own dashboard app read workspace data (and optionally edit tasks)`} onClick={() => setKeysFor(p)}>API keys</button></td>
                   {owned.map((w, i) => {
                     const m = p.workspaces?.[w.id];
                     const key = `${p.user_id}|${w.id}`;
@@ -201,6 +269,7 @@ function People({ onErr }: { onErr: (e: string) => void }) {
         </div>
       )}
       <div className="dim small" style={{ marginTop: 8 }}>Only you, as owner, can put people into your workspaces or take them out. Admins can change roles but not who's in. Sign-in link: for a new or signed-out device of someone already in; it opens their existing account (no new invite).</div>
+      {keysFor && <ApiKeys person={keysFor} owned={owned} onClose={() => setKeysFor(null)} onErr={onErr} />}
       {signin && (
         <Modal title={`Sign-in link for ${signin.name}`} onClose={() => setSignin(null)} foot={<button className="btn primary" onClick={() => setSignin(null)}>Done</button>}>
           <LinkBox link={signin.link} qr={signin.qr_svg} note={`Send it to ${signin.name} privately: it signs whoever opens it in as ${signin.name}. iPhone/iPad: open it in Safari (or scan the QR). PC: paste it into the Command Center app under TEAM. Works once, for 24 hours. Tailscale must be on there.`} />

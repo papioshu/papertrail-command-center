@@ -79,6 +79,10 @@ CREATE UNIQUE INDEX users_login ON users(login) WHERE login IS NOT NULL;
 INSERT INTO projects(id, workspace_id, name, created_by, created_at)
   SELECT 'p_' || lower(hex(randomblob(16))), w.id, 'General', 'hub', strftime('%Y-%m-%dT%H:%M:%SZ', 'now') FROM workspaces w
   WHERE w.deleted = 0 AND NOT EXISTS (SELECT 1 FROM projects p WHERE p.workspace_id = w.id AND p.name = 'General' AND p.deleted = 0);
+"#, r#"
+-- API keys (D060) are device rows with limits: 'read' or 'tasks', and the workspaces (JSON list) they may touch.
+ALTER TABLE devices ADD COLUMN api_access TEXT;
+ALTER TABLE devices ADD COLUMN api_workspaces TEXT;
 "#];
 
 pub fn now() -> String {
