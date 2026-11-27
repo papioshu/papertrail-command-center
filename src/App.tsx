@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { api, dashboardClosed, on, onConnection, openOnPc, PHONE, phonePaired, TEAMMATE, teamTools, type LaunchReq, type Row } from "./api";
-import { ago, Barcode, Boundary, LaunchDialog, NavCtx, type View } from "./ui";
+import { ago, Barcode, Boundary, LaunchDialog, NavCtx, useAsync, type View } from "./ui";
 import Overview from "./views/Overview";
 import Login from "./Login";
 
@@ -35,6 +35,14 @@ const NAV: [View, string][] = [
   ["timeline", "TIMELINE"],
   ["settings", "SETTINGS"],
 ];
+
+/** TEAM from the phone or Paper's Command Center (D057): workspaces are edited on the team page, signed in as
+ *  yourself, so edits carry your own name and role (this view speaks for Paper's PC and only reads). */
+function TeamHandoff() {
+  const url = useAsync(() => (TEAMMATE ? Promise.resolve(teamTools()) : api.settings().then((s) => (s.ghost_url ? `${s.ghost_url}/?stay=1` : null))), []).data;
+  useEffect(() => { if (url) location.href = url; }, [url]);
+  return <div className="empty">{url === null ? "The team page needs Tailscale HTTPS on the PC." : "Opening your workspaces…"}</div>;
+}
 
 function Search({ go }: { go: (v: View, p: Row) => void }) {
   const [q, setQ] = useState("");
@@ -216,7 +224,7 @@ export default function App() {
   const [offline, setOffline] = useState(0);
   useEffect(() => (PHONE ? onConnection(setOffline) : undefined), []);
   const blocked = PHONE && !PHONE_VIEWS.includes(view);
-  const page = blocked ? <div className="empty">This page is on the PC only. The phone is read-only.</div> : { overview: <Overview />, workspace: <Workspace />, projects: <Projects />, actions: <Actions />, team: <Team />, calendar: <Calendar />, chat: <Chat />, agents: <Agents />, launchpad: <Launchpad />, graph: <Graph />, discovery: <Discovery />, timeline: <Timeline />, settings: <Settings /> }[view];
+  const page = PHONE && view === "team" ? <TeamHandoff /> : blocked ? <div className="empty">This page is on the PC only. The phone is read-only.</div> : { overview: <Overview />, workspace: <Workspace />, projects: <Projects />, actions: <Actions />, team: <Team />, calendar: <Calendar />, chat: <Chat />, agents: <Agents />, launchpad: <Launchpad />, graph: <Graph />, discovery: <Discovery />, timeline: <Timeline />, settings: <Settings /> }[view];
 
   return (
     <NavCtx.Provider value={{ nav, params, launch }}>
@@ -265,7 +273,7 @@ export default function App() {
           {notice && <span style={{ color: "var(--signal)", cursor: "pointer" }} onClick={() => setNotice(null)}>{notice} ✕</span>}
           <nav className="bnav">
             <span className="br">[</span>
-            {NAV.filter(([k]) => !PHONE || PHONE_VIEWS.includes(k)).map(([k, label]) => (
+            {NAV.filter(([k]) => !PHONE || k === "team" || PHONE_VIEWS.includes(k)).map(([k, label]) => (
               <button key={k} className={view === k ? "on" : ""} onClick={() => nav(k)}>{label}</button>
             ))}
             <span className="br">]</span>
